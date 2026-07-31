@@ -52,8 +52,8 @@ per-feature revision tables or mutable shared feature state that bypasses this
 model.
 
 The base-game layer is published from the current Workbench graph. On a warm
-start, compatible immutable revisions for those exact `(GUID, source-root)`
-instances hydrate before source inspection; the same background validation pass
+start, compatible cache pairs for those exact `(GUID, source-root)` instances
+hydrate before source inspection; the same background validation pass
 then strongly re-inspects both packed entries and loose scripts and atomically
 replaces only changed instances. This intentionally permits a short
 source-validation window, but never preserves an unselected graph instance or
@@ -72,8 +72,18 @@ Workbench graph is unavailable, malformed, cancelled, or fails to acquire an
 instance, the Workbench-sourced layer is unavailable; the engine never reuses
 an earlier graph or substitutes a local source.
 
+The binary payload persists canonical public symbol facts, source metadata, and
+source line starts; dense symbol IDs and lookup maps are structural or derived
+runtime facts and are not duplicated in the payload. Cache-sized integers use
+fixed-width `u32` records, symbol option/list presence shares one flag word,
+and line starts use fixed-width positive deltas. Cold indexing builds the final
+runtime-cache projection directly and encodes that index without constructing a
+second cache object graph. Warm hydration decodes directly into runtime records
+and builds lookup maps once, so neither path materializes an intermediate copy
+of every symbol.
+
 An empty add-on cache store is a cold build. Instances without a compatible
-current pointer are omitted from optimistic delivery and joined by the
+current cache pair are omitted from optimistic delivery and joined by the
 validation build. After authoritative inspection has measured each loaded
 instance's script count, at most four workers rebuild the largest sets first.
 Within a sufficiently large add-on, source parsing and semantic modelling use
@@ -86,7 +96,7 @@ layering and publication. Authoritative source inspection is bounded to four
 independent workers. A compact manifest header validates cache format, exact
 instance, strong revision, archive facts, and cache bytes before the
 locator-rich manifest is materialized and published for a rebuild. A valid warm
-hit does not rewrite that already-validated manifest or current pointer.
+hit does not rewrite that already-validated manifest.
 
 Packed files carry a typed virtual-source identity in semantic metadata rather
 than overloading a filesystem path. The identity includes the loaded add-on

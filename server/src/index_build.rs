@@ -57,8 +57,15 @@ pub struct IndexBuildControl {
 #[derive(Debug)]
 pub struct IndexBuildResult {
     pub index: SymbolIndex,
+    pub index_shape: IndexBuildShape,
     pub summary: IndexBuildSummary,
     pub source_line_starts: Vec<Vec<usize>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexBuildShape {
+    Full,
+    RuntimeCache,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,10 +268,14 @@ fn merge_index_build_counts(target: &mut IndexBuildCounts, source: IndexBuildCou
     target.files += source.files;
     target.bytes += source.bytes;
     target.lossy_files += source.lossy_files;
-    let remaining_lossy = MAX_RECORDED_LOSSY_FILES.saturating_sub(target.lossy_decode_details.len());
-    target
-        .lossy_decode_details
-        .extend(source.lossy_decode_details.into_iter().take(remaining_lossy));
+    let remaining_lossy =
+        MAX_RECORDED_LOSSY_FILES.saturating_sub(target.lossy_decode_details.len());
+    target.lossy_decode_details.extend(
+        source
+            .lossy_decode_details
+            .into_iter()
+            .take(remaining_lossy),
+    );
     target.parse_diagnostics += source.parse_diagnostics;
     target.parse_diagnostic_files += source.parse_diagnostic_files;
     record_parse_diagnostic_details(target, &source.parse_diagnostic_details);
@@ -289,7 +300,7 @@ pub fn build_index_from_sources(
     let index_build_start = Instant::now();
     let mut index = SymbolIndex::default();
     index
-        .add_file_contributions(
+        .add_runtime_cache_file_contributions(
             pending
                 .iter()
                 .map(|file| (&file.contribution, file.metadata.clone())),
@@ -301,6 +312,7 @@ pub fn build_index_from_sources(
     summary.timings.total = total_start.elapsed();
     Ok(IndexBuildResult {
         index,
+        index_shape: IndexBuildShape::RuntimeCache,
         summary,
         source_line_starts: pending
             .into_iter()
@@ -356,6 +368,7 @@ pub fn build_index_with_control(
     summary.timings.total = total_start.elapsed();
     Ok(IndexBuildResult {
         index,
+        index_shape: IndexBuildShape::Full,
         summary,
         source_line_starts: pending_contributions
             .into_iter()
@@ -922,7 +935,10 @@ mod tests {
         let parallel = build_index_from_sources(sources, &control, 4).unwrap();
 
         assert_eq!(parallel.summary.totals, sequential.summary.totals);
-        assert_eq!(parallel.summary.by_source_kind, sequential.summary.by_source_kind);
+        assert_eq!(
+            parallel.summary.by_source_kind,
+            sequential.summary.by_source_kind
+        );
         assert_eq!(parallel.index.files(), sequential.index.files());
         assert_eq!(parallel.index.symbols(), sequential.index.symbols());
         assert_eq!(

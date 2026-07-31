@@ -44,6 +44,10 @@ name = "index_cache_baseline"
 path = "../tools/server-reports/index_cache_baseline.rs"
 
 [[example]]
+name = "index_cache_io_benchmark"
+path = "../tools/server-reports/index_cache_io_benchmark.rs"
+
+[[example]]
 name = "index_cache_composition_report"
 path = "../tools/server-reports/index_cache_composition_report.rs"
 
@@ -172,6 +176,7 @@ name = "pack_catalogue_report"
 path = "../tools/server-reports/pack_catalogue_report.rs"
 
 [dependencies]
+ahash = "0.8"
 flate2 = "1.0"
 rmcp = { version = "=2.2.0", default-features = false, features = ["server", "macros", "transport-io"] }
 schemars = "1.0"

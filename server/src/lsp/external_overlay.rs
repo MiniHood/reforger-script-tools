@@ -633,6 +633,8 @@ fn log_loaded_addon_index_diagnostics(logger: &LspLogger, result: &LoadedAddonIn
                     "cacheDecode": instance.timings.cache_decode.as_millis(),
                     "cacheValidate": instance.timings.cache_validate.as_millis(),
                     "runtimeMapRebuild": instance.timings.map_rebuild.as_millis(),
+                    "runtimeProjection": instance.timings.map_projection.as_millis(),
+                    "runtimeLookupMapBuild": instance.timings.map_lookup_rebuild.as_millis(),
                     "cacheReadDeserializeValidate": instance.timings.cache_read_deserialize_validate.as_millis(),
                     "sourceRebuild": instance.timings.rebuild.as_millis(),
                     "sourceBuild": {
@@ -646,7 +648,11 @@ fn log_loaded_addon_index_diagnostics(logger: &LspLogger, result: &LoadedAddonIn
                         "total": instance.timings.source_build.total.as_millis(),
                     },
                     "cachePrepare": instance.timings.cache_prepare.as_millis(),
+                    "cacheCompact": instance.timings.cache_compact.as_millis(),
+                    "cachePayloadPrepare": instance.timings.cache_payload_prepare.as_millis(),
                     "cacheWrite": instance.timings.cache_write.as_millis(),
+                    "cacheEncode": instance.timings.cache_encode.as_millis(),
+                    "cacheAtomicWrite": instance.timings.cache_atomic_write.as_millis(),
                     "cacheMetadataPublish": instance.timings.cache_metadata_publish.as_millis(),
                     "total": instance.timings.total.as_millis(),
                 }
@@ -699,9 +705,10 @@ fn run_external_index_thread(
     // Hydrate the last immutable snapshot before any source inspection. The
     // following validation pass is still mandatory and atomically replaces
     // this projection when a packed or loose source has changed.
-    if let (Some(inventory_path), Some(storage)) =
-        (addon_source_inventory.as_ref(), addon_index_storage.as_ref())
-    {
+    if let (Some(inventory_path), Some(storage)) = (
+        addon_source_inventory.as_ref(),
+        addon_index_storage.as_ref(),
+    ) {
         let optimistic_start = Instant::now();
         match load_cached_loaded_addon_indexes(
             inventory_path,
@@ -1394,8 +1401,14 @@ mod tests {
         }
 
         let snapshot = handle.snapshot();
-        assert!(snapshot.game_data.is_some(), "the initial graph must publish game data");
-        assert!(snapshot.workspace.is_some(), "workspace facts remain independently available");
+        assert!(
+            snapshot.game_data.is_some(),
+            "the initial graph must publish game data"
+        );
+        assert!(
+            snapshot.workspace.is_some(),
+            "workspace facts remain independently available"
+        );
 
         run_external_index_thread(
             handle.state.clone(),
@@ -1408,12 +1421,21 @@ mod tests {
         );
 
         let snapshot = handle.snapshot();
-        assert!(snapshot.game_data.is_none(), "the Workbench layer must be unavailable");
-        assert!(snapshot.workspace.is_some(), "workspace facts remain independently available");
+        assert!(
+            snapshot.game_data.is_none(),
+            "the Workbench layer must be unavailable"
+        );
+        assert!(
+            snapshot.workspace.is_some(),
+            "workspace facts remain independently available"
+        );
         let status = handle.status_summary();
         assert_eq!(status.game_data_files, 0);
         assert_eq!(status.workspace_files, 1);
-        assert!(status.error.is_some(), "the graph failure must remain observable");
+        assert!(
+            status.error.is_some(),
+            "the graph failure must remain observable"
+        );
         handle.cancel();
         let _ = fs::remove_dir_all(root);
     }
@@ -1470,9 +1492,13 @@ mod tests {
         handle
             .load_workbench_graph(inventory, LspLogger::new(None, None), Some(sender.into()))
             .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            match receiver.recv_timeout(Duration::from_secs(5)) {
-                Ok(ServerEvent::ExternalIndexChanged) => break,
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match receiver.recv_timeout(remaining) {
+                Ok(ServerEvent::ExternalIndexChanged) if handle.snapshot().game_data.is_some() => {
+                    break;
+                }
                 Ok(_) => {}
                 Err(error) => panic!("delivered Workbench graph did not publish: {error}"),
             }

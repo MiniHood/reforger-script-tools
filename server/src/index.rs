@@ -151,6 +151,12 @@ struct LookupMaps {
     owner_name: OwnerNameLookupMaps,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContributionProjection {
+    Full,
+    RuntimeCache,
+}
+
 impl LookupMaps {
     fn build(files: &[IndexedFile], symbols: &[IndexedSymbol]) -> Self {
         // Below this size, thread startup costs more than the independent map
@@ -379,13 +385,21 @@ impl SymbolIndex {
     }
 
     pub fn from_indexed_parts(files: Vec<IndexedFile>, symbols: Vec<IndexedSymbol>) -> Self {
+        Self::from_indexed_parts_with_map_timing(files, symbols).0
+    }
+
+    pub(crate) fn from_indexed_parts_with_map_timing(
+        files: Vec<IndexedFile>,
+        symbols: Vec<IndexedSymbol>,
+    ) -> (Self, Duration) {
         let mut index = Self {
             files,
             symbols,
             ..Self::default()
         };
+        let map_start = Instant::now();
         index.rebuild_lookup_maps();
-        index
+        (index, map_start.elapsed())
     }
 
     pub fn merged<'a>(indexes: impl IntoIterator<Item = &'a SymbolIndex>) -> Self {
@@ -508,7 +522,10 @@ impl SymbolIndex {
         // Match normal index construction: a small graph or a narrow machine
         // is faster without fine-grained thread startup and contention.
         const PARALLEL_REBUILD_MIN_SYMBOLS: usize = 10_000;
-        let symbol_count = layers.iter().map(|layer| layer.symbols.len()).sum::<usize>();
+        let symbol_count = layers
+            .iter()
+            .map(|layer| layer.symbols.len())
+            .sum::<usize>();
         let parallelism = std::thread::available_parallelism()
             .map(|parallelism| parallelism.get())
             .unwrap_or(1);
@@ -605,20 +622,32 @@ impl SymbolIndex {
             });
             let members_by_owner =
                 scope.spawn(|| merge_layer_lookup_maps(layers, |index| &index.members_by_owner));
-            let methods_by_owner_name = scope.spawn(|| {
-                merge_layer_lookup_maps(layers, |index| &index.methods_by_owner_name)
-            });
-            let fields_by_owner_name = scope.spawn(|| {
-                merge_layer_lookup_maps(layers, |index| &index.fields_by_owner_name)
-            });
+            let methods_by_owner_name = scope
+                .spawn(|| merge_layer_lookup_maps(layers, |index| &index.methods_by_owner_name));
+            let fields_by_owner_name = scope
+                .spawn(|| merge_layer_lookup_maps(layers, |index| &index.fields_by_owner_name));
             (
-                by_name.join().expect("layer name lookup projection should not panic"),
-                top_level.join().expect("layer top-level lookup projection should not panic"),
-                structure.join().expect("layer structure lookup projection should not panic"),
-                kind_names.join().expect("layer kind/name lookup projection should not panic"),
-                members_by_owner.join().expect("layer member lookup projection should not panic"),
-                methods_by_owner_name.join().expect("layer method lookup projection should not panic"),
-                fields_by_owner_name.join().expect("layer field lookup projection should not panic"),
+                by_name
+                    .join()
+                    .expect("layer name lookup projection should not panic"),
+                top_level
+                    .join()
+                    .expect("layer top-level lookup projection should not panic"),
+                structure
+                    .join()
+                    .expect("layer structure lookup projection should not panic"),
+                kind_names
+                    .join()
+                    .expect("layer kind/name lookup projection should not panic"),
+                members_by_owner
+                    .join()
+                    .expect("layer member lookup projection should not panic"),
+                methods_by_owner_name
+                    .join()
+                    .expect("layer method lookup projection should not panic"),
+                fields_by_owner_name
+                    .join()
+                    .expect("layer field lookup projection should not panic"),
             )
         });
         self.by_name = by_name;
@@ -876,6 +905,26 @@ impl SymbolIndex {
         &mut self,
         contributions: impl IntoIterator<Item = (&'contribution FileContribution, SourceFileMetadata)>,
     ) -> Result<Vec<SourceFileId>, FileContributionValidationError> {
+        self.add_file_contributions_with_projection(contributions, ContributionProjection::Full)
+    }
+
+    /// Builds the persisted external-index shape directly from compiler
+    /// contributions so cold indexing constructs lookup maps only once.
+    pub(crate) fn add_runtime_cache_file_contributions<'contribution>(
+        &mut self,
+        contributions: impl IntoIterator<Item = (&'contribution FileContribution, SourceFileMetadata)>,
+    ) -> Result<Vec<SourceFileId>, FileContributionValidationError> {
+        self.add_file_contributions_with_projection(
+            contributions,
+            ContributionProjection::RuntimeCache,
+        )
+    }
+
+    fn add_file_contributions_with_projection<'contribution>(
+        &mut self,
+        contributions: impl IntoIterator<Item = (&'contribution FileContribution, SourceFileMetadata)>,
+        projection: ContributionProjection,
+    ) -> Result<Vec<SourceFileId>, FileContributionValidationError> {
         let contributions = contributions.into_iter().collect::<Vec<_>>();
         for (contribution, _) in &contributions {
             contribution.validate()?;
@@ -891,7 +940,7 @@ impl SymbolIndex {
 
         let mut file_ids = Vec::with_capacity(contributions.len());
         for (contribution, metadata) in contributions {
-            file_ids.push(self.append_file_contribution(contribution, metadata));
+            file_ids.push(self.append_file_contribution(contribution, metadata, projection));
         }
         if !file_ids.is_empty() {
             self.rebuild_lookup_maps();
@@ -936,25 +985,43 @@ impl SymbolIndex {
         &mut self,
         contribution: &FileContribution,
         metadata: SourceFileMetadata,
+        projection: ContributionProjection,
     ) -> SourceFileId {
         let file_id = SourceFileId(self.files.len());
         let symbol_start = self.symbols.len();
+        let mut remapped_ids = vec![None; contribution.symbols.len()];
+        let mut symbol_count = 0_usize;
+        for declaration in &contribution.symbols {
+            if projection == ContributionProjection::RuntimeCache
+                && declaration.kind == SemanticDeclarationKind::LocalVariable
+            {
+                continue;
+            }
+            remapped_ids[declaration.id.0 as usize] = Some(SymbolId(symbol_count));
+            symbol_count += 1;
+        }
         self.files.push(IndexedFile {
             id: file_id,
             metadata,
             symbol_start,
-            symbol_count: contribution.symbols.len(),
+            symbol_count,
             non_declaration_callable_fragments: contribution.non_declaration_callable_fragments,
         });
 
         for declaration in &contribution.symbols {
+            if projection == ContributionProjection::RuntimeCache
+                && declaration.kind == SemanticDeclarationKind::LocalVariable
+            {
+                continue;
+            }
             let id = GlobalSymbolId {
                 file_id,
-                symbol_id: SymbolId(declaration.id.0 as usize),
+                symbol_id: remapped_ids[declaration.id.0 as usize]
+                    .expect("retained validated contribution id is remapped"),
             };
-            let parent = declaration.parent.map(|parent| GlobalSymbolId {
-                file_id,
-                symbol_id: SymbolId(parent.0 as usize),
+            let parent = declaration.parent.and_then(|parent| {
+                remapped_ids[parent.0 as usize]
+                    .map(|symbol_id| GlobalSymbolId { file_id, symbol_id })
             });
             self.symbols.push(IndexedSymbol {
                 id,
@@ -969,51 +1036,57 @@ impl SymbolIndex {
                         .type_text
                         .as_ref()
                         .map(|value| value.text.clone()),
-                    type_text_span: declaration
-                        .detail
-                        .type_text
-                        .as_ref()
-                        .and_then(|value| value.span),
+                    type_text_span: declaration.detail.type_text.as_ref().and_then(|value| {
+                        (projection == ContributionProjection::Full)
+                            .then_some(value.span)
+                            .flatten()
+                    }),
                     return_type_text: declaration
                         .detail
                         .return_type
                         .as_ref()
                         .map(|value| value.text.clone()),
-                    return_type_text_span: declaration
-                        .detail
-                        .return_type
-                        .as_ref()
-                        .and_then(|value| value.span),
+                    return_type_text_span: declaration.detail.return_type.as_ref().and_then(
+                        |value| {
+                            (projection == ContributionProjection::Full)
+                                .then_some(value.span)
+                                .flatten()
+                        },
+                    ),
                     base_type: declaration
                         .detail
                         .base_type
                         .as_ref()
                         .map(|value| value.text.clone()),
-                    base_type_span: declaration
-                        .detail
-                        .base_type
-                        .as_ref()
-                        .and_then(|value| value.span),
+                    base_type_span: declaration.detail.base_type.as_ref().and_then(|value| {
+                        (projection == ContributionProjection::Full)
+                            .then_some(value.span)
+                            .flatten()
+                    }),
                     default_text: declaration
                         .detail
                         .default_value
                         .as_ref()
                         .map(|value| value.text.clone()),
-                    default_text_span: declaration
-                        .detail
-                        .default_value
-                        .as_ref()
-                        .and_then(|value| value.span),
+                    default_text_span: declaration.detail.default_value.as_ref().and_then(
+                        |value| {
+                            (projection == ContributionProjection::Full)
+                                .then_some(value.span)
+                                .flatten()
+                        },
+                    ),
                     enum_value_text: declaration
                         .detail
                         .enum_value
                         .as_ref()
                         .map(|value| value.text.clone()),
-                    enum_value_text_span: declaration
-                        .detail
-                        .enum_value
-                        .as_ref()
-                        .and_then(|value| value.span),
+                    enum_value_text_span: declaration.detail.enum_value.as_ref().and_then(
+                        |value| {
+                            (projection == ContributionProjection::Full)
+                                .then_some(value.span)
+                                .flatten()
+                        },
+                    ),
                 },
                 attributes: declaration
                     .attributes
@@ -1117,6 +1190,91 @@ impl SymbolIndex {
         compact
     }
 
+    /// Consumes a source-built index and projects it into the runtime cache
+    /// shape without cloning every retained symbol and file record.
+    pub(crate) fn into_runtime_cache(mut self) -> Result<Self, String> {
+        if !self.layers.is_empty() || self.file_id_base != 0 {
+            return Err(
+                "runtime cache compaction requires one non-layered source index".to_string(),
+            );
+        }
+
+        let files = std::mem::take(&mut self.files);
+        let symbols = std::mem::take(&mut self.symbols);
+        let mut remapped_ids = Vec::with_capacity(files.len());
+        let mut retained_counts = Vec::with_capacity(files.len());
+        for file in &files {
+            let end = file
+                .symbol_start
+                .checked_add(file.symbol_count)
+                .ok_or_else(|| "source index symbol range overflow".to_string())?;
+            let file_symbols = symbols
+                .get(file.symbol_start..end)
+                .ok_or_else(|| "source index symbol range is invalid".to_string())?;
+            let new_file_id = SourceFileId(remapped_ids.len());
+            let mut file_remap = vec![None; file.symbol_count];
+            let mut retained = 0_usize;
+            for symbol in file_symbols {
+                if symbol.kind == SymbolKind::LocalVariable {
+                    continue;
+                }
+                let slot = file_remap
+                    .get_mut(symbol.id.symbol_id.0)
+                    .ok_or_else(|| "source index symbol id is outside its file".to_string())?;
+                *slot = Some(GlobalSymbolId {
+                    file_id: new_file_id,
+                    symbol_id: SymbolId(retained),
+                });
+                retained += 1;
+            }
+            remapped_ids.push(file_remap);
+            retained_counts.push(retained);
+        }
+
+        let mut compact = Self::default();
+        compact.files.reserve(files.len());
+        compact
+            .symbols
+            .reserve(retained_counts.iter().copied().sum());
+        let mut next_symbol_start = 0_usize;
+        for (file_index, (file, symbol_count)) in files.into_iter().zip(retained_counts).enumerate()
+        {
+            compact.files.push(IndexedFile {
+                id: SourceFileId(file_index),
+                metadata: file.metadata,
+                symbol_start: next_symbol_start,
+                symbol_count,
+                non_declaration_callable_fragments: file.non_declaration_callable_fragments,
+            });
+            next_symbol_start += symbol_count;
+        }
+
+        let remapped_symbol_id = |id: GlobalSymbolId| {
+            remapped_ids
+                .get(id.file_id.0)
+                .and_then(|file| file.get(id.symbol_id.0))
+                .copied()
+                .flatten()
+        };
+        for mut symbol in symbols {
+            if symbol.kind == SymbolKind::LocalVariable {
+                continue;
+            }
+            symbol.id = remapped_symbol_id(symbol.id)
+                .ok_or_else(|| "source index retained symbol has no compact id".to_string())?;
+            symbol.parent = symbol.parent.and_then(remapped_symbol_id);
+            symbol.detail.type_text_span = None;
+            symbol.detail.return_type_text_span = None;
+            symbol.detail.base_type_span = None;
+            symbol.detail.default_text_span = None;
+            symbol.detail.enum_value_text_span = None;
+            compact.symbols.push(symbol);
+        }
+
+        compact.rebuild_lookup_maps();
+        Ok(compact)
+    }
+
     fn strip_detail_spans(&mut self) {
         for symbol in &mut self.symbols {
             symbol.detail.type_text_span = None;
@@ -1186,8 +1344,7 @@ impl SymbolIndex {
         if !self.layers.is_empty() {
             return self.layers.iter().find_map(|layer| layer.file(id));
         }
-        id.0
-            .checked_sub(self.file_id_base)
+        id.0.checked_sub(self.file_id_base)
             .and_then(|local_id| self.files.get(local_id))
     }
 
@@ -2078,7 +2235,10 @@ fn append_lookup_map<K: Ord + Clone>(
     source: &BTreeMap<K, Vec<GlobalSymbolId>>,
 ) {
     for (key, ids) in source {
-        target.entry(key.clone()).or_default().extend(ids.iter().copied());
+        target
+            .entry(key.clone())
+            .or_default()
+            .extend(ids.iter().copied());
     }
 }
 
@@ -2430,6 +2590,41 @@ void Start();
                 .and_then(|symbol| symbol.name.as_deref()),
             Some("ContributionIdsAfterPublicFixture")
         );
+    }
+
+    #[test]
+    fn runtime_cache_contribution_projection_matches_full_compaction() {
+        let source = r#"class Example : Base
+{
+	int Run(string name = "ok")
+	{
+		int localValue;
+		return 0;
+	}
+}
+"#;
+        let parse = parse_source(source);
+        let semantic_file = SemanticFile::build(source, &parse);
+        let contribution = semantic_file.contribution();
+        let metadata = SourceFileMetadata::unknown();
+
+        let mut full = SymbolIndex::default();
+        full.add_file_contributions([(&contribution, metadata.clone())])
+            .unwrap();
+        let expected = full.compact_for_runtime_cache();
+
+        let mut projected = SymbolIndex::default();
+        projected
+            .add_runtime_cache_file_contributions([(&contribution, metadata)])
+            .unwrap();
+
+        assert_eq!(projected.files(), expected.files());
+        assert_eq!(projected.symbols(), expected.symbols());
+        assert_eq!(
+            projected.callable_signature(projected.methods_by_owner_name("Example", "Run")[0]),
+            expected.callable_signature(expected.methods_by_owner_name("Example", "Run")[0])
+        );
+        assert_no_dangling_symbol_references(&projected);
     }
 
     #[test]
@@ -4071,7 +4266,10 @@ class FactionKey : string
             game_metadata("Game/Example.c"),
         );
         let index = SymbolIndex::from_catalogs([&catalog]);
-        let compact = index.compact_for_runtime_cache();
+        let reference = index.compact_for_runtime_cache();
+        let compact = index.clone().into_runtime_cache().unwrap();
+        assert_eq!(compact.files(), reference.files());
+        assert_eq!(compact.symbols(), reference.symbols());
 
         assert_eq!(index.symbols_for_kind(SymbolKind::LocalVariable).len(), 1);
         assert!(compact
@@ -4133,7 +4331,11 @@ class Second : SecondBase
 "#,
             game_metadata("Game/Second.c"),
         );
-        let compact = SymbolIndex::from_catalogs([&first, &second]).compact_for_runtime_cache();
+        let index = SymbolIndex::from_catalogs([&first, &second]);
+        let reference = index.compact_for_runtime_cache();
+        let compact = index.into_runtime_cache().unwrap();
+        assert_eq!(compact.files(), reference.files());
+        assert_eq!(compact.symbols(), reference.symbols());
 
         assert!(compact
             .symbols_for_kind(SymbolKind::LocalVariable)
@@ -4256,10 +4458,7 @@ class Second : SecondBase
         assert_eq!(actual.typedefs_by_name, expected.typedefs_by_name);
         assert_eq!(actual.functions_by_name, expected.functions_by_name);
         assert_eq!(actual.members_by_owner, expected.members_by_owner);
-        assert_eq!(
-            actual.methods_by_owner_name,
-            expected.methods_by_owner_name
-        );
+        assert_eq!(actual.methods_by_owner_name, expected.methods_by_owner_name);
         assert_eq!(actual.fields_by_owner_name, expected.fields_by_owner_name);
     }
 
