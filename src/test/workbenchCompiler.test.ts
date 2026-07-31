@@ -48,6 +48,16 @@ suite('Workbench compiler validation', () => {
 					payload: { IsRunning: true, ScriptsCompiled: true },
 				};
 			}
+			if (payload.APIFunc === 'RST_WorkbenchLoadedAddonGraph') {
+				return {
+					errorCode: 'Ok',
+					payload: {
+						bridgeVersion: 'test',
+						protocolVersion: 1,
+						graphJson: '[]',
+					},
+				};
+			}
 			assert.deepStrictEqual(payload, {
 				APIFunc: 'ValidateScripts',
 				Configuration: 'WORKBENCH',

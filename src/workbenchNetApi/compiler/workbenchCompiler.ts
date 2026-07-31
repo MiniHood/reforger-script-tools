@@ -480,6 +480,12 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			workbenchDurationMs: completedAtMs - validationStartedAtMs,
 			presentationDurationMs: Date.now() - completedAtMs,
 		});
+		if (request.trigger === 'startup' && this.lastStatus?.scriptsCompiled) {
+			void this.integration?.onWorkbenchConnected({
+				host: this.configuration.host,
+				port: this.configuration.port,
+			});
+		}
 		this.scheduleProbe(readyHeartbeatMs, request.generation);
 	}
 
