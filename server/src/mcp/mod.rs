@@ -56,6 +56,7 @@ use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -3614,6 +3615,418 @@ pub fn run_stdio(options: McpServerOptions) -> Result<(), String> {
     result
 }
 
+const API_REFERENCE_CATEGORIES: [(&str, &str); 12] = [
+    (
+        "Game Data",
+        "Find exact Enfusion declarations, relationships, examples, and source evidence.",
+    ),
+    (
+        "Official Wiki",
+        "Find and read validated passages from the packaged official documentation.",
+    ),
+    (
+        "Workbench health",
+        "Check availability, compilation, bridge installation, and loaded project context.",
+    ),
+    (
+        "Resources and editors",
+        "Discover resources and open them in the appropriate Workbench editor.",
+    ),
+    (
+        "World inspection",
+        "Read live World Editor entities, terrain, layers, selection, and viewport facts.",
+    ),
+    (
+        "Prefabs",
+        "Inspect, create, save, and modify prefab resources or prefab-editor targets.",
+    ),
+    (
+        "Entity editing",
+        "Select and modify exact live World Editor entities through undoable actions.",
+    ),
+    (
+        "Components and properties",
+        "Inspect and modify typed entity or component properties.",
+    ),
+    (
+        "Shape geometry",
+        "Read, convert, generate, and edit polyline or spline points.",
+    ),
+    (
+        "Sessions and saving",
+        "Control play mode, save editor state, and reload Workbench scripts.",
+    ),
+    (
+        "Diagnostics and windows",
+        "Read bounded logs or visually inspect exact Workbench windows.",
+    ),
+    (
+        "Process lifecycle",
+        "Launch, stop, or restart an exact Workbench project process.",
+    ),
+];
+
+fn api_reference_summary(name: &str) -> (&'static str, &'static str) {
+    match name {
+        "game_data_status" => (
+            "Game Data",
+            "Check catalogue readiness before semantic lookup.",
+        ),
+        "search_game_data_symbols" => (
+            "Game Data",
+            "Find exact Enfusion declarations by name, signature, or type.",
+        ),
+        "search_game_data_examples" => (
+            "Game Data",
+            "Find curated generated and handwritten usage examples by topic.",
+        ),
+        "list_game_data_symbol_members" => (
+            "Game Data",
+            "List every direct member after compact inspection truncates.",
+        ),
+        "query_game_data_symbol_relationships" => (
+            "Game Data",
+            "Trace inheritance, overrides, implementations, references, or callers.",
+        ),
+        "inspect_game_data_symbol" => (
+            "Game Data",
+            "Inspect one exact symbol returned by catalogue search.",
+        ),
+        "read_game_data_source" => (
+            "Game Data",
+            "Read bounded source evidence returned by catalogue tools.",
+        ),
+        "official_wiki_status" => (
+            "Official Wiki",
+            "Check packaged official documentation availability and revision.",
+        ),
+        "search_official_wiki" => (
+            "Official Wiki",
+            "Find authoritative documentation passages by terms and path.",
+        ),
+        "read_official_wiki" => (
+            "Official Wiki",
+            "Read an exact bounded passage returned by wiki search.",
+        ),
+        "workbench_status" => (
+            "Workbench health",
+            "Check whether Workbench and its scripts are ready.",
+        ),
+        "workbench_validate_scripts" => (
+            "Workbench health",
+            "Compile the loaded project and page through diagnostics.",
+        ),
+        "workbench_install_bridge" => (
+            "Workbench health",
+            "Maintain an already-consented managed bridge installation.",
+        ),
+        "workbench_state" => (
+            "Workbench health",
+            "Read current editor mode, world, and loaded add-ons.",
+        ),
+        "workbench_project_context" => (
+            "Workbench health",
+            "Confirm the live loaded add-on identities.",
+        ),
+        "workbench_inspect_resource" => (
+            "Resources and editors",
+            "Inspect compact metadata for one canonical resource.",
+        ),
+        "workbench_list_resources" => (
+            "Resources and editors",
+            "Support legacy bounded resource listing; prefer canonical search.",
+        ),
+        "workbench_search_resources" => (
+            "Resources and editors",
+            "Discover canonical resources by kind, terms, root, or add-on.",
+        ),
+        "workbench_list_editors" => (
+            "Resources and editors",
+            "Discover editor IDs before opening an editor.",
+        ),
+        "workbench_open_editor" => (
+            "Resources and editors",
+            "Open one editor using its discovered ID.",
+        ),
+        "workbench_open_resource" => (
+            "Resources and editors",
+            "Open a canonical resource in its owning editor.",
+        ),
+        "workbench_world_selection_summary" => (
+            "World inspection",
+            "Read stable identities for the current World Editor selection.",
+        ),
+        "workbench_selected_entity_hierarchy" => (
+            "World inspection",
+            "Inspect parents and direct children of one selected entity.",
+        ),
+        "workbench_list_entities" => (
+            "World inspection",
+            "Page through live entities within optional layer filters.",
+        ),
+        "workbench_search_world_entities" => (
+            "World inspection",
+            "Find live entities using exact structural and relation filters.",
+        ),
+        "workbench_layer_state" => (
+            "World inspection",
+            "Check one layer's path, visibility, and lock state.",
+        ),
+        "workbench_find_entities_by_radius" => (
+            "World inspection",
+            "Find entity bounds touching a world-space sphere.",
+        ),
+        "workbench_sample_terrain" => (
+            "World inspection",
+            "Sample bounded terrain heights, slopes, and optional water.",
+        ),
+        "workbench_get_viewport_context" => (
+            "World inspection",
+            "Read camera, cursor, and optional viewport ray facts.",
+        ),
+        "workbench_trace" => (
+            "World inspection",
+            "Sweep a line, sphere, or box through the world.",
+        ),
+        "workbench_inspect_entity" => (
+            "World inspection",
+            "Inspect one exact entity, hierarchy, prefab, and components.",
+        ),
+        "workbench_inspect_prefab_context" => (
+            "Prefabs",
+            "Inspect prefab ancestry, members, components, and effective values.",
+        ),
+        "workbench_inspect_prefab_component" => (
+            "Prefabs",
+            "Inspect every typed property on one prefab component.",
+        ),
+        "workbench_create_prefab" => (
+            "Prefabs",
+            "Preview and confirm prefab creation from one scene entity.",
+        ),
+        "workbench_create_generic_prefab" => {
+            ("Prefabs", "Preview and confirm a new GenericEntity prefab.")
+        }
+        "workbench_save_prefab" => (
+            "Prefabs",
+            "Preview and confirm saving one exact prefab target.",
+        ),
+        "workbench_add_prefab_resource_component" => (
+            "Prefabs",
+            "Preview and add a component to a prefab resource.",
+        ),
+        "workbench_remove_prefab_resource_component" => (
+            "Prefabs",
+            "Preview and remove an inspected prefab resource component.",
+        ),
+        "workbench_set_prefab_resource_property" => (
+            "Prefabs",
+            "Preview and update one inspected prefab resource property.",
+        ),
+        "workbench_set_prefab_property" => (
+            "Prefabs",
+            "Update one typed root property during prefab editing.",
+        ),
+        "workbench_set_prefab_component_property" => (
+            "Prefabs",
+            "Update one typed component property during prefab editing.",
+        ),
+        "workbench_set_selection" => (
+            "Entity editing",
+            "Replace selection with one exact entity without editing world content.",
+        ),
+        "workbench_clear_selection" => (
+            "Entity editing",
+            "Clear the visible World Editor selection.",
+        ),
+        "workbench_create_entity" => (
+            "Entity editing",
+            "Create an entity resource or class at an exact position.",
+        ),
+        "workbench_rename_entity" => (
+            "Entity editing",
+            "Rename one exact live entity with undo support.",
+        ),
+        "workbench_delete_entity" => (
+            "Entity editing",
+            "Preview and confirm deletion of one exact entity.",
+        ),
+        "workbench_move_entity" => (
+            "Entity editing",
+            "Move one exact entity to an explicit position.",
+        ),
+        "workbench_rotate_entity" => (
+            "Entity editing",
+            "Rotate one exact entity to explicit angles.",
+        ),
+        "workbench_reparent_entity" => {
+            ("Entity editing", "Parent one exact entity beneath another.")
+        }
+        "workbench_duplicate_entity" => (
+            "Entity editing",
+            "Duplicate one exact entity at an explicit position.",
+        ),
+        "workbench_list_components" => (
+            "Components and properties",
+            "List opaque component identities attached to one entity.",
+        ),
+        "workbench_inspect_component" => (
+            "Components and properties",
+            "Inspect every typed property on one exact component.",
+        ),
+        "workbench_add_component" => (
+            "Components and properties",
+            "Add one component class to an exact entity.",
+        ),
+        "workbench_set_component_properties" => (
+            "Components and properties",
+            "Update one component property using its write descriptor.",
+        ),
+        "workbench_remove_component" => (
+            "Components and properties",
+            "Preview and remove one exact entity component.",
+        ),
+        "workbench_list_entity_properties" => (
+            "Components and properties",
+            "List writable direct scalar properties on one entity.",
+        ),
+        "workbench_set_entity_properties" => (
+            "Components and properties",
+            "Update one entity property using its write descriptor.",
+        ),
+        "workbench_get_shape_points" => (
+            "Shape geometry",
+            "Read ordered local points from a polyline or spline.",
+        ),
+        "workbench_edit_shape_points" => (
+            "Shape geometry",
+            "Set, insert, or delete authored shape points.",
+        ),
+        "workbench_set_polyline_regular_polygon" => (
+            "Shape geometry",
+            "Replace polyline points with a regular polygon.",
+        ),
+        "workbench_convert_shape_points" => (
+            "Shape geometry",
+            "Convert shape points between local and world coordinates.",
+        ),
+        "workbench_transform_shape_points" => (
+            "Shape geometry",
+            "Transform all shape points in local or world space.",
+        ),
+        "workbench_resample_polyline" => (
+            "Shape geometry",
+            "Replace a polyline with evenly spaced samples.",
+        ),
+        "workbench_start_play_session" => (
+            "Sessions and saving",
+            "Start World Editor play mode after the world is ready.",
+        ),
+        "workbench_stop_play_session" => (
+            "Sessions and saving",
+            "Return World Editor from play mode to editing.",
+        ),
+        "workbench_reload" => (
+            "Sessions and saving",
+            "Save state and reload managed Workbench scripts.",
+        ),
+        "workbench_save_all" => (
+            "Sessions and saving",
+            "Save all open tabs and the named active world.",
+        ),
+        "workbench_save_world" => (
+            "Sessions and saving",
+            "Save only the named active World Editor document.",
+        ),
+        "workbench_read_logs" => (
+            "Diagnostics and windows",
+            "Read bounded integration or latest Workbench log history.",
+        ),
+        "workbench_list_windows" => (
+            "Diagnostics and windows",
+            "List visible windows owned by an exact Workbench process.",
+        ),
+        "workbench_capture_window" => (
+            "Diagnostics and windows",
+            "Capture one Workbench window or region for visual inspection.",
+        ),
+        "workbench_launch" => (
+            "Process lifecycle",
+            "Launch or safely reuse Workbench for one exact project.",
+        ),
+        "workbench_stop" => (
+            "Process lifecycle",
+            "Request graceful closure of one exact observed process.",
+        ),
+        "workbench_restart" => (
+            "Process lifecycle",
+            "Save, force-close, and relaunch one exact observed project.",
+        ),
+        _ => panic!("public MCP tool `{name}` is missing an API router summary"),
+    }
+}
+
+fn schema_field_summary(schema: &serde_json::Map<String, Value>, maximum: usize) -> String {
+    let required = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<BTreeSet<_>>();
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        return "—".to_string();
+    };
+    if properties.is_empty() {
+        return "—".to_string();
+    }
+    let mut fields = properties
+        .keys()
+        .map(|name| {
+            if required.contains(name.as_str()) {
+                format!("`{name}`")
+            } else {
+                format!("`{name}?`")
+            }
+        })
+        .collect::<Vec<_>>();
+    if fields.len() > maximum {
+        fields.truncate(maximum);
+        fields.push("…".to_string());
+    }
+    fields.join(", ")
+}
+
+fn append_api_router(reference: &mut String, catalogue: &[Tool]) {
+    reference.push_str(
+        "## API router\n\n\
+Choose a category, then follow the tool link for its exact schemas, limits, and failures. \
+Parameters ending in `?` are optional. Returns lists top-level structured fields and may be abbreviated with `…`.\n",
+    );
+    for (category, guidance) in API_REFERENCE_CATEGORIES {
+        reference.push_str(&format!("\n### {category}\n\n{guidance}\n\n"));
+        reference.push_str("| Tool | Parameters | Returns | What it does / when to use |\n");
+        reference.push_str("| --- | --- | --- | --- |\n");
+        for tool in catalogue {
+            let (tool_category, purpose) = api_reference_summary(tool.name.as_ref());
+            if tool_category != category {
+                continue;
+            }
+            let parameters = schema_field_summary(tool.input_schema.as_ref(), 8);
+            let returns = schema_field_summary(
+                tool.output_schema
+                    .as_deref()
+                    .expect("public tool output schema"),
+                8,
+            );
+            reference.push_str(&format!(
+                "| [`{}`](#{}) | {} | {} | {} |\n",
+                tool.name, tool.name, parameters, returns, purpose
+            ));
+        }
+    }
+}
+
 pub fn render_api_reference() -> String {
     let catalogue = ReforgerMcpServer::tool_catalogue();
     let descriptor = |name| {
@@ -3696,6 +4109,20 @@ pub fn render_api_reference() -> String {
 # Reforger Script Tools MCP API\n\n\
 The live Rust tool catalogue and standard MCP `tools/list` response are authoritative. \
 This committed projection exists so maintainers and coding agents can inspect the exact interface without starting the server.\n\n\
+## How to use this MCP server\n\n\
+Start `reforger_language_server mcp` as a local stdio MCP server. Complete the standard MCP `initialize` handshake, \
+send `notifications/initialized`, then use `tools/list` to discover the live catalogue. Call a tool with `tools/call`; \
+always send an `arguments` object, including `{{}}` when the tool has no parameters.\n\n\
+```json\n\
+{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{{\"name\":\"workbench_status\",\"arguments\":{{}}}}}}\n\
+```\n\n\
+Successful calls return MCP content plus the same machine-readable value in `structuredContent`:\n\n\
+```json\n\
+{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"...\"}}],\"structuredContent\":{{\"isRunning\":true,\"scriptsCompiled\":true}},\"isError\":false}}}}\n\
+```\n\n\
+Read `structuredContent` for JSON fields. Preserve opaque references, cursors, revisions, confirmation tokens, \
+and copy-ready handoff inputs exactly as returned. Read `content` for text or image payloads such as window captures. \
+When `isError` is true, inspect the structured stable error and follow its `recovery`; do not parse compatibility text.\n\n\
 ## Server instructions\n\n\
 {SERVER_INSTRUCTIONS}\n\n\
 ## Workflow\n\n\
@@ -3703,7 +4130,11 @@ This committed projection exists so maintainers and coding agents can inspect th
 2. Preserve its `catalogueRevision` and opaque references or cursors across the progressive Game Data search, inspect, member, relationship, and source-read workflow.\n\
 3. After Game Data changes, activate the language server so it refreshes the index cache, then restart MCP.\n\n\
 ## Expected tool failures\n\n\
-When a valid tool request cannot complete, every tool family returns a structured error with `ok: false`, stable `code`, caller-facing `message`, actionable `recovery`, and `retryable`. Workbench failures additionally include `phase` and a sanitized `logReference`. Invalid arguments and unknown tool names remain MCP protocol errors.\n\n\
+When a valid tool request cannot complete, every tool family returns a structured error with `ok: false`, stable `code`, caller-facing `message`, actionable `recovery`, and `retryable`. Workbench failures additionally include `phase` and a sanitized `logReference`. Invalid arguments and unknown tool names remain MCP protocol errors.\n\n"
+    );
+    append_api_router(&mut reference, &catalogue);
+    reference.push_str(&format!(
+        "\n# Detailed tool reference\n\n\
 ## `{GAME_DATA_STATUS_TOOL_NAME}`\n\n\
 {description}\n\n\
 ### Annotations\n\n\
@@ -3753,7 +4184,7 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         description = tool.description.as_deref().unwrap_or_default(),
         search_name = search_tool.name,
         search_description = search_tool.description.as_deref().unwrap_or_default(),
-    );
+    ));
     for (tool, guidance) in [
         (
             &example_tool,
@@ -5269,6 +5700,12 @@ mod tests {
     fn public_reference_documents_the_catalogue_and_failure_contract() {
         let reference = render_api_reference();
 
+        assert!(reference.contains("## How to use this MCP server"));
+        assert!(reference.contains("## API router"));
+        assert!(reference.contains("| Tool | Parameters | Returns | What it does / when to use |"));
+        assert!(reference.contains("[`workbench_launch`](#workbench_launch)"));
+        assert!(reference.contains("`projectPath`"));
+        assert!(reference.contains("`processId`"));
         assert!(reference.contains("## Expected tool failures"));
         assert!(reference.contains("`message`"));
         assert!(reference.contains("`recovery`"));
@@ -5277,6 +5714,26 @@ mod tests {
         assert!(reference.contains("`logReference`"));
         assert!(reference.contains("Compatibility listing surface"));
         assert!(reference.contains("Canonical Workbench resource-discovery surface"));
+    }
+
+    #[test]
+    fn api_router_covers_every_tool_with_a_short_purpose() {
+        let catalogue = ReforgerMcpServer::tool_catalogue();
+        for tool in catalogue {
+            let (category, purpose) = super::api_reference_summary(tool.name.as_ref());
+            assert!(
+                super::API_REFERENCE_CATEGORIES
+                    .iter()
+                    .any(|(candidate, _)| *candidate == category),
+                "{} uses unknown category {category}",
+                tool.name
+            );
+            assert!(
+                purpose.split_whitespace().count() < 15,
+                "{} purpose must remain below 15 words: {purpose}",
+                tool.name
+            );
+        }
     }
 
     #[test]
