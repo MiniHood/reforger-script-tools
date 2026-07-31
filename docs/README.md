@@ -40,6 +40,9 @@ implementation slice is progress, not a completed ticket.
 - [Workbench world-entity relation search](workbench-world-entity-search.md):
   AI-facing discovery, paging, relation-evidence, and follow-up-inspection
   workflow for live World Editor entities.
+- [Workbench MCP test workflows](workbench-mcp-test-workflows.md): dependency
+  chains, ordered live coverage, readback invariants, cleanup, and corpus
+  status rules for automated Workbench MCP tests.
 - [Key input routing](key-input-routing.md): VS Code key-routing boundary and
   the ownership policy for atomic typing assists.
 
