@@ -87,7 +87,8 @@ scope derived from the opened project's `.gproj` dependency GUIDs. Rust also
 uses the authoritative source roots recorded by cached add-on manifests to
 locate each cached add-on's root `.gproj`, then follows the transitive
 descriptor closure (including installed dependencies such as `core` referenced
-by `ArmaReforger.gproj`). It always includes the base-game GUID, resolves
+by `ArmaReforger.gproj`). It always includes the base-game and Workbench-core
+GUIDs, resolves
 matching cache instances by GUID, and prefers an unpacked source-root cache over
 a packed-only duplicate. It hydrates compatible cached indexes only; it does
 not scan arbitrary filesystem locations or inspect/build source before
