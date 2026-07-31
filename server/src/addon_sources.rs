@@ -26,7 +26,6 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use url::Url;
 
 pub const BASE_GAME_GUID: &str = "58D0FB3206B6F859";
-pub const WORKBENCH_CORE_GUID: &str = "5614BBCCBB55ED1C";
 pub const VIRTUAL_SOURCE_SCHEME: &str = "reforger-pak";
 const MAX_ADDON_INDEX_WORKERS: usize = 4;
 const ADDON_MANIFEST_HEADER_FILE: &str = "manifest-header.json";
@@ -2220,7 +2219,7 @@ fn read_project_dependency_scope_guids(
                 .push(candidate.project_file);
         }
     }
-    let mut scope = BTreeSet::from([BASE_GAME_GUID.to_string(), WORKBENCH_CORE_GUID.to_string()]);
+    let mut scope = BTreeSet::from([BASE_GAME_GUID.to_string()]);
     let mut queue = Vec::new();
     for project_file in project_files {
         let project_file = fs::canonicalize(project_file).map_err(|error| error.to_string())?;
@@ -2820,88 +2819,6 @@ mod tests {
         assert!(!result
             .index
             .top_level_symbols_for_name("RplRcver")
-            .is_empty());
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn offline_dependency_scope_includes_workbench_core_without_a_project_dependency() {
-        let root = test_root("dependency_scope_workbench_core");
-        let installed_addons = root.join("steam").join("addons");
-        let tools_core_root = root
-            .join("steam")
-            .join("Arma Reforger Tools")
-            .join("Workbench")
-            .join("addons")
-            .join("core");
-        let user_addons = root.join("user").join("addons");
-        let base_game_root = installed_addons.join("data");
-        let project_root = user_addons.join("project");
-        fs::create_dir_all(&base_game_root).unwrap();
-        fs::create_dir_all(&tools_core_root).unwrap();
-        fs::create_dir_all(project_root.join("Scripts")).unwrap();
-        write_fixture_pak(
-            &base_game_root.join("data.pak"),
-            &[("BaseGame.c", b"class BaseGame {}")],
-        );
-        write_fixture_pak(
-            &tools_core_root.join("data.pak"),
-            &[("WorkbenchCoreOnly.c", b"class WorkbenchCoreOnly {}")],
-        );
-        fs::write(
-            base_game_root.join("ArmaReforger.gproj"),
-            "GameProject {\n ID \"ArmaReforger\"\n GUID \"58D0FB3206B6F859\"\n Dependencies {}\n }",
-        )
-        .unwrap();
-        fs::write(
-            tools_core_root.join("core.gproj"),
-            "GameProject {\n ID \"core\"\n GUID \"5614BBCCBB55ED1C\"\n TITLE \"Enfusion core data\"\n Dependencies {}\n }",
-        )
-        .unwrap();
-        fs::write(
-            project_root.join("project.gproj"),
-            "GameProject {\n ID \"Project\"\n GUID \"AAAAAAAAAAAAAAAA\"\n Dependencies {}\n }",
-        )
-        .unwrap();
-
-        let storage = root.join("indexes");
-        load_or_build_addon_indexes(
-            LoadedAddonGraph {
-                addons: vec![
-                    LoadedAddonSource {
-                        guid: BASE_GAME_GUID.to_string(),
-                        id: "ArmaReforger".to_string(),
-                        title: "Arma Reforger".to_string(),
-                        source_root: fs::canonicalize(&base_game_root).unwrap(),
-                    },
-                    LoadedAddonSource {
-                        guid: WORKBENCH_CORE_GUID.to_string(),
-                        id: "core".to_string(),
-                        title: "Enfusion core data".to_string(),
-                        source_root: fs::canonicalize(&tools_core_root).unwrap(),
-                    },
-                ],
-            },
-            Duration::ZERO,
-            &storage,
-            &[],
-            &IndexBuildControl::default(),
-            AddonScopeAuthority::WorkbenchLoaded,
-        )
-        .unwrap();
-
-        let result = load_cached_dependency_addon_indexes(
-            &[project_root.join("project.gproj")],
-            &storage,
-            &[project_root.join("Scripts")],
-            &IndexBuildControl::default(),
-        )
-        .unwrap();
-
-        assert_eq!(result.loaded_instances, 2);
-        assert!(!result
-            .index
-            .top_level_symbols_for_name("WorkbenchCoreOnly")
             .is_empty());
         let _ = fs::remove_dir_all(root);
     }

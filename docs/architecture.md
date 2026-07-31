@@ -21,7 +21,7 @@ VS Code editor
 At language-server startup, the extension starts Rust immediately and applies
 `reforgerScriptTools.workbench.externalIndexMode`. The default `loaded` mode
 first hydrates compatible offline indexes for the opened project's transitive
-dependency GUIDs, always including the base-game and Workbench-core GUIDs. This provisional
+dependency GUIDs, always including the base-game dependency. This provisional
 scope makes the cache the warm-start source;
 it does not read a previously loaded Workbench graph as a startup fallback. Once
 Workbench is available, one loaded-add-on graph request supplies the current
@@ -34,7 +34,7 @@ When `loaded` starts without a Workbench graph and an opened workspace folder
 contains one unambiguous `.gproj`, the provisional path resolves that project's
 transitive descriptor dependency closure by GUID. It uses the bounded
 Workbench project registry and opened-project neighborhood as locators, always
-adds the base-game and Workbench-core dependencies, and loads matching cached indexes only. It does
+adds the base-game dependency, and loads matching cached indexes only. It does
 not perform an unrestricted add-on scan or reuse a stale Workbench graph. A
 later live Workbench graph replaces this explicitly provisional dependency
 scope and validates/builds the authoritative source roots. When duplicate
