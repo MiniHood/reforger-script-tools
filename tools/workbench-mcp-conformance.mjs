@@ -24,7 +24,8 @@ const defaultServerCandidates = [
   join(repositoryRoot, "dist", "server", "win32-x64", "reforger_language_server.exe"),
 ];
 
-const workbenchHeading = /^## \x60(workbench_[^\x60]+)\x60$/;
+const workbenchRouterRow =
+  /^\| \[\x60(workbench_[^\x60]+)\x60\]\(mcp-api\/tools\/(workbench_[^)]+)\.md\) \|/;
 
 const toolFamilyRules = [
   ["lifecycle", /^(launch|stop|restart)$/],
@@ -51,8 +52,8 @@ const toolFamilyRules = [
 export function extractWorkbenchToolNames(apiReference) {
   const names = [];
   for (const line of apiReference.split(/\r?\n/)) {
-    const match = workbenchHeading.exec(line);
-    if (match) {
+    const match = workbenchRouterRow.exec(line);
+    if (match && match[1] === match[2]) {
       names.push(match[1]);
     }
   }

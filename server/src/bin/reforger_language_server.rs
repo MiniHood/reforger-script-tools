@@ -3,7 +3,7 @@ use reforger_language_server::lsp::{
     run_stdio as run_lsp_stdio, BracketColoringMode, LspServerOptions,
 };
 use reforger_language_server::mcp::{
-    render_api_reference, run_stdio as run_mcp_stdio, McpServerOptions,
+    render_api_reference, render_api_reference_bundle, run_stdio as run_mcp_stdio, McpServerOptions,
 };
 use reforger_language_server::workbench::{
     WorkbenchControllerOptions, WorkbenchFailureCode, WorkbenchGatewayOptions,
@@ -17,6 +17,7 @@ enum ServerMode {
     Lsp(LspServerOptions),
     Mcp(McpServerOptions),
     McpApi,
+    McpApiBundle,
     WorkbenchApi(WorkbenchApiCommand, WorkbenchGatewayOptions),
     Help,
 }
@@ -45,6 +46,10 @@ fn main() {
         ServerMode::Mcp(options) => run_mcp_stdio(options),
         ServerMode::McpApi => {
             print!("{}", render_api_reference());
+            Ok(())
+        }
+        ServerMode::McpApiBundle => {
+            print!("{}", render_api_reference_bundle());
             Ok(())
         }
         ServerMode::WorkbenchApi(command, options) => run_workbench_api(command, options),
@@ -76,6 +81,16 @@ fn parse_args_from(args: impl Iterator<Item = String>) -> Result<ServerMode, Str
                 Err(format!("unexpected argument for mcp-api mode: {argument}"))
             } else {
                 Ok(ServerMode::McpApi)
+            }
+        }
+        Some("mcp-api-bundle") => {
+            args.next();
+            if let Some(argument) = args.next() {
+                Err(format!(
+                    "unexpected argument for mcp-api-bundle mode: {argument}"
+                ))
+            } else {
+                Ok(ServerMode::McpApiBundle)
             }
         }
         Some("workbench-api") => {
@@ -325,7 +340,7 @@ fn string_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<S
 
 fn print_help() {
     println!(
-        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|integration-status|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --index-cache <path>\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <test/development override>"
+        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server mcp-api-bundle\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|integration-status|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --index-cache <path>\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <test/development override>"
     );
 }
 

@@ -12,9 +12,9 @@ import {
 } from "./workbench-mcp-conformance.mjs";
 
 const reference = [
-  "## `workbench_status`",
-  "## `workbench_open_resource`",
-  "## `workbench_create_entity`",
+  "| [`workbench_status`](mcp-api/tools/workbench_status.md) | — | `isRunning` | Check status. |",
+  "| [`workbench_open_resource`](mcp-api/tools/workbench_open_resource.md) | `resourcePath` | `opened` | Open resource. |",
+  "| [`workbench_create_entity`](mcp-api/tools/workbench_create_entity.md) | `position` | `entity` | Create entity. |",
 ].join("\n");
 
 function tool(name, overrides = {}) {
@@ -68,11 +68,11 @@ test("reports complete Workbench MCP tool contract coverage", () => {
 test("accepts a complete generated catalogue and tools/list result", () => {
   const report = buildContractReport({
     apiReference: reference,
-    listedTools: reference
-      .split("\n")
-      .map((line) => line.match(/^## `([^`]+)`$/)?.[1])
-      .filter(Boolean)
-      .map((name) => tool(name)),
+    listedTools: [
+      tool("workbench_status"),
+      tool("workbench_open_resource"),
+      tool("workbench_create_entity"),
+    ],
   });
 
   assert.equal(report.ok, true);

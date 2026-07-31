@@ -20,8 +20,8 @@ From the repository root:
 | `npm test` | Extension test setup and test suite; its pretest step compiles tests and runs the full compile path. |
 | `npm run package` | Production Rust server and production extension bundle. |
 | `npm run test:packaged-official-wiki` | Build a VSIX, verify every Official Wiki Markdown byte is packaged, and launch the installed MCP runtime from an unrelated working directory. |
-| `npm run mcp-api:generate` | Regenerate the committed MCP API Reference from the live Rust descriptors. |
-| `npm run mcp-api:check` | Fail when the committed MCP API Reference has drifted. |
+| `npm run mcp-api:generate` | Regenerate the MCP guide and per-tool contracts from live Rust descriptors. |
+| `npm run mcp-api:check` | Fail when the guide or generated contract set has drifted. |
 
 For Rust-only work, run `npm run test:server` in addition to focused tests. It
 uses the non-default `test-hooks` feature required by spawned-process MCP
@@ -130,7 +130,8 @@ After an extension upgrade, rerun the command and replace the client entry:
 the versioned installed runtime path changes deliberately, and the extension
 does not edit third-party client configuration itself.
 The generated [MCP API Reference](mcp-api.md) is the inspectable agent-facing
-contract; standard `tools/list` remains authoritative at runtime.
+guide and router to exact per-tool contracts; standard `tools/list` remains
+authoritative at runtime.
 
 ## Official Wiki Corpus
 
