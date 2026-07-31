@@ -36,6 +36,24 @@ pub struct PakEntry {
     archive_path: PathBuf,
 }
 impl PakEntry {
+    pub(crate) fn from_locator(
+        logical_path: String,
+        offset: u64,
+        compressed_length: u64,
+        original_length: u64,
+        compression: u32,
+        archive_path: PathBuf,
+    ) -> Self {
+        Self {
+            logical_path,
+            offset,
+            compressed_length,
+            original_length,
+            compression,
+            archive_path,
+        }
+    }
+
     pub fn logical_path(&self) -> &str {
         &self.logical_path
     }

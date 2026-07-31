@@ -955,6 +955,14 @@ fn load_cached_indexes_from_storage(
             } => (*pack_count, *catalogue_entry_count),
             _ => continue,
         };
+        // The semantic cache contains the source metadata needed for hover,
+        // definition, and the custom reforger-pak document provider, but the
+        // packed-source registry is process-local. Rehydrate that lightweight
+        // locator registry when an offline cache is loaded so navigation does
+        // not depend on a later Workbench source inspection.
+        if let Some(cache_root) = cache_path.parent() {
+            let _ = register_cached_source_revision(cache_root, &manifest);
+        }
         loaded_instances += 1;
         summary.files += result.summary.files;
         summary.bytes += result.summary.bytes;
@@ -1002,6 +1010,62 @@ fn load_cached_indexes_from_storage(
         },
         instances,
     })
+}
+
+fn register_cached_source_revision(
+    cache_root: &Path,
+    header: &AddonIndexManifestHeader,
+) -> Result<(), String> {
+    let manifest_path = cache_root.join("manifest.json");
+    let manifest = serde_json::from_slice::<AddonIndexManifest>(
+        &fs::read(&manifest_path).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    if manifest.guid != header.guid
+        || manifest.revision != header.revision
+        || manifest.source_root != header.source_root
+        || manifest.pack_artifacts != header.pack_artifacts
+    {
+        return Err("Cached add-on source metadata does not match its header".to_string());
+    }
+
+    let artifacts = manifest
+        .pack_artifacts
+        .iter()
+        .map(|artifact| ArtifactStamp {
+            path: manifest.source_root.join(&artifact.relative_path),
+            bytes: artifact.bytes,
+            modified_unix_ms: artifact.modified_unix_ms,
+        })
+        .collect();
+    let entries = manifest
+        .scripts
+        .iter()
+        .map(|script| {
+            let uri = virtual_source_uri(&manifest.guid, &manifest.revision, &script.logical_path)?;
+            Ok((
+                uri,
+                PackedSourceEntry {
+                    entry: PakEntry::from_locator(
+                        script.logical_path.clone(),
+                        script.offset,
+                        script.compressed_length,
+                        script.original_length,
+                        script.compression,
+                        manifest.source_root.join(&script.pack_relative_path),
+                    ),
+                    compressed_payload_sha256: script.compressed_payload_sha256.clone(),
+                },
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+
+    register_source_revision(
+        &manifest.guid,
+        &manifest.revision,
+        Arc::new(PackedSourceRevision { artifacts, entries }),
+    );
+    Ok(())
 }
 
 fn dependency_source_preference(source_root: &Path) -> u8 {
@@ -2550,6 +2614,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(base_result.rebuilt_instances, 1);
+        let manifest: AddonIndexManifest = serde_json::from_slice(
+            &fs::read(storage.join(format!(
+                "{}-{}/manifest.json",
+                BASE_GAME_GUID,
+                addon_instance_key(
+                    BASE_GAME_GUID,
+                    &fs::canonicalize(&base_game_root).unwrap(),
+                )
+                .split_once('-')
+                .map(|(_, digest)| digest)
+                .unwrap(),
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+        let virtual_source = manifest.scripts.first().unwrap().uri.clone();
+        SOURCE_REVISIONS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .remove(&revision_key(&manifest.guid, &manifest.revision));
 
         let result = load_cached_dependency_addon_indexes(
             &[project_root.join("project.gproj")],
@@ -2559,11 +2644,25 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result.scope_authority, AddonScopeAuthority::ProjectDependencies);
-        assert_eq!(result.loaded_instances, 1, "cached base game should be loaded");
-        assert_eq!(result.instances.len(), 1, "the workspace project is not game data");
+        assert_eq!(
+            result.scope_authority,
+            AddonScopeAuthority::ProjectDependencies
+        );
+        assert_eq!(
+            result.loaded_instances, 1,
+            "cached base game should be loaded"
+        );
+        assert_eq!(
+            result.instances.len(),
+            1,
+            "the workspace project is not game data"
+        );
         assert_eq!(result.instances[0].guid, BASE_GAME_GUID);
         assert_eq!(result.summary.files, 1);
+        assert_eq!(
+            read_virtual_source(&virtual_source).unwrap(),
+            "class BaseGame {}"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

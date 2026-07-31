@@ -58,41 +58,41 @@ The base-game layer is published from the current Workbench graph. On an
 offline warm start, the dependency scope uses each exact `(GUID, source-root)`
 instance key to locate its self-describing `symbols.bin` directly. The binary
 header establishes format compatibility and embedded add-on identity without a
-separate manifest read. The hydrated layer
-is reference-counted at construction and published without cloning its symbol
-graph. The same background validation pass then strongly re-inspects both
-packed entries and loose scripts, validates the manifest/cache pair, and
-atomically replaces only changed instances. This intentionally permits a short
-source-validation window, but never preserves an unselected graph instance or
-retains two published revisions for one instance. Unchanged validation inspects
-bounded PAC catalogues and hashes only selected compressed script payloads, not
-the full multi-gigabyte archives. The resulting strong revision identity detects
-same-size script changes. A changed artifact decodes only selected `.c` entries.
-The semantic cache and locator-rich manifest are written directly at the exact
-loaded-instance root as one current pair (`symbols.bin` and `manifest.json`),
-with a compact `manifest-header.json` companion that is digest-bound to the
-locator manifest for warm validation. Legacy cache roots without that
-companion fall back to the full manifest shape.
-Retired revision/pointer layouts are discarded and rebuilt rather than read as
-a compatibility path. Cache roots not named by the current Workbench graph are
-also removed before indexing. A loaded add-on whose graph source root
-contains a workspace root is supplied only through the live workspace layer;
-any packed cache for that exact instance is removed. If the authoritative
-Workbench graph is unavailable, malformed, cancelled, or fails to acquire an
-instance, the Workbench-sourced layer is unavailable; the engine never reuses
-an earlier graph or substitutes a local source.
+separate manifest read. The hydrated layer is reference-counted at construction
+and published without cloning its symbol graph. Cache hydration also restores
+the locator-rich packed-source registry from `manifest.json`, so hover and
+definition navigation can open a `reforger-pak:` source before Workbench
+connects; reading a source still validates its PAC artifacts at navigation time.
+The later authoritative Workbench graph validates the exact packed and loose
+sources and atomically replaces only changed instances. Unchanged validation
+inspects bounded PAC catalogues and hashes only selected compressed script
+payloads, not the full multi-gigabyte archives. The resulting strong revision
+identity detects same-size script changes. A changed artifact decodes only
+selected `.c` entries. The semantic cache and locator-rich manifest are written
+directly at the exact loaded-instance root as one current pair (`symbols.bin`
+and `manifest.json`), with a compact `manifest-header.json` companion that is
+digest-bound to the locator manifest for warm validation. Legacy cache roots
+without that companion fall back to the full manifest shape. Retired
+revision/pointer layouts are discarded and rebuilt rather than read as a
+compatibility path. Cache roots not named by the current Workbench graph are
+also removed before indexing. A loaded add-on whose graph source root contains
+a workspace root is supplied only through the live workspace layer; any packed
+cache for that exact instance is removed. If the authoritative Workbench graph
+is unavailable, malformed, cancelled, or fails to acquire an instance, the
+Workbench-sourced layer is unavailable; the engine never reuses an earlier graph
+or substitutes a local source.
 
 The extension's explicit `loaded` startup path provides a provisional dependency
 scope derived from the opened project's `.gproj` dependency GUIDs. Rust follows
-the transitive descriptor closure, resolves candidates by GUID through the
-bounded Workbench project registry and opened-project neighborhood, and prefers
-an unpacked candidate with usable `Scripts` over a packed candidate. It first
-hydrates compatible cached indexes, then inspects and builds only the resolved
-project scope; source fingerprints make the next warm pass reuse unchanged
-indexes. The offline cache is the first usable source; a later Workbench graph
-is the authoritative reconciliation. The result is explicitly labelled
-`project-dependencies-provisional`, is not a live Workbench graph, and is
-replaced by the next authoritative graph publication.
+the transitive descriptor closure, always includes the base-game GUID, resolves
+matching cache instances by GUID, and prefers an unpacked source-root cache over
+a packed-only duplicate. It hydrates compatible cached indexes only; it does
+not inspect or build source before Workbench is available. The offline cache is
+the first usable source, and a later Workbench graph is the authoritative
+reconciliation that validates and builds missing or changed source roots. The
+result is explicitly labelled `project-dependencies-provisional`, is not a
+live Workbench graph, and is replaced by the next authoritative graph
+publication.
 
 The binary payload persists canonical public symbol facts, source metadata, and
 source line starts; dense symbol IDs and lookup maps are structural or derived
