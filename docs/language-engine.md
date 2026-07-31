@@ -83,16 +83,19 @@ Workbench-sourced layer is unavailable; the engine never reuses an earlier graph
 or substitutes a local source.
 
 The extension's explicit `loaded` startup path provides a provisional dependency
-scope derived from the opened project's `.gproj` dependency GUIDs. Rust follows
-the transitive descriptor closure, always includes the base-game GUID, resolves
+scope derived from the opened project's `.gproj` dependency GUIDs. Rust also
+uses the authoritative source roots recorded by cached add-on manifests to
+locate each cached add-on's root `.gproj`, then follows the transitive
+descriptor closure (including installed dependencies such as `core` referenced
+by `ArmaReforger.gproj`). It always includes the base-game GUID, resolves
 matching cache instances by GUID, and prefers an unpacked source-root cache over
 a packed-only duplicate. It hydrates compatible cached indexes only; it does
-not inspect or build source before Workbench is available. The offline cache is
-the first usable source, and a later Workbench graph is the authoritative
-reconciliation that validates and builds missing or changed source roots. The
-result is explicitly labelled `project-dependencies-provisional`, is not a
-live Workbench graph, and is replaced by the next authoritative graph
-publication.
+not scan arbitrary filesystem locations or inspect/build source before
+Workbench is available. The offline cache is the first usable source, and a
+later Workbench graph is the authoritative reconciliation that validates and
+builds missing or changed source roots. The result is explicitly labelled
+`project-dependencies-provisional`, is not a live Workbench graph, and is
+replaced by the next authoritative graph publication.
 
 The binary payload persists canonical public symbol facts, source metadata, and
 source line starts; dense symbol IDs and lookup maps are structural or derived

@@ -828,7 +828,9 @@ pub fn load_cached_dependency_addon_indexes(
     workspace_roots: &[PathBuf],
     control: &IndexBuildControl,
 ) -> Result<LoadedAddonIndexResult, String> {
-    let dependency_guids = read_project_dependency_scope_guids(project_files)?;
+    let mut dependency_project_files = project_files.to_vec();
+    dependency_project_files.extend(cached_dependency_project_files(storage_root)?);
+    let dependency_guids = read_project_dependency_scope_guids(&dependency_project_files)?;
     load_cached_indexes_from_storage(
         storage_root,
         workspace_roots,
@@ -2240,6 +2242,70 @@ fn read_project_dependency_scope_guids(
     Ok(scope)
 }
 
+fn cached_dependency_project_files(storage_root: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = match fs::read_dir(storage_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(format!(
+                "Failed to read add-on index storage {}: {error}",
+                storage_root.display()
+            ))
+        }
+    };
+
+    let mut project_files = BTreeSet::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if !entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+            || !is_addon_instance_key(&entry.file_name().to_string_lossy())
+        {
+            continue;
+        }
+        let cache_root = entry.path();
+        let manifest_bytes = match fs::read(cache_root.join(ADDON_MANIFEST_HEADER_FILE)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match fs::read(cache_root.join("manifest.json")) {
+                    Ok(bytes) => bytes,
+                    Err(_) => continue,
+                }
+            }
+            Err(_) => continue,
+        };
+        let Ok(manifest) = serde_json::from_slice::<AddonIndexManifestHeader>(&manifest_bytes)
+            .or_else(|_| {
+                serde_json::from_slice::<AddonIndexManifest>(&manifest_bytes)
+                    .map(|manifest| manifest.header())
+            })
+        else {
+            continue;
+        };
+        if manifest.schema != "reforger-addon-index-manifest-v3" {
+            continue;
+        }
+        if let Ok(entries) = fs::read_dir(&manifest.source_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file()
+                    && path
+                        .extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("gproj"))
+                {
+                    if let Ok(path) = fs::canonicalize(path) {
+                        project_files.insert(path);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(project_files.into_iter().collect())
+}
+
 fn discover_dependency_project_files(project_files: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
     let mut discovered = BTreeSet::new();
     for project_file in project_files {
@@ -2663,6 +2729,94 @@ mod tests {
             read_virtual_source(&virtual_source).unwrap(),
             "class BaseGame {}"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn offline_dependency_scope_includes_the_cached_core_addon() {
+        let root = test_root("dependency_scope_cached_core");
+        let installed_addons = root.join("steam").join("addons");
+        let user_addons = root.join("user").join("addons");
+        let base_game_root = installed_addons.join("data");
+        let core_root = installed_addons.join("core");
+        let project_root = user_addons.join("project");
+        fs::create_dir_all(&base_game_root).unwrap();
+        fs::create_dir_all(&core_root).unwrap();
+        fs::create_dir_all(project_root.join("Scripts")).unwrap();
+        write_fixture_pak(
+            &base_game_root.join("data.pak"),
+            &[("BaseGame.c", b"class BaseGame {}")],
+        );
+        write_fixture_pak(
+            &core_root.join("data.pak"),
+            &[
+                ("RplRpc.c", b"class RplRpc : UniqueAttribute {}"),
+                ("RplChannel.c", b"enum RplChannel { Reliable }"),
+                ("RplRcver.c", b"enum RplRcver { Server }"),
+            ],
+        );
+        fs::write(
+            base_game_root.join("ArmaReforger.gproj"),
+            "GameProject {\n ID \"ArmaReforger\"\n GUID \"58D0FB3206B6F859\"\n Dependencies {\n  \"5614BBCCBB55ED1C\"\n }\n }",
+        )
+        .unwrap();
+        fs::write(
+            project_root.join("project.gproj"),
+            "GameProject {\n ID \"Project\"\n GUID \"AAAAAAAAAAAAAAAA\"\n Dependencies {}\n }",
+        )
+        .unwrap();
+
+        let storage = root.join("indexes");
+        load_or_build_addon_indexes(
+            LoadedAddonGraph {
+                addons: vec![
+                    LoadedAddonSource {
+                        guid: BASE_GAME_GUID.to_string(),
+                        id: "ArmaReforger".to_string(),
+                        title: "Arma Reforger".to_string(),
+                        source_root: fs::canonicalize(&base_game_root).unwrap(),
+                    },
+                    LoadedAddonSource {
+                        guid: "5614BBCCBB55ED1C".to_string(),
+                        id: "core".to_string(),
+                        title: "Enfusion core data".to_string(),
+                        source_root: fs::canonicalize(&core_root).unwrap(),
+                    },
+                ],
+            },
+            Duration::ZERO,
+            &storage,
+            &[],
+            &IndexBuildControl::default(),
+            AddonScopeAuthority::WorkbenchLoaded,
+        )
+        .unwrap();
+
+        let result = load_cached_dependency_addon_indexes(
+            &[project_root.join("project.gproj")],
+            &storage,
+            &[project_root.join("Scripts")],
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.loaded_instances, 2,
+            "core and base game should be loaded"
+        );
+        assert!(result
+            .instances
+            .iter()
+            .any(|instance| instance.guid == "5614BBCCBB55ED1C"));
+        assert!(!result.index.top_level_symbols_for_name("RplRpc").is_empty());
+        assert!(!result
+            .index
+            .top_level_symbols_for_name("RplChannel")
+            .is_empty());
+        assert!(!result
+            .index
+            .top_level_symbols_for_name("RplRcver")
+            .is_empty());
         let _ = fs::remove_dir_all(root);
     }
 
