@@ -22,6 +22,7 @@ import {
 	languageClientStartupElapsedMs,
 } from '../languageClient/languageClient';
 import { positionFromByteOffset } from '../languageClient/symbolLocationBridge';
+import { discoverWorkspaceProjectFile } from '../languageClient/workspaceWatchBridge';
 import { registerBlockCommentPair } from '../languageClient/typingAssistTransactionBridge';
 import { executeIndent, executeInsertNewline, executeInsertSpace } from '../languageClient/controlHeaderEnterBridge';
 import { VersionedEditorTransaction } from '../languageClient/versionedEditorTransaction';
@@ -88,6 +89,19 @@ suite('extension activation', () => {
 		]);
 		monitor.disposable.dispose();
 		assert.strictEqual(completed, true);
+	});
+
+	test('discovers only an unambiguous workspace project descriptor', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rst-project-discovery-'));
+		try {
+			const first = path.join(root, 'addon.gproj');
+			await fs.writeFile(first, 'GameProject {}');
+			assert.equal(await discoverWorkspaceProjectFile(root), first);
+			await fs.writeFile(path.join(root, 'other.gproj'), 'GameProject {}');
+			assert.equal(await discoverWorkspaceProjectFile(root), undefined);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
 	});
 
 	test('presents external index phases as user-facing progress', () => {

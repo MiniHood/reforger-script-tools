@@ -782,7 +782,7 @@ pub fn load_all_cached_addon_indexes(
     workspace_roots: &[PathBuf],
     control: &IndexBuildControl,
 ) -> Result<LoadedAddonIndexResult, String> {
-    load_cached_indexes_from_storage(storage_root, workspace_roots, control, false)
+    load_cached_indexes_from_storage(storage_root, workspace_roots, control, false, None)
 }
 
 pub fn load_cached_base_game_indexes(
@@ -790,7 +790,23 @@ pub fn load_cached_base_game_indexes(
     workspace_roots: &[PathBuf],
     control: &IndexBuildControl,
 ) -> Result<LoadedAddonIndexResult, String> {
-    load_cached_indexes_from_storage(storage_root, workspace_roots, control, true)
+    load_cached_indexes_from_storage(storage_root, workspace_roots, control, true, None)
+}
+
+pub fn load_cached_dependency_addon_indexes(
+    project_files: &[PathBuf],
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+) -> Result<LoadedAddonIndexResult, String> {
+    let dependency_guids = read_project_dependency_guids(project_files)?;
+    load_cached_indexes_from_storage(
+        storage_root,
+        workspace_roots,
+        control,
+        false,
+        Some(&dependency_guids),
+    )
 }
 
 fn load_cached_indexes_from_storage(
@@ -798,6 +814,7 @@ fn load_cached_indexes_from_storage(
     workspace_roots: &[PathBuf],
     control: &IndexBuildControl,
     base_game_only: bool,
+    dependency_guids: Option<&BTreeSet<String>>,
 ) -> Result<LoadedAddonIndexResult, String> {
     let total_start = Instant::now();
     let graph_start = Instant::now();
@@ -857,6 +874,8 @@ fn load_cached_indexes_from_storage(
         if manifest.schema != "reforger-addon-index-manifest-v3"
             || manifest.index_file != "symbols.bin"
             || (base_game_only && !is_base_game_manifest(&manifest))
+            || dependency_guids
+                .is_some_and(|guids| !guids.contains(&manifest.guid.to_ascii_uppercase()))
             || workspace_roots
                 .iter()
                 .any(|root| root.starts_with(&manifest.source_root))
@@ -864,6 +883,18 @@ fn load_cached_indexes_from_storage(
             continue;
         }
         descriptors.push((manifest, cache_root.join("symbols.bin")));
+    }
+    if dependency_guids.is_some() {
+        descriptors.sort_by(|(left, _), (right, _)| {
+            left.guid
+                .cmp(&right.guid)
+                .then_with(|| {
+                    dependency_source_preference(&left.source_root)
+                        .cmp(&dependency_source_preference(&right.source_root))
+                })
+                .then_with(|| left.source_root.cmp(&right.source_root))
+        });
+        descriptors.dedup_by(|left, right| left.0.guid.eq_ignore_ascii_case(&right.0.guid));
     }
     descriptors.sort_by(|(left, _), (right, _)| {
         (&left.guid, &left.source_root, &left.display_id).cmp(&(
@@ -936,6 +967,26 @@ fn load_cached_indexes_from_storage(
         },
         instances,
     })
+}
+
+fn dependency_source_preference(source_root: &Path) -> u8 {
+    let has_loose_scripts = fs::read_dir(source_root)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .any(|entry| {
+            entry.file_type().is_ok_and(|file_type| file_type.is_dir())
+                && entry
+                    .file_name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case("scripts")
+        });
+    if has_loose_scripts {
+        0
+    } else {
+        1
+    }
 }
 
 fn empty_cached_index_result(
@@ -2043,6 +2094,75 @@ fn inventory_publication_revision(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// Reads only the dependency field from the two observed `.gproj` forms:
+/// `Dependencies { "GUID" }` and `Dependencies GUID`. This fallback parser
+/// deliberately ignores every other project property; Workbench remains the
+/// authority for the effective loaded graph.
+fn read_project_dependency_guids(project_files: &[PathBuf]) -> Result<BTreeSet<String>, String> {
+    let mut dependency_guids = BTreeSet::new();
+    for project_file in project_files {
+        let source = fs::read_to_string(project_file).map_err(|error| {
+            format!(
+                "Failed to read dependency project {}: {error}",
+                project_file.display()
+            )
+        })?;
+        let mut in_dependencies = false;
+        let mut depth = 0_i32;
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if !in_dependencies {
+                let Some(remainder) = trimmed.strip_prefix("Dependencies") else {
+                    continue;
+                };
+                if !remainder
+                    .chars()
+                    .next()
+                    .is_some_and(|value| value.is_whitespace() || value == '{')
+                {
+                    continue;
+                }
+                in_dependencies = true;
+                let open_count = line.chars().filter(|value| *value == '{').count() as i32;
+                if open_count == 0 {
+                    add_dependency_guids(remainder, &mut dependency_guids);
+                    in_dependencies = false;
+                    continue;
+                }
+                depth = open_count - line.chars().filter(|value| *value == '}').count() as i32;
+            } else {
+                depth += line.chars().filter(|value| *value == '{').count() as i32;
+                depth -= line.chars().filter(|value| *value == '}').count() as i32;
+            }
+            add_dependency_guids(line, &mut dependency_guids);
+            if depth <= 0 {
+                in_dependencies = false;
+                depth = 0;
+            }
+        }
+    }
+    Ok(dependency_guids)
+}
+
+fn add_dependency_guids(source: &str, dependency_guids: &mut BTreeSet<String>) {
+    let source = source.split_once("//").map_or(source, |(code, _)| code);
+    let mut candidate = String::new();
+    let flush = |candidate: &mut String, dependency_guids: &mut BTreeSet<String>| {
+        if candidate.len() == 16 && candidate.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            dependency_guids.insert(candidate.to_ascii_uppercase());
+        }
+        candidate.clear();
+    };
+    for character in source.chars() {
+        if character.is_ascii_hexdigit() {
+            candidate.push(character);
+        } else {
+            flush(&mut candidate, dependency_guids);
+        }
+    }
+    flush(&mut candidate, dependency_guids);
+}
+
 fn extract_project_property(source: &str, property: &str) -> Option<String> {
     source.lines().find_map(|line| {
         let remainder = line.trim().strip_prefix(property)?;
@@ -2122,6 +2242,85 @@ mod tests {
             vec![scripts.join("Listed.c")]
         );
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reads_dependency_guids_from_project_files() {
+        let root = test_root("project_dependencies");
+        let project = root.join("addon.gproj");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            &project,
+            "GameProject {\n Dependencies {\n  \"58D0FB3206B6F859\"\n  \"6954AAD9FD5A27CC\"\n }\n}",
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_project_dependency_guids(&[project]).unwrap(),
+            BTreeSet::from([
+                "58D0FB3206B6F859".to_string(),
+                "6954AAD9FD5A27CC".to_string(),
+            ])
+        );
+        let flat_project = root.join("flat.gproj");
+        fs::write(
+            &flat_project,
+            "GameProject {\n Dependencies 58D0FB3206B6F859\n}",
+        )
+        .unwrap();
+        assert_eq!(
+            read_project_dependency_guids(&[flat_project]).unwrap(),
+            BTreeSet::from(["58D0FB3206B6F859".to_string()])
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dependency_cache_prefers_unpacked_source_for_a_duplicate_guid() {
+        let root = test_root("dependency_cache_preference");
+        let packed = root.join("packed");
+        let unpacked = root.join("unpacked");
+        fs::create_dir_all(&packed).unwrap();
+        fs::create_dir_all(unpacked.join("Scripts")).unwrap();
+        write_fixture_pak(
+            &packed.join("data.pak"),
+            &[("Packed.c", b"class Packed {}")],
+        );
+        write_fixture_pak(
+            &unpacked.join("data.pak"),
+            &[("UnpackedPacked.c", b"class UnpackedPacked {}")],
+        );
+        fs::write(unpacked.join("Scripts/Unpacked.c"), "class Unpacked {}\n").unwrap();
+        let graph = root.join("graph.json");
+        fs::write(
+            &graph,
+            format!(
+                r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"1111111111111111","id":"Same","title":"Packed","sourceRoot":{}}},{{"guid":"1111111111111111","id":"Same","title":"Unpacked","sourceRoot":{}}}]}}"#,
+                serde_json::to_string(&packed).unwrap(),
+                serde_json::to_string(&unpacked).unwrap(),
+            ),
+        )
+        .unwrap();
+        let storage = root.join("indexes");
+        load_or_build_loaded_addon_indexes(&graph, &storage, &[], &IndexBuildControl::default())
+            .unwrap();
+        let project = root.join("project.gproj");
+        fs::write(
+            &project,
+            "GameProject {\n Dependencies {\n  \"1111111111111111\"\n }\n}",
+        )
+        .unwrap();
+
+        let selected = load_cached_dependency_addon_indexes(
+            &[project],
+            &storage,
+            &[],
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+        assert_eq!(selected.loaded_instances, 1);
+        assert_eq!(selected.summary.files, 2);
         let _ = fs::remove_dir_all(root);
     }
 

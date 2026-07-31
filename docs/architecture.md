@@ -29,6 +29,14 @@ loads only the Reforger Script and Core cache entries, and `none` leaves only
 workspace scripts. These fallback modes do not scan for add-ons or guess
 installation paths.
 
+When `loaded` starts without a Workbench graph and an opened workspace folder
+contains one unambiguous `.gproj`, the fallback instead selects cached indexes
+for that project's declared dependency GUIDs. It selects at most one cache per
+dependency, preferring an unpacked source root with a `Scripts` directory over
+a packed source root; if no project descriptor is available, it retains the
+last Workbench graph fallback. A later live Workbench graph always replaces
+this provisional dependency scope.
+
 Changing `externalIndexMode` invalidates any in-flight language-server startup,
 restarts the client with the new mode, and republishes the selected external
 layer. The `all` and `none` modes complete without waiting for a Workbench

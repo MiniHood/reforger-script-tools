@@ -191,6 +191,7 @@ pub struct LspServerOptions {
     pub addon_index_storage: Option<PathBuf>,
     pub external_index_mode: ExternalIndexMode,
     pub workspace_scripts: Vec<PathBuf>,
+    pub dependency_project_files: Vec<PathBuf>,
     pub bracket_coloring: BracketColoringMode,
 }
 
@@ -856,7 +857,7 @@ impl<W: Write> LspServer<W> {
             shutdown_requested: false,
         };
         server.log_lazy(|| format!(
-            "startup server={SERVER_NAME} version={SERVER_VERSION} addon_source_inventory={} addon_index_storage={} external_index_mode={:?} workspace_roots={} bracket_coloring={:?} external_index_status={}",
+            "startup server={SERVER_NAME} version={SERVER_VERSION} addon_source_inventory={} addon_index_storage={} external_index_mode={:?} workspace_roots={} dependency_projects={} bracket_coloring={:?} external_index_status={}",
             options
                 .addon_source_inventory
                 .as_ref()
@@ -869,13 +870,16 @@ impl<W: Write> LspServer<W> {
                 .unwrap_or_else(|| "<unset>".to_string()),
             options.external_index_mode,
             format_paths(&options.workspace_scripts),
+            options.dependency_project_files.len(),
             options.bracket_coloring,
             server.external_index.status_summary().status
         ));
         server.logger.diagnostic_lazy("startup", || {
             json!({
-                "gameDataConfigured": options.addon_source_inventory.is_some(),
+                "gameDataConfigured": options.addon_source_inventory.is_some()
+                    || !options.dependency_project_files.is_empty(),
                 "workspaceRoots": options.workspace_scripts.len(),
+                "dependencyProjects": options.dependency_project_files.len(),
                 "indexCacheConfigured": options.addon_index_storage.is_some(),
                 "externalIndexMode": format!("{:?}", options.external_index_mode),
                 "bracketColoring": format!("{:?}", options.bracket_coloring),

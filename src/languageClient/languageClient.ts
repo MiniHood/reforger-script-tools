@@ -46,6 +46,7 @@ import { WorkbenchGateway } from "../workbenchNetApi/gateway/workbenchGateway";
 import { registerHtmlHoverBridge } from "./hoverBridge";
 import {
   discoverWorkspaceScriptRoots,
+  discoverWorkspaceProjectFiles,
   registerWorkspaceScriptWatchBridge,
 } from "./workspaceWatchBridge";
 import { registerDebugCommandBridge } from "./debugCommandBridge";
@@ -377,10 +378,6 @@ async function startLanguageClient(
   });
 
   const externalIndexMode = readExternalIndexMode();
-  const initialSourceInventory = resolveLastLoadedAddonInventory(
-    context,
-    externalIndexMode,
-  );
   const currentSourceInventory = resolveCurrentWorkbenchAddonInventory(
     context,
     serverPath,
@@ -389,6 +386,13 @@ async function startLanguageClient(
     workbenchReady,
   );
   const workspaceScriptRootsPromise = discoverWorkspaceScriptRoots();
+  const workspaceProjectFilesPromise = externalIndexMode === 'loaded'
+    ? discoverWorkspaceProjectFiles()
+    : Promise.resolve([] as string[]);
+  const workspaceProjectFiles = await workspaceProjectFilesPromise;
+  const initialSourceInventory = workspaceProjectFiles.length === 0
+    ? resolveLastLoadedAddonInventory(context, externalIndexMode)
+    : Promise.resolve(undefined);
   const serverArgs = [
     "--addon-index-storage",
     path.join(
@@ -421,10 +425,16 @@ async function startLanguageClient(
   for (const root of workspaceScriptRoots) {
     serverArgs.push("--workspace-scripts", root);
   }
+  if (externalIndexMode === 'loaded') {
+    for (const projectFile of workspaceProjectFiles) {
+      serverArgs.push("--dependency-project", projectFile);
+    }
+  }
   logLanguageClientStartupTiming(context, "languageServerArgumentsReady", {
     workbenchGraphDeliveryPending: externalIndexMode === 'loaded' || externalIndexMode === 'baseGame',
     externalIndexMode,
     workspaceScriptRoots: workspaceScriptRoots.length,
+    dependencyProjectFiles: workspaceProjectFiles.length,
     serverArgs: serverArgs.length,
     bracketColoring,
   });

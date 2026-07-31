@@ -299,6 +299,11 @@ fn parse_lsp_args(mut args: impl Iterator<Item = String>) -> Result<LspServerOpt
                     .workspace_scripts
                     .push(path_value(&mut args, "--workspace-scripts")?);
             }
+            "--dependency-project" => {
+                options
+                    .dependency_project_files
+                    .push(path_value(&mut args, "--dependency-project")?);
+            }
             "--bracket-coloring" => {
                 let value = string_value(&mut args, "--bracket-coloring")?;
                 options.bracket_coloring = match value.as_str() {
@@ -468,6 +473,30 @@ mod tests {
         let mode = parse_args_from(["--stdio".to_string()].into_iter())
             .expect("known language-client transport marker");
         assert!(matches!(mode, ServerMode::Lsp(_)));
+    }
+
+    #[test]
+    fn lsp_accepts_repeatable_dependency_project_files() {
+        let mode = parse_args_from(
+            [
+                "--dependency-project".to_string(),
+                "one/addon.gproj".to_string(),
+                "--dependency-project".to_string(),
+                "two/addon.gproj".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("valid dependency project arguments");
+        let ServerMode::Lsp(options) = mode else {
+            panic!("expected LSP mode");
+        };
+        assert_eq!(
+            options.dependency_project_files,
+            vec![
+                PathBuf::from("one/addon.gproj"),
+                PathBuf::from("two/addon.gproj")
+            ]
+        );
     }
 
     #[test]

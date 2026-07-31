@@ -268,6 +268,13 @@ language server and republishes the selected external-index layer; `none` and
 `all` do not wait for a Workbench graph. On a warm approved startup, a current
 managed manifest avoids repeating bridge maintenance and Workbench process
 probing.
+
+For `loaded` mode, an opened workspace with one unambiguous `.gproj` per folder
+uses the project's declared dependency GUIDs for the no-Workbench warmup. Only
+matching cached indexes are selected, with unpacked dependency roots preferred
+over packed duplicates. Workspaces without an unambiguous project descriptor
+continue to use the last Workbench graph fallback; a live Workbench graph
+replaces either provisional scope when it becomes available.
 The **Reforger: Indexing loaded add-ons** progress indicator remains visible in
 the VS Code status bar through graph loading, PAC inspection, and index
 publication; wait for it to close before judging game-API language features.

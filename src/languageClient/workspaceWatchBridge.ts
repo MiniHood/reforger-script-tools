@@ -24,6 +24,31 @@ export async function discoverWorkspaceScriptRoots(): Promise<string[]> {
 	return [...roots].sort();
 }
 
+/** Finds one unambiguous project descriptor per opened workspace folder. */
+export async function discoverWorkspaceProjectFiles(): Promise<string[]> {
+	const projectFiles: string[] = [];
+	for (const folder of vscode.workspace.workspaceFolders ?? []) {
+		const projectFile = await discoverWorkspaceProjectFile(folder.uri.fsPath);
+		if (projectFile) {
+			projectFiles.push(projectFile);
+		}
+	}
+	return projectFiles;
+}
+
+export async function discoverWorkspaceProjectFile(folderPath: string): Promise<string | undefined> {
+	try {
+		const entries = await fs.readdir(folderPath, { withFileTypes: true });
+		const candidates = entries
+			.filter(entry => entry.isFile() && path.extname(entry.name).toLowerCase() === '.gproj')
+			.map(entry => path.join(folderPath, entry.name))
+			.sort();
+		return candidates.length === 1 ? candidates[0] : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Publishes versioned workspace-file events to the Rust index immediately. */
 export function registerWorkspaceScriptWatchBridge(
 	client: LanguageClient,

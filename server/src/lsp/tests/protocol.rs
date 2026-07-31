@@ -110,6 +110,7 @@ fn framed_lsp_smoke_test_handles_open_and_document_symbol() {
             addon_index_storage: None,
             external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -310,6 +311,7 @@ fn framed_lsp_reuses_cached_document_symbols_for_repeated_requests() {
             addon_index_storage: None,
             external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -418,6 +420,7 @@ fn framed_lsp_did_change_defers_document_symbol_projection_until_requested() {
             addon_index_storage: None,
             external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -898,6 +901,7 @@ fn framed_lsp_smoke_test_handles_hover() {
             addon_index_storage: None,
             external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -987,6 +991,7 @@ fn framed_lsp_smoke_test_handles_definition() {
             addon_index_storage: None,
             external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -1908,6 +1913,7 @@ fn framed_lsp_uses_cached_analysis_for_repeated_hover() {
             addon_index_storage: None,
             external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -2053,6 +2059,7 @@ fn framed_lsp_did_change_replaces_cached_analysis() {
             addon_index_storage: None,
             external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -2149,6 +2156,7 @@ fn framed_lsp_did_close_removes_cached_document() {
             addon_index_storage: None,
             external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -2247,6 +2255,7 @@ fn framed_lsp_publishes_and_clears_parser_diagnostics() {
             addon_index_storage: None,
             external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -2355,6 +2364,7 @@ fn framed_lsp_ignores_stale_changes_without_regressing_diagnostics_or_symbols() 
             addon_index_storage: None,
             external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -2457,6 +2467,7 @@ fn framed_lsp_smoke_test_handles_debug_hover_request() {
             addon_index_storage: None,
             external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -2543,6 +2554,7 @@ fn framed_lsp_smoke_test_handles_debug_completion_request() {
             addon_index_storage: None,
             external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -2633,6 +2645,7 @@ fn framed_lsp_debug_completion_includes_signature_help_when_inside_call() {
             addon_index_storage: None,
             external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
