@@ -277,7 +277,21 @@ impl ExternalIndexHandle {
                 let mut state = state.lock().unwrap();
                 if state.graph_generation == graph_generation && cached.loaded_instances > 0 {
                     publish_loaded_addon_result(&mut state, &cached, true);
-                    logger.diagnostic_lazy("externalIndex.optimisticCacheDelivered", || json!({"elapsedMs": started.elapsed().as_millis(), "loadedInstances": cached.loaded_instances, "missingInstances": cached.missing_instances, "workspaceExcludedInstances": cached.workspace_excluded_instances}));
+                    logger.diagnostic_lazy("externalIndex.optimisticCacheDelivered", || json!({
+                        "elapsedMs": started.elapsed().as_millis(),
+                        "loadedInstances": cached.loaded_instances,
+                        "missingInstances": cached.missing_instances,
+                        "workspaceExcludedInstances": cached.workspace_excluded_instances,
+                        "timingsMs": {
+                            "graphRead": cached.timings.graph_read.as_millis(),
+                            "workspaceRootResolution": cached.timings.workspace_root_resolution.as_millis(),
+                            "cachePrune": cached.timings.cache_prune.as_millis(),
+                            "cacheMetadataRead": cached.timings.cache_metadata_read.as_millis(),
+                            "indexLoad": cached.timings.index_load_or_build.as_millis(),
+                            "layerCompose": cached.timings.layer_compose.as_millis(),
+                            "total": cached.timings.total.as_millis(),
+                        }
+                    }));
                 }
             }
             if let Some(sender) = &event_sender {
@@ -491,7 +505,7 @@ fn publish_loaded_addon_result(
     result: &LoadedAddonIndexResult,
     validation_pending: bool,
 ) {
-    state.game_data_index = Some(Arc::new(result.index.clone()));
+    state.game_data_index = Some(result.index.clone());
     state.game_data_summary = Some(result.summary.clone());
     state.cache_status = Some(
         if validation_pending {
@@ -721,7 +735,21 @@ fn run_external_index_thread(
                 let mut published = state.lock().unwrap();
                 publish_loaded_addon_result(&mut published, &result, true);
                 drop(published);
-                logger.diagnostic_lazy("externalIndex.optimisticCacheDelivered", || json!({"elapsedMs": optimistic_start.elapsed().as_millis(), "loadedInstances": result.loaded_instances, "missingInstances": result.missing_instances, "workspaceExcludedInstances": result.workspace_excluded_instances}));
+                logger.diagnostic_lazy("externalIndex.optimisticCacheDelivered", || json!({
+                    "elapsedMs": optimistic_start.elapsed().as_millis(),
+                    "loadedInstances": result.loaded_instances,
+                    "missingInstances": result.missing_instances,
+                    "workspaceExcludedInstances": result.workspace_excluded_instances,
+                    "timingsMs": {
+                        "graphRead": result.timings.graph_read.as_millis(),
+                        "workspaceRootResolution": result.timings.workspace_root_resolution.as_millis(),
+                        "cachePrune": result.timings.cache_prune.as_millis(),
+                        "cacheMetadataRead": result.timings.cache_metadata_read.as_millis(),
+                        "indexLoad": result.timings.index_load_or_build.as_millis(),
+                        "layerCompose": result.timings.layer_compose.as_millis(),
+                        "total": result.timings.total.as_millis(),
+                    }
+                }));
                 if let Some(sender) = &event_sender {
                     let _ = sender.send(ServerEvent::ExternalIndexChanged);
                 }
@@ -858,7 +886,7 @@ fn run_external_index_thread(
                     start.elapsed().as_millis()
                 ));
                 (
-                    Some(Arc::new(result.index)),
+                    Some(result.index),
                     Some(result.summary),
                     Some(cache_status),
                     cache_detail,

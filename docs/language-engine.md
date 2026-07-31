@@ -52,10 +52,13 @@ per-feature revision tables or mutable shared feature state that bypasses this
 model.
 
 The base-game layer is published from the current Workbench graph. On a warm
-start, compatible cache pairs for those exact `(GUID, source-root)` instances
-hydrate before source inspection; the same background validation pass
-then strongly re-inspects both packed entries and loose scripts and atomically
-replaces only changed instances. This intentionally permits a short
+start, each exact `(GUID, source-root)` instance key locates its self-describing
+`symbols.bin` directly. The binary header establishes format compatibility and
+embedded add-on identity without a separate manifest read. The hydrated layer
+is reference-counted at construction and published without cloning its symbol
+graph. The same background validation pass then strongly re-inspects both
+packed entries and loose scripts, validates the manifest/cache pair, and
+atomically replaces only changed instances. This intentionally permits a short
 source-validation window, but never preserves an unselected graph instance or
 retains two published revisions for one instance. Unchanged validation inspects
 bounded PAC catalogues and hashes only selected compressed script payloads, not
