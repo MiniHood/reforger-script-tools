@@ -1619,6 +1619,7 @@ impl Parser<'_> {
         let mut saw_name_after_type = false;
         let mut saw_equal = false;
         let mut saw_newline_after_name = false;
+        let mut saw_newline_before_name = false;
         let mut paren_depth = 0usize;
         let mut bracket_depth = 0usize;
         let mut brace_depth = 0usize;
@@ -1636,11 +1637,25 @@ impl Parser<'_> {
                 continue;
             }
 
+            if at_top_level && !saw_name_after_type && kind.is_trivia() {
+                saw_newline_before_name |= self.token_text(token).contains('\n');
+                index += 1;
+                continue;
+            }
+
             if at_top_level
                 && saw_newline_after_name
                 && token_kind_can_start_statement_after_local(kind)
             {
-                return true;
+                return !saw_newline_before_name;
+            }
+
+            if at_top_level
+                && saw_name_after_type
+                && !saw_equal
+                && kind == TokenKind::Operator(Operator::Less)
+            {
+                return false;
             }
 
             if at_top_level && matches!(kind, TokenKind::Semicolon | TokenKind::RightParen) {
@@ -2449,7 +2464,7 @@ fn collect_significant_declarator_tokens(element: &SyntaxElement, tokens: &mut V
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
+    use crate::ast::{AstSourceFile, ClassMember, Declaration};
     use crate::index::SymbolIndex;
     use crate::lexer::{lex, TokenKind};
     use crate::model::SymbolCatalog;
@@ -3083,6 +3098,47 @@ class AfterInvalid
             );
             assert_eq!(count_kind(&parse.root, following_kind), 1);
         }
+    }
+
+    #[test]
+    fn consecutive_unfinished_identifier_lines_do_not_form_a_local_declaration() {
+        let source = r#"class Example
+{
+    void Run()
+    {
+        int testnum = 5;
+        array<string> extra = {};
+
+        SCR_BaseGameMode
+
+        PS_PlayersList
+
+        map<int, string> testmap = new map<int, string>();
+    }
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement), 3);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ExpressionStatement), 2);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::Declarator), 3);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::Error), 0);
+
+        let ast = AstSourceFile::new(source, &parse);
+        let Declaration::Class(class) = ast.declarations()[0] else {
+            panic!("expected class");
+        };
+        let ClassMember::Method(method) = class.members()[0] else {
+            panic!("expected method");
+        };
+        let local_names = method
+            .local_variables()
+            .iter()
+            .map(|local| local.name().text())
+            .collect::<Vec<_>>();
+        assert_eq!(local_names, vec!["testnum", "extra", "testmap"]);
     }
 
     #[test]
