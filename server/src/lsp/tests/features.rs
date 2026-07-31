@@ -584,11 +584,11 @@ class Example { protected ref ScriptInvoker m_OnGameEnd = new ScriptInvoker(); }
 
     assert_semantic_token(&report, "void", "keyword");
     assert_semantic_token(&report, "int", "keyword");
+    assert_semantic_token(&report, "array", "class");
     for text in [
         "KickCauseCode",
         "SCR_InstigatorContextData",
         "IEntity",
-        "array",
         "EResourceType",
         "ScriptInvokerBase",
         "OnPreloadFinished",
@@ -596,6 +596,34 @@ class Example { protected ref ScriptInvoker m_OnGameEnd = new ScriptInvoker(); }
     ] {
         assert_no_semantic_token(&report, text);
     }
+}
+
+#[test]
+fn semantic_tokens_color_builtin_collection_types_without_external_index() {
+    let source = r#"class Example
+{
+	array<int> m_Values;
+	set<string> m_Names;
+	map<string, int> m_Counts;
+
+	void Run(array<int> values, set<string> names, map<string, int> counts)
+	{
+		values = new array<int>();
+		switch (true)
+		{
+			default:
+				break;
+		}
+	}
+}
+"#;
+
+    let report = semantic_tokens_report_for_source(source);
+
+    for text in ["array", "set", "map"] {
+        assert_semantic_type_family_token_count_at_least(&report, text, 2);
+    }
+    assert_semantic_token(&report, "switch", "keyword");
 }
 
 #[test]

@@ -6,8 +6,8 @@ use crate::lsp::{
 };
 use crate::model::SymbolKind;
 use crate::resolver::{
-    CandidateSource, ReferenceCandidate, ReferenceResolver, ReferenceResolverTimings,
-    ResolutionReason,
+    CandidateSource, IdentifierContext, ReferenceCandidate, ReferenceResolver,
+    ReferenceResolverTimings, ResolutionReason,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -644,21 +644,29 @@ fn semantic_raw_tokens(
                 let candidate = resolution
                     .as_ref()
                     .and_then(|resolution| resolution.selected.as_ref());
+                let builtin_collection_type = resolution
+                    .as_ref()
+                    .and_then(builtin_collection_type_semantic_type);
                 CachedIdentifierResult {
                     relative_span: region_index
                         .and_then(|index| relative_span(token.span, identifier_regions[index]))
                         .unwrap_or(token.span),
                     kind: candidate.map(|candidate| candidate.kind),
-                    token_type: candidate.and_then(|candidate| {
-                        candidate_semantic_type(
-                            candidate,
-                            &analysis.index,
-                            workspace_index,
-                            game_data_index,
-                        )
-                    }),
+                    token_type: candidate
+                        .and_then(|candidate| {
+                            candidate_semantic_type(
+                                candidate,
+                                &analysis.index,
+                                workspace_index,
+                                game_data_index,
+                            )
+                        })
+                        .or(builtin_collection_type),
                     priority: candidate
                         .map(|candidate| resolver_reference_priority(candidate.kind))
+                        .or_else(|| {
+                            builtin_collection_type.map(|_| RESOLVER_TYPE_REFERENCE_PRIORITY)
+                        })
                         .unwrap_or(0),
                 }
             };
@@ -1238,6 +1246,21 @@ fn candidate_semantic_type(
     }
 
     symbol_semantic_type(candidate.kind)
+}
+
+fn builtin_collection_type_semantic_type(
+    resolution: &crate::resolver::ReferenceResolution,
+) -> Option<u32> {
+    if !matches!(
+        resolution.identifier_context,
+        IdentifierContext::TypePosition
+            | IdentifierContext::ConstructedType
+            | IdentifierContext::AttributeType
+    ) {
+        return None;
+    }
+    matches!(resolution.token_text.as_str(), "array" | "set" | "map")
+        .then_some(semantic_type_index("class"))
 }
 
 fn is_static_const_symbol(symbol: &crate::index::IndexedSymbol) -> bool {

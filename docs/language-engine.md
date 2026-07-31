@@ -36,6 +36,9 @@ Semantic-token classification is a language contract, not a colour palette.
 Rust identifies language roles; VS Code settings and the TypeScript shell own
 their presentation, including hover rendering where editor token colours are
 not available.
+The fixed collection type names `array`, `set`, and `map` retain their class
+role in type positions even when no external index is available; other
+source-backed class names still require indexed facts.
 
 ## Snapshot Rules
 
