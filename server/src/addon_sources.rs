@@ -375,10 +375,33 @@ pub fn load_or_build_loaded_addon_indexes(
     workspace_roots: &[PathBuf],
     control: &IndexBuildControl,
 ) -> Result<LoadedAddonIndexResult, String> {
-    let total_start = Instant::now();
     let graph_start = Instant::now();
     let graph = read_loaded_addon_graph(inventory_path)?;
     let graph_read = graph_start.elapsed();
+    load_or_build_addon_indexes(graph, graph_read, storage_root, workspace_roots, control)
+}
+
+pub fn load_or_build_base_game_indexes(
+    inventory_path: &Path,
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+) -> Result<LoadedAddonIndexResult, String> {
+    let graph_start = Instant::now();
+    let mut graph = read_loaded_addon_graph(inventory_path)?;
+    let graph_read = graph_start.elapsed();
+    graph.addons.retain(is_base_game_addon);
+    load_or_build_addon_indexes(graph, graph_read, storage_root, workspace_roots, control)
+}
+
+fn load_or_build_addon_indexes(
+    graph: LoadedAddonGraph,
+    graph_read: Duration,
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+) -> Result<LoadedAddonIndexResult, String> {
+    let total_start = Instant::now();
     let workspace_root_start = Instant::now();
     let workspace_roots = workspace_roots
         .iter()
@@ -408,17 +431,13 @@ pub fn load_or_build_loaded_addon_indexes(
             workspace_excluded_instances += 1;
             continue;
         }
-        pending_inspections.push(PendingAddonInspection {
-            sequence,
-            addon,
-        });
+        pending_inspections.push(PendingAddonInspection { sequence, addon });
     }
     let inspection_task_count = pending_inspections.len();
     let pending_inspections = Arc::new(Mutex::new(pending_inspections));
     let (inspection_sender, inspection_receiver) = mpsc::channel();
-    let mut inspection_workers = Vec::with_capacity(addon_inspection_worker_count(
-        inspection_task_count,
-    ));
+    let mut inspection_workers =
+        Vec::with_capacity(addon_inspection_worker_count(inspection_task_count));
     for _ in 0..addon_inspection_worker_count(inspection_task_count) {
         let pending_inspections = pending_inspections.clone();
         let inspection_sender = inspection_sender.clone();
@@ -713,9 +732,11 @@ pub fn load_cached_loaded_addon_indexes(
         summary.parse_diagnostics += result.summary.parse_diagnostics;
         summary.lossy_files += result.summary.lossy_files;
         let (pack_count, script_count) = match &result.fingerprint {
-            SourceFingerprint::Addon { pack_count, catalogue_entry_count, .. } => {
-                (*pack_count, *catalogue_entry_count)
-            }
+            SourceFingerprint::Addon {
+                pack_count,
+                catalogue_entry_count,
+                ..
+            } => (*pack_count, *catalogue_entry_count),
             _ => unreachable!("loaded add-on cache always has an add-on fingerprint"),
         };
         instances.push(LoadedAddonIndexInstance {
@@ -754,6 +775,202 @@ pub fn load_cached_loaded_addon_indexes(
         },
         instances,
     })
+}
+
+pub fn load_all_cached_addon_indexes(
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+) -> Result<LoadedAddonIndexResult, String> {
+    load_cached_indexes_from_storage(storage_root, workspace_roots, control, false)
+}
+
+pub fn load_cached_base_game_indexes(
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+) -> Result<LoadedAddonIndexResult, String> {
+    load_cached_indexes_from_storage(storage_root, workspace_roots, control, true)
+}
+
+fn load_cached_indexes_from_storage(
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+    base_game_only: bool,
+) -> Result<LoadedAddonIndexResult, String> {
+    let total_start = Instant::now();
+    let graph_start = Instant::now();
+    let workspace_roots = workspace_roots
+        .iter()
+        .filter_map(|root| fs::canonicalize(root).ok())
+        .collect::<Vec<_>>();
+    let workspace_root_resolution = graph_start.elapsed();
+    let mut descriptors = Vec::new();
+    let entries = match fs::read_dir(storage_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(empty_cached_index_result(
+                total_start.elapsed(),
+                workspace_root_resolution,
+            ))
+        }
+        Err(error) => {
+            return Err(format!(
+                "Failed to read add-on index storage {}: {error}",
+                storage_root.display()
+            ))
+        }
+    };
+    for entry in entries {
+        control.check()?;
+        let entry = entry.map_err(|error| error.to_string())?;
+        if !entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+        {
+            continue;
+        }
+        let cache_root = entry.path();
+        if !is_addon_instance_key(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
+        let manifest_bytes = match fs::read(cache_root.join(ADDON_MANIFEST_HEADER_FILE)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match fs::read(cache_root.join("manifest.json")) {
+                    Ok(bytes) => bytes,
+                    Err(_) => continue,
+                }
+            }
+            Err(_) => continue,
+        };
+        let manifest =
+            serde_json::from_slice::<AddonIndexManifestHeader>(&manifest_bytes).or_else(|_| {
+                serde_json::from_slice::<AddonIndexManifest>(&manifest_bytes)
+                    .map(|manifest| manifest.header())
+            });
+        let Ok(manifest) = manifest else {
+            continue;
+        };
+        if manifest.schema != "reforger-addon-index-manifest-v3"
+            || manifest.index_file != "symbols.bin"
+            || (base_game_only && !is_base_game_manifest(&manifest))
+            || workspace_roots
+                .iter()
+                .any(|root| root.starts_with(&manifest.source_root))
+        {
+            continue;
+        }
+        descriptors.push((manifest, cache_root.join("symbols.bin")));
+    }
+    descriptors.sort_by(|(left, _), (right, _)| {
+        (&left.guid, &left.source_root, &left.display_id).cmp(&(
+            &right.guid,
+            &right.source_root,
+            &right.display_id,
+        ))
+    });
+
+    let cache_load_start = Instant::now();
+    let mut summary = RuntimeIndexSummary::default();
+    let mut loaded_instances = 0;
+    let mut missing_instances = 0;
+    let workspace_excluded_instances = 0;
+    let mut indexes = Vec::with_capacity(descriptors.len());
+    let mut instances = Vec::with_capacity(descriptors.len());
+    for (manifest, cache_path) in descriptors {
+        control.check()?;
+        let Some(result) = load_game_data_index_cache_with_control(&cache_path, control)? else {
+            missing_instances += 1;
+            continue;
+        };
+        let (pack_count, script_count) = match &result.fingerprint {
+            SourceFingerprint::Addon {
+                pack_count,
+                catalogue_entry_count,
+                ..
+            } => (*pack_count, *catalogue_entry_count),
+            _ => continue,
+        };
+        loaded_instances += 1;
+        summary.files += result.summary.files;
+        summary.bytes += result.summary.bytes;
+        summary.indexed_symbols += result.summary.indexed_symbols;
+        summary.parse_diagnostics += result.summary.parse_diagnostics;
+        summary.lossy_files += result.summary.lossy_files;
+        instances.push(LoadedAddonIndexInstance {
+            guid: manifest.guid,
+            display_id: manifest.display_id,
+            pack_count,
+            script_count,
+            cache_status: "cached-only".to_string(),
+            cache_detail: Some("source-validation-skipped".to_string()),
+            summary: result.summary.clone(),
+            timings: result.timings,
+            cache_file_bytes: result.cache_file_bytes,
+        });
+        indexes.push(result.index);
+    }
+    let (index, layer_timings) = SymbolIndex::layered_with_timings(indexes);
+    Ok(LoadedAddonIndexResult {
+        index: Arc::new(index),
+        summary,
+        rebuilt_instances: 0,
+        loaded_instances,
+        missing_instances,
+        workspace_excluded_instances,
+        timings: LoadedAddonIndexTimings {
+            graph_read: total_start.elapsed(),
+            workspace_root_resolution,
+            cache_prune: Duration::ZERO,
+            cache_metadata_read: Duration::ZERO,
+            source_inspection: Duration::ZERO,
+            index_load_or_build: cache_load_start.elapsed(),
+            layer_rebase: layer_timings.rebase,
+            layer_file_projection: layer_timings.file_projection,
+            layer_lookup_projection: layer_timings.lookup_projection,
+            layer_compose: layer_timings.total,
+            total: total_start.elapsed(),
+        },
+        instances,
+    })
+}
+
+fn empty_cached_index_result(
+    total: Duration,
+    workspace_root_resolution: Duration,
+) -> LoadedAddonIndexResult {
+    LoadedAddonIndexResult {
+        index: Arc::new(SymbolIndex::layered(Vec::new())),
+        summary: RuntimeIndexSummary::default(),
+        rebuilt_instances: 0,
+        loaded_instances: 0,
+        missing_instances: 0,
+        workspace_excluded_instances: 0,
+        timings: LoadedAddonIndexTimings {
+            workspace_root_resolution,
+            total,
+            ..Default::default()
+        },
+        instances: Vec::new(),
+    }
+}
+
+fn is_base_game_addon(addon: &LoadedAddonSource) -> bool {
+    addon.guid.eq_ignore_ascii_case(BASE_GAME_GUID)
+        || addon.id.eq_ignore_ascii_case("core")
+        || addon.title.eq_ignore_ascii_case("core")
+}
+
+fn is_base_game_manifest(manifest: &AddonIndexManifestHeader) -> bool {
+    manifest.guid.eq_ignore_ascii_case(BASE_GAME_GUID)
+        || manifest.display_id.eq_ignore_ascii_case("core")
+        || manifest
+            .source_root
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("core"))
 }
 
 fn addon_index_worker_count(storage_root: &Path, task_count: usize) -> Result<usize, String> {
@@ -836,10 +1053,16 @@ fn prune_unloaded_addon_caches(
         let key = key.to_string_lossy();
         if !active.contains(key.as_ref())
             && is_addon_instance_key(&key)
-            && entry.file_type().map_err(|error| error.to_string())?.is_dir()
+            && entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_dir()
         {
             fs::remove_dir_all(entry.path()).map_err(|error| {
-                format!("Failed to remove inactive add-on cache {}: {error}", entry.path().display())
+                format!(
+                    "Failed to remove inactive add-on cache {}: {error}",
+                    entry.path().display()
+                )
             })?;
         }
     }
@@ -922,12 +1145,10 @@ fn load_or_build_inspected_addon(
         Ok(bytes) => serde_json::from_slice::<AddonIndexManifestHeader>(&bytes)
             .ok()
             .map(|manifest| (manifest, true)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::read(&manifest_path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<AddonIndexManifest>(&bytes).ok())
-                .map(|manifest| (manifest.header(), false))
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::read(&manifest_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<AddonIndexManifest>(&bytes).ok())
+            .map(|manifest| (manifest.header(), false)),
         Err(_) => None,
     };
     let manifest_reusable = manifest_header.is_some_and(|(manifest, compact_header)| {
@@ -944,11 +1165,13 @@ fn load_or_build_inspected_addon(
             script_count,
             &pack_artifacts,
             cache_bytes,
-        ) && (!compact_header || match manifest.manifest_sha256.as_deref() {
-            Some(expected) => fs::read(&manifest_path)
-                .is_ok_and(|bytes| sha256_hex(&bytes) == expected),
-            None => false,
-        })
+        ) && (!compact_header
+            || match manifest.manifest_sha256.as_deref() {
+                Some(expected) => {
+                    fs::read(&manifest_path).is_ok_and(|bytes| sha256_hex(&bytes) == expected)
+                }
+                None => false,
+            })
     });
     let cache_metadata_read = cache_metadata_read_start.elapsed();
     let rebuild_reason = if manifest_reusable {
@@ -1023,9 +1246,8 @@ fn load_or_build_inspected_addon(
 /// A flattened cache is rebuilt from the authoritative Workbench graph.
 fn discard_legacy_addon_cache_layout(addon_root: &Path) -> Result<(), String> {
     if addon_root.join("current.json").is_file() || addon_root.join("revisions").is_dir() {
-        fs::remove_dir_all(addon_root).map_err(|error| {
-            format!("Failed to remove retired add-on cache layout: {error}")
-        })?;
+        fs::remove_dir_all(addon_root)
+            .map_err(|error| format!("Failed to remove retired add-on cache layout: {error}"))?;
     }
     Ok(())
 }
@@ -1580,7 +1802,10 @@ fn packed_source_revision(inspection: &BaseGameInspection) -> Arc<PackedSourceRe
         .iter()
         .map(|locator| {
             (
-                (locator.pack_relative_path.clone(), locator.logical_path.clone()),
+                (
+                    locator.pack_relative_path.clone(),
+                    locator.logical_path.clone(),
+                ),
                 locator.compressed_payload_sha256.clone(),
             )
         })
@@ -1594,7 +1819,7 @@ fn packed_source_revision(inspection: &BaseGameInspection) -> Arc<PackedSourceRe
                 &inspection.artifact_digest,
                 entry.logical_path(),
             )
-                .expect("validated logical paths always produce a URI");
+            .expect("validated logical paths always produce a URI");
             let compressed_payload_sha256 = script_digests
                 .get(&(pack_relative_path, entry.logical_path().to_string()))
                 .cloned()
@@ -1892,7 +2117,10 @@ mod tests {
         fs::write(assets.join("Ignored.c"), "class Ignored {}").unwrap();
         fs::write(root.join("Ignored.c"), "class Ignored {}").unwrap();
 
-        assert_eq!(loose_script_paths(&root).unwrap(), vec![scripts.join("Listed.c")]);
+        assert_eq!(
+            loose_script_paths(&root).unwrap(),
+            vec![scripts.join("Listed.c")]
+        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -1902,7 +2130,10 @@ mod tests {
         assert_eq!(addon_index_worker_count_for(1, 140), 1);
         assert_eq!(addon_index_worker_count_for(16, 0), 0);
         assert_eq!(addon_index_worker_count_for(16, 2), 2);
-        assert_eq!(addon_index_worker_count_for(16, 140), MAX_ADDON_INDEX_WORKERS);
+        assert_eq!(
+            addon_index_worker_count_for(16, 140),
+            MAX_ADDON_INDEX_WORKERS
+        );
     }
 
     #[test]
@@ -1926,7 +2157,9 @@ mod tests {
         assert_eq!(inventory.roots.len(), 1);
         assert_eq!(
             inventory.roots[0].path,
-            data_root.parent().and_then(|path| fs::canonicalize(path).ok())
+            data_root
+                .parent()
+                .and_then(|path| fs::canonicalize(path).ok())
         );
         let legacy = root.join("legacy.json");
         fs::write(
@@ -2166,10 +2399,8 @@ mod tests {
             .path();
         let manifest_header_path = addon_cache.join(ADDON_MANIFEST_HEADER_FILE);
         assert!(manifest_header_path.is_file());
-        let manifest: AddonIndexManifest = serde_json::from_slice(
-            &fs::read(addon_cache.join("manifest.json")).unwrap(),
-        )
-        .unwrap();
+        let manifest: AddonIndexManifest =
+            serde_json::from_slice(&fs::read(addon_cache.join("manifest.json")).unwrap()).unwrap();
         let feature_uri = manifest
             .scripts
             .iter()
@@ -2202,6 +2433,12 @@ mod tests {
         assert_eq!(loaded.cache_status, IndexCacheStatus::Loaded);
         assert!(addon_cache.join("manifest.json").is_file());
         assert!(addon_cache.join("symbols.bin").is_file());
+        let all_cached =
+            load_all_cached_addon_indexes(&storage, &[], &IndexBuildControl::default()).unwrap();
+        assert_eq!(all_cached.loaded_instances, 1);
+        let base_cached =
+            load_cached_base_game_indexes(&storage, &[], &IndexBuildControl::default()).unwrap();
+        assert_eq!(base_cached.loaded_instances, 1);
         let mut locator_corruption = fs::read(addon_cache.join("manifest.json")).unwrap();
         let feature_name = b"Feature.c";
         let feature_name_start = locator_corruption
@@ -2209,11 +2446,7 @@ mod tests {
             .position(|window| window == feature_name)
             .unwrap();
         locator_corruption[feature_name_start + feature_name.len() - 1] = b'd';
-        fs::write(
-            addon_cache.join("manifest.json"),
-            locator_corruption,
-        )
-        .unwrap();
+        fs::write(addon_cache.join("manifest.json"), locator_corruption).unwrap();
         let repaired =
             load_or_build_base_game_index(&inventory, &storage, &IndexBuildControl::default())
                 .unwrap();
@@ -2225,7 +2458,10 @@ mod tests {
         let legacy_header_fallback =
             load_or_build_base_game_index(&inventory, &storage, &IndexBuildControl::default())
                 .unwrap();
-        assert_eq!(legacy_header_fallback.cache_status, IndexCacheStatus::Loaded);
+        assert_eq!(
+            legacy_header_fallback.cache_status,
+            IndexCacheStatus::Loaded
+        );
         assert!(!addon_cache.join("scripts").exists());
         let _ = fs::remove_dir_all(root);
     }
@@ -2254,10 +2490,8 @@ mod tests {
             .unwrap()
             .unwrap()
             .path();
-        let first_manifest: AddonIndexManifest = serde_json::from_slice(
-            &fs::read(addon_cache.join("manifest.json")).unwrap(),
-        )
-        .unwrap();
+        let first_manifest: AddonIndexManifest =
+            serde_json::from_slice(&fs::read(addon_cache.join("manifest.json")).unwrap()).unwrap();
 
         write_fixture_pak(
             &addons.join("data/data007.pak"),
@@ -2278,10 +2512,8 @@ mod tests {
             load_or_build_base_game_index(&inventory, &storage, &cancelled).unwrap_err(),
             crate::index_build::INDEX_BUILD_CANCELLED
         );
-        let after_cancel: AddonIndexManifest = serde_json::from_slice(
-            &fs::read(addon_cache.join("manifest.json")).unwrap(),
-        )
-        .unwrap();
+        let after_cancel: AddonIndexManifest =
+            serde_json::from_slice(&fs::read(addon_cache.join("manifest.json")).unwrap()).unwrap();
         assert_eq!(after_cancel, first_manifest);
 
         let rebuilt =
@@ -2291,10 +2523,8 @@ mod tests {
             rebuilt.cache_status,
             IndexCacheStatus::Rebuilt { .. }
         ));
-        let second_manifest: AddonIndexManifest = serde_json::from_slice(
-            &fs::read(addon_cache.join("manifest.json")).unwrap(),
-        )
-        .unwrap();
+        let second_manifest: AddonIndexManifest =
+            serde_json::from_slice(&fs::read(addon_cache.join("manifest.json")).unwrap()).unwrap();
         assert_ne!(first_manifest.revision, second_manifest.revision);
         assert!(addon_cache.join("symbols.bin").is_file());
         assert!(!addon_cache.join("revisions").exists());

@@ -254,14 +254,17 @@ the user to restart an open Workbench or launches the default
 `ArmaReforger.gproj` project. Later activations maintain or upgrade the bridge
 without prompting and never rewrite the registry value.
 
-After Workbench is connected, the extension publishes the exact loaded add-on
-graph and Rust indexes it. On a warm approved startup, a current managed
-manifest avoids repeating bridge maintenance and Workbench process probing;
-the graph still waits for the initial functional connection, never for the
-recurring heartbeat. The **Reforger: Indexing loaded add-ons** progress
-indicator remains visible in the VS Code status bar through graph loading, PAC
-inspection, and index publication; wait for it to close before judging
-game-API language features.
+The `reforgerScriptTools.workbench.externalIndexMode` setting controls external
+index scope independently of NET API availability. Its default `loaded` mode
+hydrates the last Workbench graph immediately, then replaces it with the live
+graph when the compiler controller observes a disconnected-to-connected
+transition. If Workbench never connects, the last graph remains active. `all`
+and `baseGame` use compatible cached indexes without a graph; `none` disables
+external add-on indexes. On a warm approved startup, a current managed
+manifest avoids repeating bridge maintenance and Workbench process probing.
+The **Reforger: Indexing loaded add-ons** progress indicator remains visible in
+the VS Code status bar through graph loading, PAC inspection, and index
+publication; wait for it to close before judging game-API language features.
 
 The active base-game artifacts are:
 

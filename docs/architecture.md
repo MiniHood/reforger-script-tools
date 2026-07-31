@@ -18,21 +18,28 @@ VS Code editor
   -> VS Code editor
 ```
 
-At language-server startup, the extension prepares the Workbench loaded-add-on
-graph request alongside LSP initialization. The request waits for functional
-Workbench integration readiness, not for the recurring status heartbeat. A
-warm approved installation whose managed manifest is current skips bridge
-maintenance and process probing; fresh, missing, or stale installations still
-complete their required setup first. The extension then atomically records the
-returned exact graph under `globalStorageUri/addon-sources` and delivers its
-path to Rust over a typed LSP notification. Workbench is the sole scope
-authority: the extension does not scan, configure, or choose add-on folders.
-The NET API connection state is independent of Workbench's `scriptsCompiled`
-flag: compiler findings remain compiler diagnostics, while a connected bridge
-can still provide the loaded-addon graph.
-Rust begins add-on indexing only after that delivery; a newer delivered graph
-supersedes an older in-flight rebuild. The graph carries GUID, display identity,
-and one exact source root for every loaded GUID. The typed Workbench gateway
+At language-server startup, the extension starts Rust immediately and applies
+`reforgerScriptTools.workbench.externalIndexMode`. The default `loaded` mode
+delivers the last atomically recorded Workbench graph from
+`globalStorageUri/addon-sources` as soon as the server starts, then delivers a
+fresh graph after functional Workbench integration becomes available. If that
+connection never becomes available, the last graph remains the selected
+external scope. `all` loads every compatible cached add-on index, `baseGame`
+loads only the Reforger Script and Core cache entries, and `none` leaves only
+workspace scripts. These fallback modes do not scan for add-ons or guess
+installation paths.
+
+When a live graph is available, the extension atomically records the exact
+Workbench-owned graph and delivers its path to Rust over a typed LSP
+notification. Workbench remains the scope authority for the `loaded` and
+`baseGame` live scopes: the extension does not scan, configure, or choose
+add-on folders. The NET API connection state is independent of Workbench's
+`scriptsCompiled` flag: compiler findings remain compiler diagnostics, while a
+connected bridge can still provide the loaded-addon graph.
+Rust begins add-on indexing from either the persisted fallback or live graph;
+a newer delivered graph supersedes an older in-flight rebuild. The graph carries
+GUID, display identity, and one exact source root for every loaded GUID. The
+typed Workbench gateway
 uses the active Workbench Tools project registry to resolve packed entries and
 the current Workbench project only for its project-bound base entries. Mounted
 roots arrive directly from Workbench. An absent or ambiguous registered root
@@ -313,9 +320,10 @@ to emulate compiler facts from files.
 - Rust is the one Enfusion language authority.
 - Open documents and external indexes are revisioned immutable snapshots; a
   request uses facts from the snapshot it captured.
-- The Workbench graph is delivered after LSP initialization and is the only
-  authority for the game-data layer; no prior graph or local discovery path may
-  substitute when that delivery fails.
+- Workbench is authoritative for the live loaded-add-on graph. A persisted
+  graph or cache-only projection is allowed only when the configured external
+  index mode explicitly requests a fallback; it never becomes a live graph
+  authority.
 - TypeScript bridges transport Rust-authored facts or apply editor behaviour;
   they do not classify source.
 - Evidence follows the source hierarchy in [the system overview](overview.md).

@@ -6,8 +6,12 @@ export const workbenchConfig = {
 		port: 'port',
 		saveOnIdle: 'saveOnIdle',
 		autoInstallIntegration: 'autoInstallIntegration',
+		externalIndexMode: 'externalIndexMode',
 	},
 } as const;
+
+export const externalIndexModes = ['all', 'loaded', 'baseGame', 'none'] as const;
+export type ExternalIndexMode = typeof externalIndexModes[number];
 
 export const workbenchDefaults = {
 	enabled: true,
@@ -15,6 +19,7 @@ export const workbenchDefaults = {
 	port: 5775,
 	saveOnIdle: true,
 	autoInstallIntegration: true,
+	externalIndexMode: 'loaded' as ExternalIndexMode,
 } as const;
 
 export const workbenchCommands = {

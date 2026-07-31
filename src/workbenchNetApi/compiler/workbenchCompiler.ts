@@ -100,6 +100,7 @@ interface WorkbenchCompilerFailure {
 export function registerWorkbenchCompilerFeatures(
 	context: vscode.ExtensionContext,
 	integration?: WorkbenchIntegrationCoordinator,
+	onWorkbenchConnected?: () => void,
 ): void {
 	const startupValidationEnabled = context.extensionMode !== vscode.ExtensionMode.Test;
 	const serverPath = resolveLanguageServerPath(context);
@@ -107,6 +108,7 @@ export function registerWorkbenchCompilerFeatures(
 		startupValidationEnabled,
 		serverPath,
 		integration,
+		onWorkbenchConnected,
 	);
 	controller.start(context.extensionMode);
 	context.subscriptions.push(controller);
@@ -170,6 +172,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		private startupValidationEnabled: boolean,
 		private readonly serverPath: Promise<string | undefined>,
 		private readonly integration?: WorkbenchIntegrationCoordinator,
+		private readonly onWorkbenchConnected?: () => void,
 	) {
 		this.gateway = createGateway(this.configuration, this.serverPath);
 	}
@@ -719,6 +722,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			this.scheduleProbe(unavailableRetryMs, generation);
 			return;
 		}
+		const becameConnected = this.lastStatus === undefined;
 		this.lastFailure = undefined;
 		this.lastStatus = result.value;
 		this.setPhase('ready');
@@ -726,6 +730,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			host: this.configuration.host,
 			port: this.configuration.port,
 		});
+		if (becameConnected) {
+			this.onWorkbenchConnected?.();
+		}
 		if (this.shouldRequestStartupValidation()) {
 			this.startupValidationAttempted = true;
 			const request: ValidationRequest = {

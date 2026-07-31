@@ -24,8 +24,19 @@ export function activate(context: vscode.ExtensionContext) {
 		? undefined
 		: createWorkbenchIntegration(context, resolveLanguageServerPath(context));
 	const workbenchReady = integration?.start() ?? Promise.resolve(true);
-	registerWorkbenchCompilerFeatures(context, integration);
-	const refreshLanguageClientGameData = registerLanguageClientFeatures(context, workbenchReady);
+	let refreshLanguageClientGameData: (() => Promise<void>) | undefined;
+	let workbenchConnectedBeforeLanguageClient = false;
+	registerWorkbenchCompilerFeatures(context, integration, () => {
+		if (refreshLanguageClientGameData) {
+			void refreshLanguageClientGameData();
+		} else {
+			workbenchConnectedBeforeLanguageClient = true;
+		}
+	});
+	refreshLanguageClientGameData = registerLanguageClientFeatures(context, workbenchReady);
+	if (workbenchConnectedBeforeLanguageClient) {
+		void refreshLanguageClientGameData();
+	}
 	registerGameDataFeatures(context, refreshLanguageClientGameData);
 	registerMcpConfigurationCommand(context);
 	logLanguageClientStartupTiming(context, 'activationEnd');

@@ -200,6 +200,24 @@
           "default": true,
           "title": "Workbench Integration: Auto Install",
           "description": "After you approve Workbench Integration, automatically maintain its managed bridge and launch the default Reforger Workbench project when needed."
+        },
+        "reforgerScriptTools.workbench.externalIndexMode": {
+          "type": "string",
+          "enum": [
+            "all",
+            "loaded",
+            "baseGame",
+            "none"
+          ],
+          "enumDescriptions": [
+            "Load every compatible external index already available in the local index cache.",
+            "Load the last Workbench-loaded add-on graph immediately, then replace it with the current graph when Workbench connects.",
+            "Load only the Reforger Script and Core indexes from the last available graph or cache.",
+            "Do not load external add-on indexes. Workspace scripts remain available."
+          ],
+          "default": "loaded",
+          "title": "External Indexes",
+          "description": "Choose which cached external indexes are available when Workbench NET API is unavailable."
         }
       }
     },

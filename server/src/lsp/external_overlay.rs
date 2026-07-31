@@ -1,10 +1,12 @@
 #[cfg(test)]
 use super::file_uri_path_identity;
 use super::{
-    file_path_identity, format_paths, LspLogger, LspServerOptions, ServerEvent, ServerEventSender,
+    file_path_identity, format_paths, ExternalIndexMode, LspLogger, LspServerOptions, ServerEvent,
+    ServerEventSender,
 };
 use crate::addon_sources::{
-    load_cached_loaded_addon_indexes, load_or_build_loaded_addon_indexes, LoadedAddonIndexResult,
+    load_all_cached_addon_indexes, load_cached_base_game_indexes, load_cached_loaded_addon_indexes,
+    load_or_build_base_game_indexes, load_or_build_loaded_addon_indexes, LoadedAddonIndexResult,
 };
 use crate::index::SymbolIndex;
 use crate::index_cache::RuntimeIndexSummary;
@@ -28,6 +30,7 @@ const MAX_DOCUMENT_EXCLUDED_WORKSPACE_INDEXES: usize = 4;
 pub(crate) struct ExternalIndexHandle {
     state: Arc<Mutex<ExternalIndexState>>,
     control: crate::index_build::IndexBuildControl,
+    mode: ExternalIndexMode,
 }
 
 #[derive(Debug)]
@@ -179,6 +182,7 @@ impl ExternalIndexHandle {
     fn missing() -> Self {
         Self {
             control: crate::index_build::IndexBuildControl::default(),
+            mode: ExternalIndexMode::Loaded,
             state: Arc::new(Mutex::new(ExternalIndexState {
                 status: ExternalIndexStatus::Missing,
                 generation: 0,
@@ -244,6 +248,9 @@ impl ExternalIndexHandle {
         logger: LspLogger,
         event_sender: Option<ServerEventSender>,
     ) -> Result<(), String> {
+        if matches!(self.mode, ExternalIndexMode::All | ExternalIndexMode::None) {
+            return Ok(());
+        }
         let (storage, workspace_roots, graph_generation) = {
             let mut state = self.state.lock().unwrap();
             let storage = state
@@ -265,14 +272,20 @@ impl ExternalIndexHandle {
         }
         let state = self.state.clone();
         let control = self.control.clone();
+        let mode = self.mode;
         thread::spawn(move || {
             let started = Instant::now();
-            let cached = load_cached_loaded_addon_indexes(
-                &inventory_path,
-                &storage,
-                &workspace_roots,
-                &control,
-            );
+            let cached = match mode {
+                ExternalIndexMode::BaseGame => {
+                    load_cached_base_game_indexes(&storage, &workspace_roots, &control)
+                }
+                _ => load_cached_loaded_addon_indexes(
+                    &inventory_path,
+                    &storage,
+                    &workspace_roots,
+                    &control,
+                ),
+            };
             if let Ok(cached) = cached {
                 let mut state = state.lock().unwrap();
                 if state.graph_generation == graph_generation && cached.loaded_instances > 0 {
@@ -297,12 +310,20 @@ impl ExternalIndexHandle {
             if let Some(sender) = &event_sender {
                 let _ = sender.send(ServerEvent::ExternalIndexChanged);
             }
-            let result = load_or_build_loaded_addon_indexes(
-                &inventory_path,
-                &storage,
-                &workspace_roots,
-                &control,
-            );
+            let result = match mode {
+                ExternalIndexMode::BaseGame => load_or_build_base_game_indexes(
+                    &inventory_path,
+                    &storage,
+                    &workspace_roots,
+                    &control,
+                ),
+                _ => load_or_build_loaded_addon_indexes(
+                    &inventory_path,
+                    &storage,
+                    &workspace_roots,
+                    &control,
+                ),
+            };
             let mut state = state.lock().unwrap();
             if state.graph_generation != graph_generation {
                 return;
@@ -541,10 +562,14 @@ pub(crate) fn start_external_index(
     logger: LspLogger,
     event_sender: Option<ServerEventSender>,
 ) -> ExternalIndexHandle {
-    if options.addon_source_inventory.is_none()
-        && options.addon_index_storage.is_none()
-        && options.workspace_scripts.is_empty()
-    {
+    let can_load_game_data = match options.external_index_mode {
+        ExternalIndexMode::All | ExternalIndexMode::BaseGame => {
+            options.addon_index_storage.is_some()
+        }
+        ExternalIndexMode::Loaded => options.addon_source_inventory.is_some(),
+        ExternalIndexMode::None => false,
+    };
+    if !can_load_game_data && options.workspace_scripts.is_empty() {
         return ExternalIndexHandle::missing();
     }
 
@@ -558,6 +583,7 @@ pub(crate) fn start_external_index(
     let control = crate::index_build::IndexBuildControl::default();
     let handle = ExternalIndexHandle {
         control: control.clone(),
+        mode: options.external_index_mode,
         state: Arc::new(Mutex::new(ExternalIndexState {
             status: ExternalIndexStatus::Building,
             generation: 0,
@@ -586,6 +612,7 @@ pub(crate) fn start_external_index(
     let state = handle.state.clone();
     let addon_source_inventory = options.addon_source_inventory.clone();
     let addon_index_storage = options.addon_index_storage.clone();
+    let external_index_mode = options.external_index_mode;
     let workspace_roots = options.workspace_scripts.clone();
     thread::spawn(move || {
         let thread_logger = logger.clone();
@@ -596,6 +623,7 @@ pub(crate) fn start_external_index(
                 state,
                 addon_source_inventory,
                 addon_index_storage,
+                external_index_mode,
                 workspace_roots,
                 logger,
                 progress_sender,
@@ -696,10 +724,24 @@ fn log_loaded_addon_index_diagnostics(logger: &LspLogger, result: &LoadedAddonIn
     });
 }
 
+fn empty_loaded_addon_index_result() -> LoadedAddonIndexResult {
+    LoadedAddonIndexResult {
+        index: Arc::new(SymbolIndex::layered(Vec::new())),
+        summary: RuntimeIndexSummary::default(),
+        rebuilt_instances: 0,
+        loaded_instances: 0,
+        missing_instances: 0,
+        workspace_excluded_instances: 0,
+        timings: Default::default(),
+        instances: Vec::new(),
+    }
+}
+
 fn run_external_index_thread(
     state: Arc<Mutex<ExternalIndexState>>,
     addon_source_inventory: Option<PathBuf>,
     addon_index_storage: Option<PathBuf>,
+    external_index_mode: ExternalIndexMode,
     workspace_roots: Vec<PathBuf>,
     logger: LspLogger,
     event_sender: Option<ServerEventSender>,
@@ -718,19 +760,31 @@ fn run_external_index_thread(
     });
 
     // Hydrate the last immutable snapshot before any source inspection. The
-    // following validation pass is still mandatory and atomically replaces
-    // this projection when a packed or loose source has changed.
-    if let (Some(inventory_path), Some(storage)) = (
-        addon_source_inventory.as_ref(),
-        addon_index_storage.as_ref(),
-    ) {
+    // graph-backed modes follow with source validation; cache-only modes keep
+    // the compatible cached projection when no graph is available.
+    if let Some(storage) = addon_index_storage.as_ref() {
         let optimistic_start = Instant::now();
-        match load_cached_loaded_addon_indexes(
-            inventory_path,
-            storage,
-            &workspace_roots,
-            &control,
-        ) {
+        let cached = match external_index_mode {
+            ExternalIndexMode::All => {
+                load_all_cached_addon_indexes(storage, &workspace_roots, &control)
+            }
+            ExternalIndexMode::BaseGame => {
+                load_cached_base_game_indexes(storage, &workspace_roots, &control)
+            }
+            ExternalIndexMode::Loaded => addon_source_inventory.as_ref().map_or_else(
+                || Ok(empty_loaded_addon_index_result()),
+                |inventory_path| {
+                    load_cached_loaded_addon_indexes(
+                        inventory_path,
+                        storage,
+                        &workspace_roots,
+                        &control,
+                    )
+                },
+            ),
+            ExternalIndexMode::None => Ok(empty_loaded_addon_index_result()),
+        };
+        match cached {
             Ok(result) if result.loaded_instances > 0 => {
                 log_loaded_addon_index_diagnostics(&logger, &result);
                 let mut published = state.lock().unwrap();
@@ -761,44 +815,73 @@ fn run_external_index_thread(
     }
 
     let game_data_start = Instant::now();
-    let has_addon_source_inventory = addon_source_inventory.is_some();
-    let game_data_result = addon_source_inventory.map(|inventory_path| {
-        for phase in ["inventory-load-start", "pac-inspect-start"] {
-            if let Some(sender) = &event_sender {
-                let _ = sender.send(ServerEvent::ExternalIndexProgress {
-                    phase: phase.to_string(),
-                });
-            }
-        }
-        let result = addon_index_storage
-            .ok_or_else(|| "add-on index storage is unavailable".to_string())
-            .and_then(|storage| {
-                load_or_build_loaded_addon_indexes(
-                    &inventory_path,
-                    &storage,
-                    &workspace_roots,
-                    &control,
-                )
-            });
-        if let Some(sender) = &event_sender {
-            for phase in ["inventory-load-end", "pac-inspect-end"] {
-                let _ = sender.send(ServerEvent::ExternalIndexProgress {
-                    phase: phase.to_string(),
-                });
-            }
-            let phase = match &result {
-                Ok(result) if result.rebuilt_instances == 0 && result.loaded_instances > 0 => {
-                    "addon-cache-loaded"
+    let game_data_result = match external_index_mode {
+        ExternalIndexMode::None => None,
+        ExternalIndexMode::All => Some(
+            addon_index_storage
+                .as_ref()
+                .ok_or_else(|| "add-on index storage is unavailable".to_string())
+                .and_then(|storage| {
+                    load_all_cached_addon_indexes(storage, &workspace_roots, &control)
+                }),
+        ),
+        ExternalIndexMode::BaseGame if addon_source_inventory.is_none() => Some(
+            addon_index_storage
+                .as_ref()
+                .ok_or_else(|| "add-on index storage is unavailable".to_string())
+                .and_then(|storage| {
+                    load_cached_base_game_indexes(storage, &workspace_roots, &control)
+                }),
+        ),
+        ExternalIndexMode::BaseGame | ExternalIndexMode::Loaded => {
+            addon_source_inventory.map(|inventory_path| {
+                for phase in ["inventory-load-start", "pac-inspect-start"] {
+                    if let Some(sender) = &event_sender {
+                        let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                            phase: phase.to_string(),
+                        });
+                    }
                 }
-                Ok(_) => "addon-rebuild-end",
-                Err(_) => "addon-cache-failed",
-            };
-            let _ = sender.send(ServerEvent::ExternalIndexProgress {
-                phase: phase.to_string(),
-            });
+                let result = addon_index_storage
+                    .ok_or_else(|| "add-on index storage is unavailable".to_string())
+                    .and_then(|storage| match external_index_mode {
+                        ExternalIndexMode::BaseGame => load_or_build_base_game_indexes(
+                            &inventory_path,
+                            &storage,
+                            &workspace_roots,
+                            &control,
+                        ),
+                        _ => load_or_build_loaded_addon_indexes(
+                            &inventory_path,
+                            &storage,
+                            &workspace_roots,
+                            &control,
+                        ),
+                    });
+                if let Some(sender) = &event_sender {
+                    for phase in ["inventory-load-end", "pac-inspect-end"] {
+                        let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                            phase: phase.to_string(),
+                        });
+                    }
+                    let phase = match &result {
+                        Ok(result)
+                            if result.rebuilt_instances == 0 && result.loaded_instances > 0 =>
+                        {
+                            "addon-cache-loaded"
+                        }
+                        Ok(_) => "addon-rebuild-end",
+                        Err(_) => "addon-cache-failed",
+                    };
+                    let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                        phase: phase.to_string(),
+                    });
+                }
+                result
+            })
         }
-        result
-    });
+    };
+    let has_game_data_source = game_data_result.is_some();
     let game_data_ready_ms = game_data_start.elapsed().as_millis();
     logger.log_lazy(|| {
         format!(
@@ -966,7 +1049,7 @@ fn run_external_index_thread(
         if state.workspace_generation != workspace_generation {
             continue;
         }
-        if has_addon_source_inventory {
+        if has_game_data_source {
             state.game_data_index = game_data_index.clone();
             state.game_data_summary = game_data_summary.clone();
             state.cache_status = cache_status.clone();
@@ -1356,6 +1439,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let _handle = start_external_index(
             &LspServerOptions {
+                external_index_mode: ExternalIndexMode::Loaded,
                 addon_source_inventory: Some(missing_inventory),
                 addon_index_storage: Some(storage),
                 ..LspServerOptions::default()
@@ -1413,6 +1497,7 @@ mod tests {
         let handle = start_external_index(
             &LspServerOptions {
                 addon_source_inventory: Some(inventory),
+                external_index_mode: ExternalIndexMode::Loaded,
                 addon_index_storage: Some(storage.clone()),
                 workspace_scripts: vec![workspace.clone()],
                 ..LspServerOptions::default()
@@ -1443,6 +1528,7 @@ mod tests {
             handle.state.clone(),
             Some(missing_inventory),
             Some(storage),
+            ExternalIndexMode::Loaded,
             vec![workspace],
             LspLogger::new(None, None),
             None,
@@ -1501,6 +1587,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let handle = start_external_index(
             &LspServerOptions {
+                external_index_mode: ExternalIndexMode::Loaded,
                 addon_index_storage: Some(storage),
                 workspace_scripts: vec![workspace],
                 ..LspServerOptions::default()
@@ -1576,6 +1663,7 @@ mod tests {
         let handle = start_external_index(
             &LspServerOptions {
                 addon_source_inventory: Some(inventory),
+                external_index_mode: ExternalIndexMode::Loaded,
                 addon_index_storage: Some(storage.clone()),
                 ..LspServerOptions::default()
             },

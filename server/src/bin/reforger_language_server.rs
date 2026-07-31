@@ -1,6 +1,6 @@
 use reforger_language_server::game_data_catalogue::GameDataCatalogueConfig;
 use reforger_language_server::lsp::{
-    run_stdio as run_lsp_stdio, BracketColoringMode, LspServerOptions,
+    run_stdio as run_lsp_stdio, BracketColoringMode, ExternalIndexMode, LspServerOptions,
 };
 use reforger_language_server::mcp::{
     render_api_reference, render_api_reference_bundle, run_stdio as run_mcp_stdio, McpServerOptions,
@@ -192,30 +192,30 @@ fn run_workbench_api(
             serde_json::to_value(controller.overview()).unwrap_or_else(|_| unreachable!()),
             None,
         )),
-        WorkbenchApiCommand::BootstrapIntegration => controller
-            .bootstrap_integration()
-            .and_then(|value| {
+        WorkbenchApiCommand::BootstrapIntegration => {
+            controller.bootstrap_integration().and_then(|value| {
                 serde_json::to_value(value)
                     .map(|value| (value, None))
                     .map_err(|_| unreachable!())
-            }),
-        WorkbenchApiCommand::MaintainIntegration => controller
-            .maintain_integration()
-            .and_then(|value| {
+            })
+        }
+        WorkbenchApiCommand::MaintainIntegration => {
+            controller.maintain_integration().and_then(|value| {
                 serde_json::to_value(value)
                     .map(|value| (value, None))
                     .map_err(|_| unreachable!())
-            }),
+            })
+        }
         WorkbenchApiCommand::ProcessStatus => serde_json::to_value(controller.process_status())
             .map(|value| (value, None))
             .map_err(|_| unreachable!()),
-        WorkbenchApiCommand::LaunchDefault => controller
-            .launch_default_project()
-            .and_then(|value| {
+        WorkbenchApiCommand::LaunchDefault => {
+            controller.launch_default_project().and_then(|value| {
                 serde_json::to_value(value)
                     .map(|value| (value, None))
                     .map_err(|_| unreachable!())
-            }),
+            })
+        }
         WorkbenchApiCommand::InstallBridge => controller
             .install_bridge(WorkbenchInstallAuthorization::UserApprovedFirstInstall)
             .and_then(|value| {
@@ -283,6 +283,16 @@ fn parse_lsp_args(mut args: impl Iterator<Item = String>) -> Result<LspServerOpt
             }
             "--addon-index-storage" => {
                 options.addon_index_storage = Some(path_value(&mut args, "--addon-index-storage")?)
+            }
+            "--external-index-mode" => {
+                let value = string_value(&mut args, "--external-index-mode")?;
+                options.external_index_mode = match value.as_str() {
+                    "all" => ExternalIndexMode::All,
+                    "loaded" => ExternalIndexMode::Loaded,
+                    "baseGame" => ExternalIndexMode::BaseGame,
+                    "none" => ExternalIndexMode::None,
+                    _ => return Err(format!("invalid value for --external-index-mode: {value}")),
+                };
             }
             "--workspace-scripts" => {
                 options

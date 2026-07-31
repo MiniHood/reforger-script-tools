@@ -38,7 +38,10 @@ import { writeLoadedAddonSourceInventory } from "../gameData/localSourceInventor
 import {
   workbenchConfig,
   workbenchDefaults,
+  externalIndexModes,
+  type ExternalIndexMode,
 } from "../extensionConfig/workbench";
+import { gameDataStorage } from "../extensionConfig/gameData";
 import { WorkbenchGateway } from "../workbenchNetApi/gateway/workbenchGateway";
 import { registerHtmlHoverBridge } from "./hoverBridge";
 import {
@@ -81,6 +84,7 @@ export { ifSpaceCommitContractFromCommandArguments } from "./completionUiBridge"
 
 let client: LanguageClient | undefined;
 let clientDisposables: vscode.Disposable[] = [];
+let refreshWorkbenchGraph: (() => Promise<void>) | undefined;
 const restartCoordinator = new RestartCoordinator();
 let initialStartup: Promise<void> | undefined;
 const workspaceWatcherDebounceMs = 250;
@@ -208,6 +212,13 @@ export function registerLanguageClientFeatures(
           "bracket coloring changed",
         );
       }
+      if (event.affectsConfiguration(`${workbenchConfig.section}.${workbenchConfig.settings.externalIndexMode}`)) {
+        void restartLanguageClient(
+          context,
+          outputChannel,
+          "external index mode changed",
+        );
+      }
     }),
   );
 
@@ -251,11 +262,15 @@ export function registerLanguageClientFeatures(
         activeExternalIndexProgressSession = session;
         progress.report({ message: "Preparing script index" });
         try {
-          await restartLanguageClient(
-            context,
-            outputChannel,
-            "game-data source changed",
-          );
+          if (refreshWorkbenchGraph) {
+            await refreshWorkbenchGraph();
+          } else {
+            await restartLanguageClient(
+              context,
+              outputChannel,
+              "game-data source changed",
+            );
+          }
         } finally {
           if (activeExternalIndexProgressSession === session) {
             activeExternalIndexProgressSession = undefined;
@@ -347,10 +362,16 @@ async function startLanguageClient(
     });
   });
 
-  const sourceInventory = resolveWorkbenchLoadedAddonInventory(
+  const externalIndexMode = readExternalIndexMode();
+  const initialSourceInventory = resolveLastLoadedAddonInventory(
+    context,
+    externalIndexMode,
+  );
+  const currentSourceInventory = resolveCurrentWorkbenchAddonInventory(
     context,
     serverPath,
     outputChannel,
+    externalIndexMode,
     workbenchReady,
   );
   const workspaceScriptRootsPromise = discoverWorkspaceScriptRoots();
@@ -360,6 +381,8 @@ async function startLanguageClient(
       context.globalStorageUri.fsPath,
       languageClientIndexCache.rootFolder,
     ),
+    "--external-index-mode",
+    externalIndexMode,
     ...bracketColoringServerArguments(bracketColoring),
   ];
   if (diagnosticsEnabled()) {
@@ -382,7 +405,8 @@ async function startLanguageClient(
     serverArgs.push("--workspace-scripts", root);
   }
   logLanguageClientStartupTiming(context, "languageServerArgumentsReady", {
-    workbenchGraphDeliveryPending: true,
+    workbenchGraphDeliveryPending: externalIndexMode === 'loaded' || externalIndexMode === 'baseGame',
+    externalIndexMode,
     workspaceScriptRoots: workspaceScriptRoots.length,
     serverArgs: serverArgs.length,
     bracketColoring,
@@ -458,6 +482,7 @@ async function startLanguageClient(
     serverOptions,
     clientOptions,
   );
+  const activeClient = client;
   logLanguageClientStartupTiming(context, "languageClientCreated");
   // The external index is asynchronous, but it is still part of a usable
   // language-tooling startup. Monitor every launch so support diagnostics can
@@ -481,19 +506,46 @@ async function startLanguageClient(
       },
     );
     await client.start();
-    const sourceInventoryPath = await sourceInventory;
-    if (sourceInventoryPath) {
-      client.sendNotification(languageClientNotifications.loadedAddonGraph, {
-        inventoryPath: sourceInventoryPath,
+    const initialInventoryPath = await initialSourceInventory;
+    if (initialInventoryPath) {
+      activeClient.sendNotification(languageClientNotifications.loadedAddonGraph, {
+        inventoryPath: initialInventoryPath,
+      });
+      externalIndexMonitor.workbenchGraphDelivered();
+      logLanguageClientStartupTiming(
+        context,
+        "lastLoadedAddonGraphDelivered",
+      );
+    }
+    refreshWorkbenchGraph = async () => {
+      if (externalIndexMode === 'all' || externalIndexMode === 'none') {
+        return;
+      }
+      const inventoryPath = await resolveWorkbenchLoadedAddonInventory(
+        context,
+        serverPath,
+        outputChannel,
+      );
+      if (inventoryPath && client === activeClient) {
+        activeClient.sendNotification(languageClientNotifications.loadedAddonGraph, {
+          inventoryPath,
+        });
+        externalIndexMonitor.workbenchGraphDelivered();
+      }
+    };
+    void currentSourceInventory.then((inventoryPath) => {
+      if (!inventoryPath || client !== activeClient) {
+        return;
+      }
+      activeClient.sendNotification(languageClientNotifications.loadedAddonGraph, {
+        inventoryPath,
       });
       externalIndexMonitor.workbenchGraphDelivered();
       logLanguageClientStartupTiming(
         context,
         "workbenchLoadedAddonGraphDelivered",
       );
-    } else {
-      externalIndexMonitor.workbenchGraphUnavailable();
-    }
+    });
     diagnostic("languageClient.started", {
       workspaceScriptRoots: workspaceScriptRoots.length,
     });
@@ -538,11 +590,7 @@ async function resolveWorkbenchLoadedAddonInventory(
   context: vscode.ExtensionContext,
   serverPath: string,
   outputChannel: vscode.LogOutputChannel,
-	workbenchReady?: Promise<boolean>,
 ): Promise<string | undefined> {
-	if (workbenchReady && !(await workbenchReady)) {
-		return undefined;
-	}
   const configuration = vscode.workspace.getConfiguration(
     workbenchConfig.section,
   );
@@ -614,6 +662,53 @@ async function resolveWorkbenchLoadedAddonInventory(
     inventoryTotalMs: inventory.timingsMs.total,
   });
   return inventory.path;
+}
+
+async function resolveLastLoadedAddonInventory(
+  context: vscode.ExtensionContext,
+  mode: ExternalIndexMode,
+): Promise<string | undefined> {
+  if (mode === 'all' || mode === 'none') {
+    return undefined;
+  }
+  const inventoryPath = path.join(
+    context.globalStorageUri.fsPath,
+    gameDataStorage.rootFolder,
+    gameDataStorage.inventoryFile,
+  );
+  try {
+    await fs.access(inventoryPath);
+    return inventoryPath;
+  } catch {
+    return undefined;
+  }
+}
+
+async function resolveCurrentWorkbenchAddonInventory(
+  context: vscode.ExtensionContext,
+  serverPath: string,
+  outputChannel: vscode.LogOutputChannel,
+  mode: ExternalIndexMode,
+  workbenchReady?: Promise<boolean>,
+): Promise<string | undefined> {
+  if (mode === 'all' || mode === 'none' || !workbenchReady || !(await workbenchReady)) {
+    return undefined;
+  }
+  return resolveWorkbenchLoadedAddonInventory(
+    context,
+    serverPath,
+    outputChannel,
+  );
+}
+
+function readExternalIndexMode(): ExternalIndexMode {
+  const value = vscode.workspace.getConfiguration(workbenchConfig.section).get(
+    workbenchConfig.settings.externalIndexMode,
+    workbenchDefaults.externalIndexMode,
+  );
+  return typeof value === 'string' && externalIndexModes.includes(value as ExternalIndexMode)
+    ? value as ExternalIndexMode
+    : workbenchDefaults.externalIndexMode;
 }
 
 function logFirstSemanticTokenResponse(
@@ -844,6 +939,7 @@ async function synchronizeBracketColoringEditorMode(
 }
 
 function disposeClientDisposables(): void {
+  refreshWorkbenchGraph = undefined;
   for (const disposable of clientDisposables) {
     disposable.dispose();
   }

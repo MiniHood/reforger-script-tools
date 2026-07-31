@@ -146,6 +146,15 @@ use workspace_requests::{
     LoadedAddonGraphParams, WorkspaceFileChangedParams, WorkspaceFileDeletedParams,
 };
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExternalIndexMode {
+    All,
+    #[default]
+    Loaded,
+    BaseGame,
+    None,
+}
+
 const SERVER_NAME: &str = "reforger-language-server";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const SIGNATURE_HELP_TRIGGER_CHARACTERS: &[&str] = &[
@@ -180,6 +189,7 @@ pub struct LspServerOptions {
     pub diagnostic_log_path: Option<PathBuf>,
     pub addon_source_inventory: Option<PathBuf>,
     pub addon_index_storage: Option<PathBuf>,
+    pub external_index_mode: ExternalIndexMode,
     pub workspace_scripts: Vec<PathBuf>,
     pub bracket_coloring: BracketColoringMode,
 }
@@ -846,7 +856,7 @@ impl<W: Write> LspServer<W> {
             shutdown_requested: false,
         };
         server.log_lazy(|| format!(
-            "startup server={SERVER_NAME} version={SERVER_VERSION} addon_source_inventory={} addon_index_storage={} workspace_roots={} bracket_coloring={:?} external_index_status={}",
+            "startup server={SERVER_NAME} version={SERVER_VERSION} addon_source_inventory={} addon_index_storage={} external_index_mode={:?} workspace_roots={} bracket_coloring={:?} external_index_status={}",
             options
                 .addon_source_inventory
                 .as_ref()
@@ -857,6 +867,7 @@ impl<W: Write> LspServer<W> {
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "<unset>".to_string()),
+            options.external_index_mode,
             format_paths(&options.workspace_scripts),
             options.bracket_coloring,
             server.external_index.status_summary().status
@@ -866,6 +877,7 @@ impl<W: Write> LspServer<W> {
                 "gameDataConfigured": options.addon_source_inventory.is_some(),
                 "workspaceRoots": options.workspace_scripts.len(),
                 "indexCacheConfigured": options.addon_index_storage.is_some(),
+                "externalIndexMode": format!("{:?}", options.external_index_mode),
                 "bracketColoring": format!("{:?}", options.bracket_coloring),
             })
         });
