@@ -277,14 +277,17 @@ builds only that scope. An unpacked candidate with usable `Scripts` wins over a
 packed duplicate; equal usable candidates are reported as ambiguous. The
 provisional scope is labelled separately from Workbench-loaded data, and a live
 Workbench graph replaces it when available.
-The **Reforger: Indexing loaded add-ons** progress indicator remains visible in
-the VS Code status bar through offline cache hydration, dependency indexing,
-Workbench reconciliation, PAC inspection, and index publication; wait for it
-to close before judging game-API language features. Diagnostic records expose
-the same two ownership categories (`offline` and `workbench-reconciliation`)
-as diagnostic `phase` values so warm-start measurements can compare cache
-usability with the later Workbench refresh. The progress stream may also emit
-operational sub-stages such as PAC inspection and workspace indexing.
+The **Reforger: Indexing loaded add-ons** progress indicator covers active
+offline cache hydration, dependency indexing, PAC inspection, and index
+publication. It closes when the offline index reaches a terminal state; it
+does not remain open while waiting for an optional Workbench graph. A later
+Workbench connection reconciles the authoritative scope independently and may
+show progress only while that refresh is actively indexing. Diagnostic records
+expose the same two ownership categories (`offline` and
+`workbench-reconciliation`) as diagnostic `phase` values so warm-start
+measurements can compare cache usability with the later authoritative refresh.
+The progress stream may also emit operational sub-stages such as PAC
+inspection and workspace indexing.
 
 The active base-game artifacts are:
 

@@ -79,7 +79,6 @@ suite('extension activation', () => {
 			{} as vscode.ExtensionContext,
 			client,
 			undefined,
-			'none',
 		);
 		reportProgress?.({ phase: 'complete', status: 'ready' });
 
@@ -89,6 +88,80 @@ suite('extension activation', () => {
 		]);
 		monitor.disposable.dispose();
 		assert.strictEqual(completed, true);
+	});
+
+	test('finishes offline indexing without waiting for a Workbench graph', async () => {
+		let reportProgress: ((params: { phase: string; status?: string }) => void) | undefined;
+		const messages: string[] = [];
+		const client = {
+			onNotification: (_type: unknown, handler: (params: { phase: string; status?: string }) => void) => {
+				reportProgress = handler;
+				return new vscode.Disposable(() => undefined);
+			},
+			onDidChangeState: () => new vscode.Disposable(() => undefined),
+		} as never;
+		const monitor = monitorExternalIndexProgress(
+			{} as vscode.ExtensionContext,
+			client,
+			{ report: ({ message }) => {
+				if (message) {
+					messages.push(message);
+				}
+			} },
+		);
+
+		reportProgress?.({ phase: 'complete', status: 'ready' });
+
+		const completed = await Promise.race([
+			monitor.completion.then(() => true),
+			new Promise<boolean>(resolve => setTimeout(() => resolve(false), 50)),
+		]);
+		monitor.disposable.dispose();
+		assert.strictEqual(completed, true);
+		assert.deepEqual(messages, []);
+	});
+
+	test('tracks a later Workbench reconciliation until its terminal event', async () => {
+		let reportProgress: ((params: { phase: string; status?: string }) => void) | undefined;
+		const startupMessages: string[] = [];
+		const messages: string[] = [];
+		const client = {
+			onNotification: (_type: unknown, handler: (params: { phase: string; status?: string }) => void) => {
+				reportProgress = handler;
+				return new vscode.Disposable(() => undefined);
+			},
+			onDidChangeState: () => new vscode.Disposable(() => undefined),
+		} as never;
+		const monitor = monitorExternalIndexProgress(
+			{} as vscode.ExtensionContext,
+			client,
+			{ report: ({ message }) => {
+				if (message) {
+					startupMessages.push(message);
+				}
+			} },
+		);
+
+		reportProgress?.({ phase: 'complete', status: 'ready' });
+		await monitor.completion;
+		const reconciliation = monitor.waitForNextCompletion({ report: ({ message }) => {
+			if (message) {
+				messages.push(message);
+			}
+		} });
+
+		reportProgress?.({ phase: 'workbench-reconciliation' });
+		const completedBeforeTerminalEvent = await Promise.race([
+			reconciliation.then(() => true),
+			new Promise<boolean>(resolve => setTimeout(() => resolve(false), 50)),
+		]);
+		assert.strictEqual(completedBeforeTerminalEvent, false);
+		assert.deepEqual(messages, ['Reconciled Workbench add-on indexes']);
+		assert.deepEqual(startupMessages, []);
+
+		reportProgress?.({ phase: 'complete', status: 'ready' });
+		await reconciliation;
+		monitor.disposable.dispose();
 	});
 
 	test('discovers only an unambiguous workspace project descriptor', async () => {

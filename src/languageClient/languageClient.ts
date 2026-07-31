@@ -235,7 +235,6 @@ export function registerLanguageClientFeatures(
 			cancellable: false,
 		},
 		progress => {
-			progress.report({ message: 'Waiting for Workbench integration' });
 			return synchronizeBracketColoringEditorMode(
 				bracketColoring,
 				outputChannel,
@@ -265,7 +264,6 @@ export function registerLanguageClientFeatures(
       async (progress) => {
         const session = { progress };
         activeExternalIndexProgressSession = session;
-        progress.report({ message: "Preparing script index" });
         try {
           if (refreshWorkbenchGraph) {
             await refreshWorkbenchGraph();
@@ -519,7 +517,6 @@ async function startLanguageClient(
     context,
     client,
     externalIndexProgress,
-    externalIndexMode,
   );
   clientDisposables.push(externalIndexMonitor.disposable);
 
@@ -547,15 +544,17 @@ async function startLanguageClient(
         outputChannel,
       );
       if (inventoryPath && client === activeClient) {
+        const reconciliation = externalIndexMonitor.waitForNextCompletion(
+          activeExternalIndexProgressSession?.progress,
+        );
         activeClient.sendNotification(languageClientNotifications.loadedAddonGraph, {
           inventoryPath,
         });
-        externalIndexMonitor.workbenchGraphDelivered();
+        await reconciliation;
       }
     };
     void currentSourceInventory.then((inventoryPath) => {
       if (!inventoryPath) {
-        externalIndexMonitor.workbenchGraphUnavailable();
         return;
       }
       if (client !== activeClient) {
@@ -564,7 +563,6 @@ async function startLanguageClient(
       activeClient.sendNotification(languageClientNotifications.loadedAddonGraph, {
         inventoryPath,
       });
-      externalIndexMonitor.workbenchGraphDelivered();
       logLanguageClientStartupTiming(
         context,
         "workbenchLoadedAddonGraphDelivered",
@@ -813,25 +811,42 @@ export function monitorExternalIndexProgress(
   context: vscode.ExtensionContext,
   activeClient: LanguageClient,
   progress: ExternalIndexProgress | undefined,
-  mode: ExternalIndexMode = 'loaded',
 ): {
   completion: Promise<void>;
   disposable: vscode.Disposable;
-  workbenchGraphDelivered(): void;
-  workbenchGraphUnavailable(): void;
+  waitForNextCompletion(progress?: ExternalIndexProgress): Promise<void>;
 } {
   let complete = false;
-  let workbenchGraphDelivered = false;
-  let workbenchGraphUnavailable = mode === 'all' || mode === 'none';
-  let pendingCompletion: ExternalIndexProgressParams | undefined;
+  let initialIndexComplete = false;
+  const pendingCompletions: Array<{
+    progress?: ExternalIndexProgress;
+    resolve: () => void;
+  }> = [];
   let resolveCompletion: (() => void) | undefined;
   const completion = new Promise<void>((resolve) => {
     resolveCompletion = resolve;
   });
+  const resolvePendingCompletions = () => {
+    while (pendingCompletions.length > 0) {
+      pendingCompletions.shift()?.resolve();
+    }
+  };
   const finish = () => {
     if (!complete) {
       complete = true;
       resolveCompletion?.();
+    }
+    resolvePendingCompletions();
+  };
+  const reportProgress = (
+    target: ExternalIndexProgress | undefined,
+    params: ExternalIndexProgressParams,
+  ) => {
+    const isReady = params.phase === "complete" && params.status === "ready";
+    if (!isReady) {
+      target?.report({
+        message: externalIndexProgressMessage(params.phase, params.status),
+      });
     }
   };
   const finishIndex = (params: ExternalIndexProgressParams) => {
@@ -846,23 +861,24 @@ export function monitorExternalIndexProgress(
       languageClientNotifications.externalIndexProgress,
     ),
     (params) => {
-      progress?.report({
-        message: externalIndexProgressMessage(params.phase, params.status),
-      });
+      if (!initialIndexComplete) {
+        reportProgress(progress, params);
+      }
+      for (const pending of pendingCompletions) {
+        reportProgress(pending.progress, params);
+      }
       logLanguageClientStartupTiming(context, "externalIndexProgress", {
         phase: params.phase,
         status: params.status,
         gameDataFiles: params.gameDataFiles,
       });
       if (params.phase === "complete") {
-        if (!externalIndexProgressIsTerminal(params.status)) {
-          pendingCompletion = params;
-          return;
-        }
-        if (workbenchGraphDelivered || workbenchGraphUnavailable) {
-          finishIndex(params);
-        } else {
-          pendingCompletion = params;
+        if (externalIndexProgressIsTerminal(params.status)) {
+          initialIndexComplete = true;
+          if (!complete) {
+            finishIndex(params);
+          }
+          resolvePendingCompletions();
         }
       }
     },
@@ -877,17 +893,9 @@ export function monitorExternalIndexProgress(
     disposable: vscode.Disposable.from(notification, stateChanges, {
       dispose: finish,
     }),
-    workbenchGraphDelivered: () => {
-      workbenchGraphDelivered = true;
-      pendingCompletion = undefined;
-    },
-    workbenchGraphUnavailable: () => {
-      workbenchGraphUnavailable = true;
-      if (pendingCompletion) {
-        finishIndex(pendingCompletion);
-        pendingCompletion = undefined;
-      }
-    },
+    waitForNextCompletion: (nextProgress) => new Promise((resolve) => {
+      pendingCompletions.push({ progress: nextProgress, resolve });
+    }),
   };
 }
 
