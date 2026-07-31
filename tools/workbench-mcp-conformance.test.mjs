@@ -3,10 +3,11 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import test from "node:test";
 import { join } from "node:path";
 import {
-  buildLiveCoverageReport,
-  buildEndpointCorpusReport,
+  buildWorkbenchEndpointPlan,
+  buildWorkbenchCorpusReport,
   buildContractReport,
   classifyTool,
+  validateWorkbenchEndpointPlan,
   loadFixtureManifest,
   runScenario,
   summarizePerformance,
@@ -330,115 +331,178 @@ test("summarizes latency distributions while retaining failed samples", () => {
   );
 });
 
-test("reports the exact published tools still missing live evidence", () => {
-  const report = buildLiveCoverageReport(
-    { expectedNames: ["workbench_status", "workbench_create_entity"] },
-    [{ steps: [{ tool: "workbench_status", outcome: "success" }] }],
-  );
+test("requires the executable endpoint plan to match the published catalogue exactly", () => {
+  const plan = buildWorkbenchEndpointPlan([
+    "workbench_status",
+    "workbench_create_entity",
+  ]);
 
-  assert.deepEqual(report, {
-    ok: false,
-    expectedCount: 2,
-    coveredCount: 1,
-    successfulCount: 1,
-    expectedErrorCount: 0,
-    expectedUnavailableCount: 0,
-    incomplete: [],
-    complete: true,
-    missing: ["workbench_create_entity"],
+  assert.deepEqual(validateWorkbenchEndpointPlan(
+    ["workbench_status", "workbench_create_entity"],
+    plan,
+  ), {
+    ok: true,
+    missing: [],
     unexpected: [],
-    failed: [],
+    duplicates: [],
+    invalid: [],
   });
-});
 
-test("does not count a failed step as live evidence", () => {
-  const report = buildLiveCoverageReport(
-    { expectedNames: ["workbench_status"] },
-    [{ steps: [{ tool: "workbench_status", outcome: "failure" }] }],
+  assert.equal(
+    validateWorkbenchEndpointPlan(
+      ["workbench_status"],
+      [...plan, plan[1]],
+    ).ok,
+    false,
   );
-
-  assert.equal(report.ok, false);
-  assert.deepEqual(report.missing, ["workbench_status"]);
-  assert.deepEqual(report.failed, ["workbench_status"]);
 });
 
-test("reports covered but incomplete capabilities separately", () => {
-  const report = buildLiveCoverageReport(
-    { expectedNames: ["workbench_reload"] },
-    [
-      {
-        steps: [
-          {
-            tool: "workbench_reload",
-            outcome: "expected-unavailable",
-            completion: false,
-          },
-        ],
-      },
-    ],
-  );
-
-  assert.equal(report.ok, true);
-  assert.equal(report.complete, false);
-  assert.deepEqual(report.incomplete, ["workbench_reload"]);
-  assert.equal(report.expectedUnavailableCount, 1);
-});
-
-test("records an approval or failure status for every published endpoint", () => {
-  const report = buildEndpointCorpusReport(
+test("aggregates required cases into passed, failed, blocked, and not-run statuses", () => {
+  const plan = [
     {
-      expectedNames: [
-        "workbench_status",
-        "workbench_reload",
-        "workbench_save",
-        "workbench_stop",
-      ],
-      coverage: [
-        { tool: "workbench_status", family: "status", contractEvidence: "tools/list" },
-        { tool: "workbench_reload", family: "reload", contractEvidence: "tools/list" },
-        { tool: "workbench_save", family: "save", contractEvidence: "tools/list" },
-        { tool: "workbench_stop", family: "lifecycle", contractEvidence: "tools/list" },
+      tool: "workbench_status",
+      workflow: "readiness",
+      dependencies: [],
+      cases: [{ id: "success", kind: "success" }],
+    },
+    {
+      tool: "workbench_reload",
+      workflow: "reload",
+      dependencies: ["managedBridge"],
+      cases: [
+        { id: "success", kind: "success" },
+        { id: "guard", kind: "guard" },
       ],
     },
-    [
-      {
-        name: "corpus",
-        steps: [
-          { tool: "workbench_status", name: "status", outcome: "success", durationMs: 4 },
-          {
-            tool: "workbench_reload",
-            name: "reload",
-            outcome: "expected-unavailable",
-            completion: false,
-            error: { code: "workbench_timeout" },
-          },
-          {
-            tool: "workbench_save",
-            name: "save",
-            outcome: "failure",
-            reasons: ["save failed"],
-          },
-        ],
-      },
-    ],
-  );
+    {
+      tool: "workbench_save",
+      workflow: "save",
+      dependencies: [],
+      cases: [{ id: "success", kind: "success" }],
+    },
+    {
+      tool: "workbench_stop",
+      workflow: "lifecycle",
+      dependencies: ["replacementProcess"],
+      cases: [{ id: "success", kind: "success" }],
+    },
+  ];
+
+  const report = buildWorkbenchCorpusReport(plan, [
+    {
+      name: "corpus",
+      steps: [
+        { tool: "workbench_status", case: "success", role: "test", outcome: "success" },
+        { tool: "workbench_reload", case: "success", role: "test", outcome: "expected-unavailable", blockedBy: ["managedBridge"] },
+        { tool: "workbench_reload", case: "guard", role: "test", outcome: "expected-error" },
+        { tool: "workbench_save", case: "success", role: "test", outcome: "failure", reasons: ["save failed"] },
+      ],
+    },
+  ]);
 
   assert.deepEqual(report.counts, {
-    approved: 1,
+    passed: 1,
     failed: 1,
-    incomplete: 1,
-    "not-tested": 1,
+    blocked: 1,
+    "not-run": 1,
   });
   assert.deepEqual(
     report.endpoints.map(({ tool, status }) => ({ tool, status })),
     [
-      { tool: "workbench_status", status: "approved" },
-      { tool: "workbench_reload", status: "incomplete" },
+      { tool: "workbench_status", status: "passed" },
+      { tool: "workbench_reload", status: "blocked" },
       { tool: "workbench_save", status: "failed" },
-      { tool: "workbench_stop", status: "not-tested" },
+      { tool: "workbench_stop", status: "not-run" },
     ],
   );
-  assert.equal(report.endpoints[1].observations[0].error.code, "workbench_timeout");
+});
+
+test("preserves invocation role, case, and fact evidence in corpus observations", async () => {
+  const report = await runScenario({
+    client: {
+      async callToolTimed() {
+        return {
+          response: {
+            result: {
+              isError: false,
+              structuredContent: { status: "created", entityId: "entity-1" },
+            },
+          },
+          timing: { durationMs: 1, requestBytes: 10, responseBytes: 20 },
+        };
+      },
+    },
+    name: "metadata",
+    steps: [{
+      name: "create",
+      tool: "workbench_create_entity",
+      role: "setup",
+      case: "success",
+      facts: ["entity"],
+      expect: { pointers: { "/result/structuredContent/status": "created" } },
+    }],
+  });
+
+  assert.deepEqual(report.steps[0], {
+    name: "create",
+    tool: "workbench_create_entity",
+    role: "setup",
+    case: "success",
+    facts: ["entity"],
+    outcome: "success",
+    durationMs: 1,
+    requestBytes: 10,
+    responseBytes: 20,
+  });
+});
+
+test("records a successful structured unavailable response as blocked evidence", async () => {
+  const report = await runScenario({
+    client: {
+      async callToolTimed() {
+        return {
+          response: {
+            result: {
+              isError: false,
+              structuredContent: { status: "prefab-edit-unavailable" },
+            },
+          },
+          timing: { durationMs: 1, requestBytes: 10, responseBytes: 20 },
+        };
+      },
+    },
+    name: "blocked structured result",
+    steps: [{
+      name: "outside-edit guard",
+      tool: "workbench_set_prefab_property",
+      expect: { completion: false },
+    }],
+  });
+
+  assert.equal(report.steps[0].outcome, "expected-unavailable");
+  assert.equal(report.steps[0].completion, false);
+});
+
+test("does not approve a case from a readback-role invocation alone", () => {
+  const report = buildWorkbenchCorpusReport([
+    {
+      tool: "workbench_create_entity",
+      workflow: "entity",
+      dependencies: [],
+      cases: [{ id: "success", kind: "success" }],
+    },
+  ], [{
+    name: "readback-only",
+    steps: [{
+      tool: "workbench_create_entity",
+      case: "success",
+      role: "readback",
+      outcome: "success",
+    }],
+  }]);
+
+  assert.equal(report.ok, false);
+  assert.equal(report.endpoints[0].status, "not-run");
 });
 
 test("waits for the editor catalogue after Workbench NET readiness", async () => {

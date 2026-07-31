@@ -92,14 +92,13 @@ that operation reports that it started a new process. It records per-tool
 minimum, maximum, p50, p95, p99, and failure counts. A failed scenario step is
 not live evidence; an expected structured error is evidence of the tested
 failure contract. Optional errors require an explicit structured code/phase
-oracle. Steps that observe an unavailable or unsupported operation can be
-marked incomplete; they count toward inventory coverage but are listed in
-`liveCoverage.incomplete` (and counted in `expectedUnavailableCount`) rather
-than being reported as completed behavior.
-Each report also contains `endpointCorpus`, a one-record-per-published-endpoint
-inventory with `approved`, `failed`, `incomplete`, or `not-tested` status and
-the observations, timings, structured errors, and assertion reasons supporting
-that status.
+oracle. Steps that observe an unavailable or unsupported operation remain
+explicit blocked evidence; they cannot substitute for a required
+successful case. Each report contains `endpointPlan` and `endpointCorpus`: one
+plan entry and one corpus record per published endpoint, with `passed`,
+`failed`, `blocked`, or `not-run` status and the required cases, invocation
+roles, facts, timings, structured errors, and assertion reasons supporting that
+status.
 When a fixture manifest disallows reuse of an existing Workbench process, the
 runner also verifies the owned lifecycle: it restarts the exact process
 reported by `workbench_launch`, adopts the replacement process ID, and stops

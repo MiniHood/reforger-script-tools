@@ -64,28 +64,33 @@ oracles may use the explicit `$fixture.processId` and
 `$fixture.projectPath` and `$fixture.worldResource` references for lifecycle and
 world-identity checks; there is no arbitrary expression or command expansion.
 
-The committed `scenarios/test-bullshit-all-apis.json` is the complete live
-scenario for the current 63-tool Workbench catalogue. It uses the fixture's
-stable world, spline, and component identities, creates disposable scene
-entities, confirms every preview token in the same MCP session, and restores or
-deletes each scene mutation. It also records structured expected failures for
-capabilities that the target Workbench cannot complete in the current session.
+The committed `scenarios/test-bullshit-all-apis.json` is the disposable fixture
+input for the dependency-driven corpus runner and covers the current 63-tool
+Workbench catalogue. The runner supplies the executable endpoint plan from the
+published catalogue, labels each invocation with its role and acceptance case,
+and reports `passed`, `failed`, `blocked`, or `not-run` per endpoint. The input
+uses the fixture's stable world, spline, and component identities, creates
+disposable scene entities, confirms every preview token in the same MCP
+session, and restores or deletes each scene mutation. Structured expected
+failures remain evidence for their declared guard cases; they cannot replace a
+required successful case.
 An environment-dependent step may set `expect.allowError` when both a success
 result and a structured unavailable result are valid outcomes; it must also
 provide an explicit `expect.error` code/phase oracle. This is reserved for
 window capture and any reload run whose replacement generation cannot be
 observed; such a result remains visible in the
 report's `expectedErrorCount`. Steps marked `expect.completion: false` remain
-live evidence for inventory coverage, but appear in `liveCoverage.incomplete`
-and increment `expectedUnavailableCount`, so an unavailable or unsupported
-operation cannot be mistaken for completed editor behavior.
+explicit blocked evidence and cannot substitute for a required successful case,
+so an unavailable or unsupported operation cannot be mistaken for completed
+editor behavior.
 
-Each JSON report also contains `endpointCorpus`. It has one record for every
-published endpoint, with `approved`, `failed`, `incomplete`, or `not-tested`
-status, the scenario observations that support the status, timing, structured
-errors, and assertion reasons. An expected structured error is approved when
-it matches its explicit oracle; an endpoint is incomplete when its scenario
-marks the capability as unavailable.
+Each JSON report also contains `endpointPlan` and `endpointCorpus`. The plan
+has one record for every published endpoint, and the corpus has one record for
+every plan entry with `passed`, `failed`, `blocked`, or `not-run` status, the
+required cases, invocation roles, facts, timing, structured errors, and
+assertion reasons. An expected structured error passes only its explicit guard
+case; an endpoint is blocked when a required public dependency cannot be
+established.
 
 For a disposable manifest with `allowExistingProcess` omitted or false, the
 runner verifies the owned lifecycle after the scenario: it restarts the exact

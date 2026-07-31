@@ -49,6 +49,348 @@ const toolFamilyRules = [
   ["window", /^(list_windows|capture_window)$/],
 ];
 
+const corpusWorkflowTools = {
+  "owned-process": ["workbench_launch", "workbench_status", "workbench_list_windows", "workbench_capture_window"],
+  readiness: ["workbench_install_bridge", "workbench_project_context", "workbench_validate_scripts", "workbench_list_editors", "workbench_open_editor"],
+  "world-read": ["workbench_search_resources", "workbench_list_resources", "workbench_inspect_resource", "workbench_open_resource", "workbench_state", "workbench_world_selection_summary", "workbench_selected_entity_hierarchy", "workbench_list_entities", "workbench_search_world_entities", "workbench_layer_state", "workbench_find_entities_by_radius", "workbench_sample_terrain", "workbench_get_viewport_context", "workbench_trace", "workbench_inspect_entity", "workbench_list_components", "workbench_inspect_component", "workbench_list_entity_properties", "workbench_get_shape_points"],
+  entity: ["workbench_create_entity", "workbench_add_component", "workbench_set_component_properties", "workbench_set_entity_properties", "workbench_rename_entity", "workbench_move_entity", "workbench_rotate_entity", "workbench_duplicate_entity", "workbench_reparent_entity", "workbench_set_selection", "workbench_clear_selection", "workbench_remove_component", "workbench_delete_entity"],
+  shape: ["workbench_edit_shape_points", "workbench_set_polyline_regular_polygon", "workbench_convert_shape_points", "workbench_transform_shape_points", "workbench_resample_polyline"],
+  "prefab-resource": ["workbench_create_prefab", "workbench_create_generic_prefab", "workbench_inspect_prefab_context", "workbench_inspect_prefab_component", "workbench_add_prefab_resource_component", "workbench_set_prefab_resource_property", "workbench_remove_prefab_resource_component", "workbench_save_prefab"],
+  "prefab-editor": ["workbench_set_prefab_property", "workbench_set_prefab_component_property"],
+  "save-play-reload": ["workbench_save", "workbench_start_play_session", "workbench_stop_play_session", "workbench_reload", "workbench_read_logs"],
+  lifecycle: ["workbench_restart", "workbench_stop"],
+};
+
+const corpusWorkflowDependencies = {
+  "owned-process": ["catalogue"],
+  readiness: ["connectedWorkbench"],
+  "world-read": ["activeWorld"],
+  entity: ["entity"],
+  shape: ["shape"],
+  "prefab-resource": ["prefabResource"],
+  "prefab-editor": ["prefabEditEntity"],
+  "save-play-reload": ["savedWorld"],
+  lifecycle: ["replacementProcess"],
+};
+
+const corpusFactProducers = {
+  catalogue: "<tools/list>",
+  ownedProcess: "workbench_launch",
+  connectedWorkbench: "workbench_status",
+  managedBridge: "workbench_install_bridge",
+  projectContext: "workbench_project_context",
+  worldEditor: "workbench_open_editor",
+  activeWorld: "workbench_open_resource",
+  canonicalResource: "workbench_search_resources",
+  entity: "workbench_create_entity",
+  component: "workbench_add_component",
+  relatedEntities: "workbench_create_entity",
+  shape: "workbench_create_entity",
+  prefabResource: "workbench_create_generic_prefab",
+  prefabEditEntity: "workbench_inspect_prefab_context",
+  savedWorld: "workbench_save",
+  playSession: "workbench_start_play_session",
+  reloadedRuntime: "workbench_reload",
+  replacementProcess: "workbench_restart",
+  window: "workbench_list_windows",
+};
+
+const corpusWorkflowByTool = Object.fromEntries(
+  Object.entries(corpusWorkflowTools).flatMap(([workflow, tools]) =>
+    tools.map((tool) => [tool, workflow]),
+  ),
+);
+
+const corpusToolDependencies = Object.fromEntries([
+  [["workbench_status", "workbench_list_windows"], ["ownedProcess"]],
+  [["workbench_capture_window"], ["window"]],
+  [["workbench_install_bridge"], ["connectedWorkbench"]],
+  [["workbench_project_context"], ["managedBridge"]],
+  [["workbench_validate_scripts"], ["managedBridge", "projectContext"]],
+  [["workbench_list_editors"], ["managedBridge"]],
+  [["workbench_open_editor"], ["managedBridge"]],
+  [["workbench_search_resources", "workbench_list_resources"], ["managedBridge", "projectContext"]],
+  [["workbench_inspect_resource"], ["canonicalResource"]],
+  [["workbench_open_resource"], ["canonicalResource", "worldEditor"]],
+  [["workbench_state"], ["managedBridge"]],
+  [["workbench_world_selection_summary", "workbench_list_entities", "workbench_search_world_entities", "workbench_layer_state", "workbench_find_entities_by_radius", "workbench_sample_terrain", "workbench_get_viewport_context", "workbench_trace"], ["activeWorld"]],
+  [["workbench_selected_entity_hierarchy", "workbench_inspect_entity", "workbench_list_components", "workbench_inspect_component", "workbench_list_entity_properties"], ["entity"]],
+  [["workbench_create_entity"], ["activeWorld"]],
+  [["workbench_add_component", "workbench_set_component_properties", "workbench_set_entity_properties", "workbench_rename_entity", "workbench_move_entity", "workbench_rotate_entity", "workbench_reparent_entity", "workbench_duplicate_entity", "workbench_set_selection", "workbench_clear_selection", "workbench_remove_component", "workbench_delete_entity"], ["entity"]],
+  [["workbench_get_shape_points", "workbench_edit_shape_points", "workbench_set_polyline_regular_polygon", "workbench_convert_shape_points", "workbench_transform_shape_points", "workbench_resample_polyline"], ["shape"]],
+  [["workbench_create_prefab"], ["entity"]],
+  [["workbench_create_generic_prefab"], ["activeWorld"]],
+  [["workbench_add_prefab_resource_component", "workbench_remove_prefab_resource_component", "workbench_set_prefab_resource_property"], ["prefabResource"]],
+  [["workbench_start_play_session"], ["savedWorld"]],
+  [["workbench_stop_play_session"], ["playSession"]],
+  [["workbench_reload"], ["savedWorld", "managedBridge"]],
+  [["workbench_read_logs"], ["reloadedRuntime"]],
+  [["workbench_save"], ["activeWorld"]],
+  [["workbench_restart"], ["ownedProcess", "savedWorld"]],
+  [["workbench_stop"], ["replacementProcess"]],
+].flatMap(([tools, dependencies]) => tools.map((tool) => [tool, dependencies])));
+
+const corpusCaseKinds = {
+  workbench_install_bridge: [{ id: "success", kind: "success" }, { id: "consent-guard", kind: "guard" }],
+  workbench_create_prefab: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
+  workbench_create_generic_prefab: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
+  workbench_save_prefab: [{ id: "resource-success", kind: "success", dependencies: ["prefabResource"] }, { id: "editor-success", kind: "success", dependencies: ["prefabEditEntity"] }, { id: "confirmation-safety", kind: "guard" }],
+  workbench_inspect_prefab_context: [{ id: "resource-success", kind: "success", dependencies: ["prefabResource"] }, { id: "editor-success", kind: "success", dependencies: ["prefabEditEntity"] }, { id: "target-guard", kind: "guard" }],
+  workbench_inspect_prefab_component: [{ id: "resource-success", kind: "success", dependencies: ["prefabResource"] }, { id: "editor-success", kind: "success", dependencies: ["prefabEditEntity"] }, { id: "target-guard", kind: "guard" }],
+  workbench_add_prefab_resource_component: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
+  workbench_remove_prefab_resource_component: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
+  workbench_set_prefab_resource_property: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
+  workbench_set_prefab_property: [{ id: "success", kind: "success", dependencies: ["prefabEditEntity"] }, { id: "outside-edit-guard", kind: "guard" }],
+  workbench_set_prefab_component_property: [{ id: "success", kind: "success", dependencies: ["prefabEditEntity"] }, { id: "outside-edit-guard", kind: "guard" }],
+  workbench_remove_component: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
+  workbench_delete_entity: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
+  workbench_restart: [{ id: "success", kind: "success" }],
+  workbench_stop: [{ id: "success", kind: "success" }],
+};
+
+export function buildWorkbenchEndpointPlan(
+  expectedNames = extractWorkbenchToolNames(readFileSync(defaultApiReference, "utf8")),
+) {
+  return expectedNames.map((tool) => {
+    const workflow = corpusWorkflowByTool[tool] ?? "uncategorized";
+    return {
+      tool,
+      workflow,
+      dependencies: [...(corpusToolDependencies[tool] ?? corpusWorkflowDependencies[workflow] ?? [])],
+      cases: (corpusCaseKinds[tool] ?? [{ id: "success", kind: "success" }]).map(
+        (acceptanceCase) => ({ ...acceptanceCase }),
+      ),
+    };
+  });
+}
+
+export function validateWorkbenchEndpointPlan(expectedNames, plan, options = {}) {
+  const actualNames = plan.map((entry) => entry?.tool);
+  const expected = new Set(expectedNames);
+  const actual = new Set(actualNames);
+  const missing = expectedNames.filter((name) => !actual.has(name));
+  const unexpected = actualNames.filter(
+    (name) => typeof name !== "string" || !expected.has(name),
+  );
+  const duplicates = [...new Set(actualNames.filter(
+    (name, index, names) => names.indexOf(name) !== index,
+  ))];
+  const invalid = [];
+  const plannedTools = new Set(actualNames);
+  for (const entry of plan) {
+    const reasons = [];
+    if (!entry || typeof entry.tool !== "string") {
+      reasons.push("missing tool");
+    }
+    if (typeof entry?.workflow !== "string" || entry.workflow === "uncategorized") {
+      reasons.push("missing workflow");
+    }
+    if (!Array.isArray(entry?.dependencies)) {
+      reasons.push("missing dependencies");
+    } else if (options.checkDependencyProducers === true) {
+      for (const dependency of [
+        ...entry.dependencies,
+        ...entry.cases.flatMap((acceptanceCase) => acceptanceCase?.dependencies ?? []),
+      ]) {
+        const producer = corpusFactProducers[dependency];
+        if (!producer) {
+          reasons.push("unknown dependency " + dependency);
+        } else if (producer !== "<tools/list>" && !plannedTools.has(producer)) {
+          reasons.push(
+            "dependency " + dependency + " has no planned producer " + producer,
+          );
+        }
+      }
+    }
+    if (!Array.isArray(entry?.cases) || entry.cases.length === 0) {
+      reasons.push("missing acceptance cases");
+    } else {
+      const caseIds = entry.cases.map((acceptanceCase) => acceptanceCase?.id);
+      if (caseIds.some((id) => typeof id !== "string" || id.length === 0)) {
+        reasons.push("acceptance case missing id");
+      }
+      if (new Set(caseIds).size !== caseIds.length) {
+        reasons.push("duplicate acceptance case");
+      }
+      if (!entry.cases.some((acceptanceCase) => acceptanceCase?.kind === "success")) {
+        reasons.push("missing successful acceptance case");
+      }
+    }
+    if (reasons.length > 0) {
+      invalid.push({ name: entry?.tool ?? null, reasons });
+    }
+  }
+  return {
+    ok: missing.length === 0 && unexpected.length === 0 && duplicates.length === 0 && invalid.length === 0,
+    missing,
+    unexpected: [...new Set(unexpected)],
+    duplicates,
+    invalid,
+  };
+}
+
+function inferScenarioCase(step) {
+  if (step.case) return step.case;
+  const name = String(step.name ?? "").toLowerCase();
+  if (name.includes("preview")) return "confirmation-safety";
+  if (name.includes("without-target")) return "target-guard";
+  if (name.includes("unknown-process")) {
+    return step.tool === "workbench_stop" || step.tool === "workbench_restart"
+      ? "ownership-guard"
+      : "outside-edit-guard";
+  }
+  if (name.includes("outside-edit")) {
+    return "outside-edit-guard";
+  }
+  if (step.tool === "workbench_save_prefab") {
+    return step.arguments?.resourceName ? "resource-success" : "editor-success";
+  }
+  if (
+    step.tool === "workbench_inspect_prefab_context" ||
+    step.tool === "workbench_inspect_prefab_component"
+  ) {
+    return step.arguments?.resourceName ? "resource-success" : "editor-success";
+  }
+  if (name.includes("edit-context") || name.includes("prefab-edit")) return "editor-success";
+  return "success";
+}
+
+function inferScenarioRole(step) {
+  if (step.role) return step.role;
+  const name = String(step.name ?? "").toLowerCase();
+  if (name.includes("preview")) return "test";
+  if (name.includes("read-after") || name.startsWith("verify-") || name.startsWith("inspect-")) {
+    return "readback";
+  }
+  if (name.includes("delete-") || name.includes("restore-") || name === "clear-selection") {
+    return "teardown";
+  }
+  return "test";
+}
+
+function inferScenarioFacts(step) {
+  const captured = Object.keys(step.capture ?? {});
+  const facts = [];
+  if (captured.some((name) => /entityId/i.test(name))) facts.push("entity");
+  if (captured.some((name) => /componentId/i.test(name))) facts.push("component");
+  if (captured.some((name) => /polylineEntityId|shapePoints/i.test(name))) facts.push("shape");
+  if (captured.some((name) => /prefabResourceName/i.test(name))) facts.push("prefabResource");
+  if (captured.some((name) => /worldResourceName/i.test(name))) facts.push("canonicalResource");
+  return facts;
+}
+
+export function buildWorkbenchCorpusReport(plan, scenarios = [], options = {}) {
+  const observationsByTool = new Map();
+  for (const scenario of scenarios) {
+    for (const step of scenario.steps ?? []) {
+      const observations = observationsByTool.get(step.tool) ?? [];
+      observations.push({
+        ...step,
+        case: step.case ?? null,
+        role: step.role ?? null,
+      });
+      observationsByTool.set(step.tool, observations);
+    }
+  }
+  const factState = new Map();
+  for (const [tool, observations] of observationsByTool) {
+    const producedFacts = Object.entries(corpusFactProducers)
+      .filter(([, producer]) => producer === tool)
+      .map(([fact]) => fact);
+    for (const fact of producedFacts) {
+      const explicitlyCaptured = observations.some((observation) =>
+        observation.facts?.includes(fact),
+      );
+      if (fact === "prefabEditEntity" && !explicitlyCaptured) {
+        continue;
+      }
+      if (observations.some((observation) =>
+        observation.outcome === "success",
+      )) {
+        factState.set(fact, "available");
+      } else if (observations.some((observation) =>
+        observation.outcome === "failure" || observation.outcome === "expected-unavailable",
+      )) {
+        factState.set(fact, "blocked");
+      }
+    }
+  }
+  for (const fact of options.blockedFacts ?? []) {
+    factState.set(fact, "blocked");
+  }
+  const endpoints = plan.map((entry) => {
+    const observations = observationsByTool.get(entry.tool) ?? [];
+    const blockedDependencies = entry.dependencies.filter((dependency) =>
+      factState.get(dependency) === "blocked",
+    );
+    const cases = entry.cases.map((acceptanceCase) => {
+      const matching = observations.filter((observation) => observation.case === acceptanceCase.id);
+      const caseDependencies = acceptanceCase.dependencies ?? entry.dependencies;
+      const caseBlockedDependencies = caseDependencies.filter((dependency) =>
+        factState.get(dependency) === "blocked",
+      );
+      const failure = matching.find((observation) => observation.outcome === "failure");
+      const unavailable = matching.find((observation) => observation.outcome === "expected-unavailable");
+      const allowedRoles = acceptanceCase.roles ??
+        (acceptanceCase.kind === "guard" ? ["test"] : ["test", "setup"]);
+      const passing = matching.some((observation) =>
+        allowedRoles.includes(observation.role) &&
+        (observation.outcome === "success" ||
+          (acceptanceCase.kind === "guard" &&
+            ["expected-error", "expected-unavailable"].includes(observation.outcome))),
+      );
+      return {
+        ...acceptanceCase,
+        status: failure ? "failed" :
+          (unavailable && acceptanceCase.kind !== "guard") || caseBlockedDependencies.length > 0
+          ? "blocked"
+          : passing ? "passed" : "not-run",
+        dependencies: caseDependencies,
+        blockers: caseBlockedDependencies,
+        observations: matching,
+      };
+    });
+    const status = cases.some((acceptanceCase) => acceptanceCase.status === "failed")
+      ? "failed"
+      : cases.some((acceptanceCase) => acceptanceCase.status === "blocked")
+        ? "blocked"
+        : blockedDependencies.length > 0
+          ? "blocked"
+        : cases.some((acceptanceCase) => acceptanceCase.status === "not-run")
+          ? "not-run"
+          : "passed";
+    return {
+      tool: entry.tool,
+      workflow: entry.workflow,
+      dependencies: entry.dependencies,
+      status,
+      cases,
+      invocations: observations,
+      blockers: [
+        ...blockedDependencies,
+        ...cases.flatMap((acceptanceCase) => acceptanceCase.blockers ?? []),
+        ...observations.flatMap((observation) => observation.blockedBy ?? []),
+      ],
+    };
+  });
+  const statuses = ["passed", "failed", "blocked", "not-run"];
+  const counts = Object.fromEntries(statuses.map((status) => [
+    status,
+    endpoints.filter((endpoint) => endpoint.status === status).length,
+  ]));
+  return {
+    ok: endpoints.every((endpoint) => endpoint.status === "passed"),
+    endpointCount: endpoints.length,
+    counts,
+    passed: endpoints.filter((endpoint) => endpoint.status === "passed").map((endpoint) => endpoint.tool),
+    failed: endpoints.filter((endpoint) => endpoint.status === "failed").map((endpoint) => endpoint.tool),
+    blocked: endpoints.filter((endpoint) => endpoint.status === "blocked").map((endpoint) => endpoint.tool),
+    notRun: endpoints.filter((endpoint) => endpoint.status === "not-run").map((endpoint) => endpoint.tool),
+    "not-run": endpoints.filter((endpoint) => endpoint.status === "not-run").map((endpoint) => endpoint.tool),
+    endpoints,
+  };
+}
+
 export function extractWorkbenchToolNames(apiReference) {
   const names = [];
   for (const line of apiReference.split(/\r?\n/)) {
@@ -258,124 +600,6 @@ function validateStructuredError(response, expectedError) {
   return reasons;
 }
 
-export function buildLiveCoverageReport(contract, scenarios = []) {
-  const evidence = new Set();
-  const failed = new Set();
-  const incomplete = new Set();
-  for (const scenario of scenarios) {
-    for (const step of scenario.steps ?? []) {
-      if (isLiveEvidence(step)) {
-        evidence.add(step.tool);
-        if (step.completion === false) {
-          incomplete.add(step.tool);
-        }
-      } else if (step.outcome === "failure") {
-        failed.add(step.tool);
-      }
-    }
-  }
-  const missing = contract.expectedNames.filter((name) => !evidence.has(name));
-  const published = new Set(contract.expectedNames);
-  const unexpected = [...new Set([...evidence, ...failed])].filter(
-    (name) => !published.has(name),
-  );
-  const failedPublished = [...failed].filter((name) => published.has(name));
-  const incompletePublished = [...incomplete].filter((name) =>
-    published.has(name),
-  );
-  return {
-    ok: missing.length === 0 && unexpected.length === 0 && failedPublished.length === 0,
-    expectedCount: contract.expectedNames.length,
-    coveredCount: contract.expectedNames.length - missing.length,
-    successfulCount: scenarios.reduce(
-      (count, scenario) =>
-        count + (scenario.steps ?? []).filter((step) => step.outcome === "success").length,
-      0,
-    ),
-    expectedErrorCount: scenarios.reduce(
-      (count, scenario) =>
-        count +
-        (scenario.steps ?? []).filter((step) => step.outcome === "expected-error").length,
-      0,
-    ),
-    expectedUnavailableCount: scenarios.reduce(
-      (count, scenario) =>
-        count +
-        (scenario.steps ?? []).filter(
-          (step) => step.outcome === "expected-unavailable",
-        ).length,
-      0,
-    ),
-    incomplete: incompletePublished,
-    complete: incompletePublished.length === 0,
-    missing,
-    unexpected,
-    failed: failedPublished,
-  };
-}
-
-export function buildEndpointCorpusReport(contract, scenarios = []) {
-  const observationsByTool = new Map();
-  for (const scenario of scenarios) {
-    for (const step of scenario.steps ?? []) {
-      const observations = observationsByTool.get(step.tool) ?? [];
-      observations.push({
-        scenario: scenario.name ?? null,
-        name: step.name ?? null,
-        outcome: step.outcome ?? "unknown",
-        completion: step.completion ?? true,
-        durationMs: step.durationMs ?? null,
-        error: step.error ?? null,
-        reasons: step.reasons ?? [],
-      });
-      observationsByTool.set(step.tool, observations);
-    }
-  }
-
-  const endpoints = contract.expectedNames.map((tool) => {
-    const observations = observationsByTool.get(tool) ?? [];
-    const hasFailure = observations.some((observation) =>
-      observation.outcome === "failure",
-    );
-    const hasIncomplete = observations.some((observation) =>
-      observation.completion === false,
-    );
-    const hasLiveEvidence = observations.some((observation) =>
-      ["success", "expected-error", "expected-unavailable"].includes(
-        observation.outcome,
-      ),
-    );
-    const status = hasFailure
-      ? "failed"
-      : hasIncomplete
-        ? "incomplete"
-        : hasLiveEvidence
-          ? "approved"
-          : "not-tested";
-    const contractEntry = contract.coverage?.find((entry) => entry.tool === tool);
-    return {
-      tool,
-      family: contractEntry?.family ?? classifyTool(tool),
-      contractEvidence: contractEntry?.contractEvidence ?? "missing",
-      status,
-      observationCount: observations.length,
-      observations,
-    };
-  });
-
-  const counts = Object.fromEntries(
-    ["approved", "failed", "incomplete", "not-tested"].map((status) => [
-      status,
-      endpoints.filter((endpoint) => endpoint.status === status).length,
-    ]),
-  );
-  return {
-    endpointCount: endpoints.length,
-    counts,
-    endpoints,
-  };
-}
-
 export class McpStdioClient {
   constructor({ serverPath, args = [], env = {}, requestTimeoutMs = 120000 }) {
     this.child = spawn(serverPath, args, {
@@ -579,14 +803,27 @@ export class WorkbenchMcpSession {
     });
     const launch = response?.result?.structuredContent;
     if (response?.result?.isError === true || !launch) {
-      throw new Error(
+      const error = new Error(
         "Workbench MCP launch failed: " +
           JSON.stringify(launch ?? response?.result ?? null),
       );
+      error.workbench = launch ?? response?.result?.structuredContent ?? null;
+      throw error;
     }
     this.launch = launch;
     this.processId = launch.processId ?? null;
     this.ownsProcess = launch.alreadyRunning !== true;
+    if (
+      !this.processId ||
+      !Number.isInteger(this.processId) ||
+      this.processId <= 0 ||
+      launch.netApiConnected !== true
+    ) {
+      throw new Error(
+        "Workbench fixture launch did not prove a connected process: " +
+          JSON.stringify(launch),
+      );
+    }
     if (launch.alreadyRunning === true && !this.manifest.allowExistingProcess) {
       throw new Error(
         "Workbench fixture launch reused an existing process; " +
@@ -639,7 +876,8 @@ export async function verifyOwnedStopRestartLifecycle({ client, session }) {
     restarted.alreadyRunning === true ||
     restarted.netApiConnected !== true ||
     !Number.isInteger(restarted.processId) ||
-    restarted.processId <= 0
+    restarted.processId <= 0 ||
+    restarted.processId === originalProcessId
   ) {
     throw new Error(
       "Workbench MCP restart did not confirm an owned replacement process: " +
@@ -671,6 +909,26 @@ export async function verifyOwnedStopRestartLifecycle({ client, session }) {
     restartedProcessId,
     restart: restarted,
     stop: stopped,
+    invocations: [
+      {
+        name: "restart-owned-process",
+        tool: "workbench_restart",
+        role: "test",
+        case: "success",
+        outcome: "success",
+        facts: ["replacementProcess"],
+        response: restarted,
+      },
+      {
+        name: "stop-replacement-process",
+        tool: "workbench_stop",
+        role: "test",
+        case: "success",
+        outcome: "success",
+        facts: [],
+        response: stopped,
+      },
+    ],
   };
 }
 
@@ -844,6 +1102,7 @@ export async function runScenario({
   iterations = 1,
   warmup = 0,
   context = {},
+  includeInvocationMetadata = false,
 }) {
   const observations = [];
   let ok = true;
@@ -956,11 +1215,11 @@ export async function runScenario({
         tool: step.tool,
         outcome:
           reasons.length === 0
-            ? actualIsError
-              ? step.expect?.completion === false
-                ? "expected-unavailable"
-                : "expected-error"
-              : "success"
+            ? step.expect?.completion === false
+              ? "expected-unavailable"
+              : actualIsError
+                ? "expected-error"
+                : "success"
             : "failure",
         durationMs: timed?.timing.durationMs ?? performanceNow() - started,
         requestBytes: timed?.timing.requestBytes ?? null,
@@ -988,6 +1247,22 @@ export async function runScenario({
         observation.reasons = reasons;
         ok = false;
       }
+      if (
+        includeInvocationMetadata ||
+        step.role !== undefined ||
+        step.case !== undefined ||
+        step.facts !== undefined ||
+        step.blockedBy !== undefined
+      ) {
+        observation.role = inferScenarioRole(step);
+        observation.case = inferScenarioCase(step);
+        observation.facts = Array.isArray(step.facts)
+          ? [...step.facts]
+          : inferScenarioFacts(step);
+        if (Array.isArray(step.blockedBy)) {
+          observation.blockedBy = [...step.blockedBy];
+        }
+      }
       observations.push(observation);
     }
   }
@@ -1001,7 +1276,7 @@ export async function runScenario({
   };
 }
 
-export async function runContractReport({
+export async function runWorkbenchCorpus({
   serverPath = resolveServerPath(),
   apiReferencePath = defaultApiReference,
   reportPath = defaultReportPath,
@@ -1028,20 +1303,21 @@ export async function runContractReport({
   let fixtureCleanup;
   let clientInitialized = false;
   let cleanupError;
+  let runError;
   let report;
+  const fixtureSetupSteps = [];
   try {
     const initialize = await client.initialize();
     clientInitialized = true;
-    if (fixture) {
-      fixtureLaunch = await fixture.start(client);
-    }
     const listed = await client.listTools();
     const tools = listed?.result?.tools;
     if (!Array.isArray(tools)) {
       throw new Error("MCP tools/list returned no tools array");
     }
     report = {
-      kind: "workbench-mcp-contract",
+      kind: "workbench-mcp-corpus",
+      corpusVersion: 1,
+      statusModel: ["passed", "failed", "blocked", "not-run"],
       server: basename(serverPath),
       protocolVersion: initialize?.result?.protocolVersion ?? null,
       machine: {
@@ -1055,11 +1331,43 @@ export async function runContractReport({
         listedTools: tools,
       }),
     };
+    const endpointPlan = buildWorkbenchEndpointPlan(report.contract.expectedNames);
+    report.endpointPlan = endpointPlan;
+    report.endpointPlanValidation = validateWorkbenchEndpointPlan(
+      report.contract.expectedNames,
+      endpointPlan,
+      { checkDependencyProducers: true },
+    );
+    if (!report.endpointPlanValidation.ok) {
+      throw new Error(
+        "Workbench endpoint plan is incomplete: " +
+          JSON.stringify(report.endpointPlanValidation),
+      );
+    }
+    if (fixture) {
+      fixtureLaunch = await fixture.start(client);
+      fixtureSetupSteps.push({
+        name: "launch-owned-fixture",
+        tool: "workbench_launch",
+        role: "setup",
+        case: "success",
+        outcome: "success",
+        facts: ["ownedProcess"],
+      });
+    }
     if (fixture) {
       const readiness = await waitForWorkbenchReady(
         client,
         fixture.manifest.readiness,
       );
+      fixtureSetupSteps.push({
+        name: "wait-for-workbench",
+        tool: "workbench_status",
+        role: "setup",
+        case: "success",
+        outcome: "success",
+        facts: ["connectedWorkbench"],
+      });
       const worldOpen = await openFixtureWorld(
         client,
         fixture.manifest.expected.worldResource,
@@ -1089,6 +1397,48 @@ export async function runContractReport({
         bridgeProtocolVersion: state.protocolVersion ?? null,
         loadedAddons: project.loadedAddons ?? [],
       };
+      fixtureSetupSteps.push(
+        {
+          name: "discover-world-editor",
+          tool: "workbench_list_editors",
+          role: "setup",
+          case: "success",
+          outcome: "success",
+          facts: ["worldEditor"],
+        },
+        {
+          name: "open-world-editor",
+          tool: "workbench_open_editor",
+          role: "setup",
+          case: "success",
+          outcome: "success",
+          facts: ["worldEditor"],
+        },
+        {
+          name: "open-fixture-world",
+          tool: "workbench_open_resource",
+          role: "setup",
+          case: "success",
+          outcome: "success",
+          facts: ["activeWorld"],
+        },
+        {
+          name: "read-fixture-state",
+          tool: "workbench_state",
+          role: "setup",
+          case: "success",
+          outcome: "success",
+          facts: ["activeWorld"],
+        },
+        {
+          name: "read-project-context",
+          tool: "workbench_project_context",
+          role: "setup",
+          case: "success",
+          outcome: "success",
+          facts: ["projectContext"],
+        },
+      );
     }
     const scenarios = scenarioPath
       ? JSON.parse(readFileSync(scenarioPath, "utf8"))
@@ -1106,6 +1456,7 @@ export async function runContractReport({
             steps: scenario.steps,
             iterations: scenario.iterations,
             warmup: scenario.warmup,
+            includeInvocationMetadata: true,
             context: fixture
               ? {
                   fixture: {
@@ -1123,11 +1474,10 @@ export async function runContractReport({
         report.scenario = runs[0];
       }
       report.performance = summarizePerformance(runs);
-      report.liveCoverage = {
-        required: requireLiveCoverage,
-        ...buildLiveCoverageReport(report.contract, runs),
-      };
-      report.endpointCorpus = buildEndpointCorpusReport(report.contract, runs);
+      report.endpointCorpus = buildWorkbenchCorpusReport(
+        endpointPlan,
+        [{ name: "fixture-setup", steps: fixtureSetupSteps }, ...runs],
+      );
       const evidenceTools = new Set(
         runs.flatMap((run) =>
           run.steps
@@ -1141,17 +1491,52 @@ export async function runContractReport({
           : entry,
       );
     } else {
-      report.liveCoverage = {
-        required: requireLiveCoverage,
-        ...buildLiveCoverageReport(report.contract),
-      };
-      report.endpointCorpus = buildEndpointCorpusReport(report.contract);
+      report.endpointCorpus = buildWorkbenchCorpusReport(
+        endpointPlan,
+        fixtureSetupSteps.length > 0
+          ? [{ name: "fixture-setup", steps: fixtureSetupSteps }]
+          : [],
+      );
     }
     if (fixture && !fixture.manifest.allowExistingProcess) {
       report.ownedLifecycle = await verifyOwnedStopRestartLifecycle({
         client,
         session: fixture,
       });
+      report.endpointCorpus = buildWorkbenchCorpusReport(
+        endpointPlan,
+        [
+          ...(fixtureSetupSteps.length > 0
+            ? [{ name: "fixture-setup", steps: fixtureSetupSteps }]
+            : []),
+          ...(report.scenarios ?? []),
+          { name: "owned-lifecycle", steps: report.ownedLifecycle.invocations },
+        ],
+      );
+    }
+  } catch (error) {
+    runError = error;
+    if (report) {
+      report.error = {
+        message: error instanceof Error ? error.message : String(error),
+        workbench: error?.workbench ?? null,
+      };
+      const startupSteps = error?.workbench?.phase === "launch"
+        ? [{
+            name: "fixture-launch",
+            tool: "workbench_launch",
+            role: "test",
+            case: "success",
+            outcome: "expected-unavailable",
+            blockedBy: ["connectedWorkbench"],
+            error: error.workbench,
+          }]
+        : [];
+      report.endpointCorpus ??= buildWorkbenchCorpusReport(
+        report.endpointPlan,
+        startupSteps.length > 0 ? [{ name: "startup", steps: startupSteps }] : [],
+        { blockedFacts: ["ownedProcess", "connectedWorkbench", "managedBridge", "projectContext", "worldEditor", "activeWorld"] },
+      );
     }
   } finally {
     try {
@@ -1168,10 +1553,20 @@ export async function runContractReport({
     }
   }
   if (cleanupError) {
-    throw cleanupError;
+    if (report) {
+      report.error = {
+        message: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+        workbench: cleanupError?.workbench ?? null,
+      };
+    } else {
+      throw cleanupError;
+    }
   }
-  if (report && fixtureCleanup) {
+  if (report?.fixture && fixtureCleanup) {
     report.fixture.cleanup = fixtureCleanup;
+  }
+  if (!report) {
+    throw runError ?? new Error("Workbench MCP corpus produced no report");
   }
   mkdirSync(dirname(reportPath), { recursive: true });
   writeFileSync(reportPath, JSON.stringify(report, null, 2) + "\n", "utf8");
@@ -1335,7 +1730,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (options.scenario && !options.fixture) {
       throw new Error("--scenario requires --fixture so live operations are disposable");
     }
-    const report = await runContractReport({
+    const report = await runWorkbenchCorpus({
       serverPath: resolveServerPath(options.server),
       apiReferencePath: options.apireference ?? defaultApiReference,
       indexCachePath: options.indexcache,
@@ -1345,10 +1740,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       reportPath: options.out ?? defaultReportPath,
     });
     console.log(JSON.stringify(report, null, 2));
+    const corpusRequired = Boolean(options.scenario) || options.requirelivecoverage === true;
     process.exit(
-      report.contract.ok &&
+      !report.error &&
+        report.contract.ok &&
         (!report.scenarios || report.scenarios.every((scenario) => scenario.ok)) &&
-        (!options.requirelivecoverage || report.liveCoverage.ok)
+        (!corpusRequired || report.endpointCorpus?.ok)
         ? 0
         : 1,
     );

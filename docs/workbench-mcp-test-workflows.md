@@ -30,6 +30,14 @@ run Workbench MCP corpus
     -> emit one versioned endpoint corpus report
 ```
 
+The repository runner implements this operation as `runWorkbenchCorpus`. Its
+endpoint plan is generated from the published Workbench catalogue, validated
+for exact one-to-one parity and dependency producers, and included in every
+report. Scenario calls are normalized into explicit `test`, `setup`,
+`readback`, or `teardown` invocations with an acceptance-case identity; a
+successful call without its required case or readback cannot approve an
+endpoint.
+
 The runner should hide session management, fact capture, confirmation tokens,
 readback, cleanup, and reporting behind that interface. The executable plan
 may use explicit named workflows internally; it does not need a general-purpose
@@ -350,6 +358,9 @@ and no unknown mutation remains. A run containing `blocked`, `failed`, or
 
 Reports are generated artifacts under an ignored report directory. They are
 not release inputs and are never bundled into the extension or language server.
+The executable report uses `kind: "workbench-mcp-corpus"`, `corpusVersion: 1`,
+and the status vocabulary above; historical `approved` or `incomplete` fields
+are not used for current endpoint acceptance.
 
 ## Harness verification
 
