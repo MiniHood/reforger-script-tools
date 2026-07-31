@@ -1,0 +1,9 @@
+MetaFileClass {
+ Name "{70A1B2C3D4E5F607}worlds/McpConformance.ent"
+ Configurations {
+  ENTResourceClass PC {
+  }
+  ENTResourceClass HEADLESS : PC {
+  }
+ }
+}

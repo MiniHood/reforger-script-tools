@@ -217,13 +217,24 @@ export function buildLiveCoverageReport(contract, scenarios = []) {
     ok: missing.length === 0 && unexpected.length === 0,
     expectedCount: contract.expectedNames.length,
     coveredCount: contract.expectedNames.length - missing.length,
+    successfulCount: scenarios.reduce(
+      (count, scenario) =>
+        count + (scenario.steps ?? []).filter((step) => step.outcome === "success").length,
+      0,
+    ),
+    expectedErrorCount: scenarios.reduce(
+      (count, scenario) =>
+        count +
+        (scenario.steps ?? []).filter((step) => step.outcome === "expected-error").length,
+      0,
+    ),
     missing,
     unexpected,
   };
 }
 
 export class McpStdioClient {
-  constructor({ serverPath, args = [], env = {} }) {
+  constructor({ serverPath, args = [], env = {}, requestTimeoutMs = 120000 }) {
     this.child = spawn(serverPath, args, {
       cwd: repositoryRoot,
       env: { ...process.env, ...env },
@@ -238,6 +249,7 @@ export class McpStdioClient {
       this.stderr += chunk;
     });
     this.nextId = 1;
+    this.requestTimeoutMs = requestTimeoutMs;
   }
 
   async initialize() {
@@ -292,7 +304,17 @@ export class McpStdioClient {
       params,
     });
     while (true) {
-      const next = await this.messages.next();
+      const next = await Promise.race([
+        this.messages.next(),
+        delay(this.requestTimeoutMs).then(() => {
+          throw new Error(
+            "MCP request timed out after " +
+              this.requestTimeoutMs +
+              "ms: " +
+              method,
+          );
+        }),
+      ]);
       if (next.done) {
         throw new Error(
           "MCP process ended before responding to " +
@@ -332,14 +354,7 @@ export function loadFixtureManifest(manifestPath) {
   if (!isObject(manifest)) {
     throw new Error("Workbench fixture manifest must be an object");
   }
-  for (const field of [
-    "name",
-    "revision",
-    "fixtureRoot",
-    "project",
-    "workbench",
-    "profileRoot",
-  ]) {
+  for (const field of ["name", "revision", "fixtureRoot", "project", "profileRoot"]) {
     if (manifest[field] === undefined) {
       throw new Error("Workbench fixture manifest is missing " + field);
     }
@@ -348,15 +363,10 @@ export function loadFixtureManifest(manifestPath) {
   const fixtureRoot = resolve(manifestRoot, manifest.fixtureRoot);
   const projectPath = resolve(fixtureRoot, manifest.project.gproj);
   const profileRoot = resolve(fixtureRoot, manifest.profileRoot);
+  const externalProfileRoot = manifest.profileRootOutsideFixture === true
+    ? resolve(manifestRoot, manifest.profileRoot)
+    : profileRoot;
   const addonsDir = resolve(manifestRoot, manifest.project.addonsDir);
-  const workbenchExecutable = resolve(
-    manifestRoot,
-    manifest.workbench.executable,
-  );
-  const workingDirectory = resolve(
-    manifestRoot,
-    manifest.workbench.workingDirectory ?? dirname(workbenchExecutable),
-  );
   if (!existsSync(fixtureRoot)) {
     throw new Error("Workbench fixture root does not exist: " + fixtureRoot);
   }
@@ -366,31 +376,31 @@ export function loadFixtureManifest(manifestPath) {
   if (!existsSync(addonsDir)) {
     throw new Error("Workbench fixture add-ons directory does not exist: " + addonsDir);
   }
-  if (!existsSync(workbenchExecutable)) {
-    throw new Error("Workbench executable does not exist: " + workbenchExecutable);
-  }
-  if (!existsSync(workingDirectory)) {
-    throw new Error("Workbench working directory does not exist: " + workingDirectory);
-  }
   if (!isObject(manifest.expected) || typeof manifest.expected.worldResource !== "string") {
     throw new Error("Workbench fixture manifest must define expected.worldResource");
+  }
+  if (
+    !Array.isArray(manifest.expected.loadedAddonIds) ||
+    !manifest.expected.loadedAddonIds.includes("ArmaReforger")
+  ) {
+    throw new Error(
+      "Workbench fixture manifest must require the ArmaReforger base-game add-on",
+    );
   }
   if (!isWithin(fixtureRoot, projectPath)) {
     throw new Error("Workbench fixture project must be inside fixtureRoot");
   }
-  if (!isWithin(fixtureRoot, profileRoot)) {
+  if (!isWithin(fixtureRoot, externalProfileRoot) && manifest.profileRootOutsideFixture !== true) {
     throw new Error("Workbench fixture profileRoot must be inside fixtureRoot");
   }
-  mkdirSync(profileRoot, { recursive: true });
+  mkdirSync(externalProfileRoot, { recursive: true });
   return {
     name: String(manifest.name),
     revision: String(manifest.revision),
     fixtureRoot,
     projectPath,
-    profileRoot,
+    profileRoot: externalProfileRoot,
     addonsDir,
-    workbenchExecutable,
-    workingDirectory,
     expected: isObject(manifest.expected) ? manifest.expected : {},
     readiness: {
       timeoutMs: manifest.readiness?.timeoutMs ?? 120000,
@@ -399,98 +409,53 @@ export function loadFixtureManifest(manifestPath) {
   };
 }
 
-export class DisposableWorkbenchProcess {
+export class WorkbenchMcpSession {
   constructor(manifest) {
     this.manifest = manifest;
-    this.child = undefined;
-    this.stderr = "";
+    this.processId = null;
+    this.ownsProcess = false;
+    this.launch = undefined;
   }
 
-  start() {
-    if (this.child && this.child.exitCode === null) {
-      throw new Error("Fixture Workbench is already running");
+  async start(client) {
+    const response = await client.callTool("workbench_launch", {});
+    const launch = response?.result?.structuredContent;
+    if (response?.result?.isError === true || !launch) {
+      throw new Error(
+        "Workbench MCP launch failed: " +
+          JSON.stringify(launch ?? response?.result ?? null),
+      );
     }
-    this.child = spawn(
-      this.manifest.workbenchExecutable,
-      [
-        "-noThrow",
-        "-profile",
-        this.manifest.profileRoot,
-        "-gproj",
-        this.manifest.projectPath,
-        "-addonsDir",
-        this.manifest.addonsDir,
-        "-wbModule",
-        "WorldEditor",
-        "-run",
-        "-load",
-        this.manifest.expected.worldResource,
-      ],
-      {
-        cwd: this.manifest.workingDirectory,
-        stdio: ["ignore", "ignore", "pipe"],
-        windowsHide: true,
-      },
-    );
-    this.child.stderr.setEncoding("utf8");
-    this.child.stderr.on("data", (chunk) => {
-      this.stderr += chunk;
-    });
+    this.launch = launch;
+    this.processId = launch.processId ?? null;
+    this.ownsProcess = launch.alreadyRunning !== true;
     return {
-      processId: this.child.pid ?? null,
-      arguments: [
-        "-noThrow",
-        "-profile",
-        "<fixture-profile-root>",
-        "-gproj",
-        "<fixture-project>",
-        "-addonsDir",
-        "<fixture-addons>",
-        "-wbModule",
-        "WorldEditor",
-        "-run",
-        "-load",
-        "<fixture-world-resource>",
-      ],
+      processId: this.processId,
+      ownsProcess: this.ownsProcess,
+      launch,
     };
   }
 
   async stop(client) {
-    if (!this.child || this.child.exitCode !== null) {
-      return { outcome: "already-exited", processId: this.child?.pid ?? null };
+    if (!this.processId || !this.ownsProcess) {
+      return {
+        outcome: this.processId ? "reused-existing-process" : "no-process",
+        processId: this.processId,
+      };
     }
-    const processId = this.child.pid;
-    let graceful = false;
-    let stopError;
-    if (client && processId) {
-      try {
-        const response = await client.callTool("workbench_stop", { processId });
-        graceful = response?.result?.isError !== true;
-      } catch (error) {
-        stopError = error instanceof Error ? error.message : String(error);
-      }
-    }
-    try {
-      await waitForCloseWithin(this.child, 20000);
-    } catch {
-      if (this.child.exitCode === null) {
-        this.child.kill();
-      }
-      try {
-        await waitForCloseWithin(this.child, 5000);
-      } catch (error) {
-        throw new Error(
-          "Fixture Workbench did not exit after cleanup" +
-            (stopError ? ": " + stopError : "") +
-            "; " +
-            (error instanceof Error ? error.message : String(error)),
-        );
-      }
+    const response = await client.callTool("workbench_stop", {
+      processId: this.processId,
+    });
+    const stopped = response?.result?.structuredContent;
+    if (response?.result?.isError === true || !stopped?.exited) {
+      throw new Error(
+        "Workbench MCP stop did not confirm process exit: " +
+          JSON.stringify(stopped ?? response?.result ?? null),
+      );
     }
     return {
-      outcome: graceful ? "graceful" : "forced-or-unverified",
-      processId,
-      ...(stopError ? { error: stopError } : {}),
+      outcome: "graceful",
+      processId: this.processId,
     };
   }
 }
@@ -529,6 +494,109 @@ export async function waitForWorkbenchReady(client, readiness = {}) {
   );
 }
 
+export async function openFixtureWorld(client, worldResource, readiness = {}) {
+  const editorsResponse = await client.callTool("workbench_list_editors", {});
+  const editors = editorsResponse?.result?.structuredContent?.editors;
+  if (editorsResponse?.result?.isError === true || !Array.isArray(editors)) {
+    throw new Error(
+      "Fixture Workbench did not return an editor catalogue: " +
+        JSON.stringify(editorsResponse?.result?.structuredContent ?? null),
+    );
+  }
+  const worldEditor = editors.find((editor) =>
+    /world editor/i.test(String(editor?.displayName ?? "")),
+  );
+  if (!worldEditor || typeof worldEditor.id !== "string") {
+    throw new Error(
+      "Fixture Workbench did not expose a World Editor: " +
+        JSON.stringify(editors),
+    );
+  }
+  const openEditorResponse = await client.callTool("workbench_open_editor", {
+    editorId: worldEditor.id,
+  });
+  const openedEditor = openEditorResponse?.result?.structuredContent;
+  if (
+    openEditorResponse?.result?.isError === true ||
+    openedEditor?.opened !== true
+  ) {
+    throw new Error(
+      "Fixture Workbench could not open World Editor " +
+        JSON.stringify({ editor: worldEditor, response: openedEditor ?? null }),
+    );
+  }
+  const openResourceResponse = await client.callTool("workbench_open_resource", {
+    resourcePath: worldResource,
+  });
+  const openedResource = openResourceResponse?.result?.structuredContent;
+  if (
+    openResourceResponse?.result?.isError === true ||
+    openedResource?.opened !== true
+  ) {
+    const discoveredResponse = await client.callTool("workbench_search_resources", {
+      kinds: ["world"],
+      query: "McpConformance",
+      limit: 20,
+    });
+    throw new Error(
+      "Fixture Workbench could not open world resource " +
+        JSON.stringify({
+          worldResource,
+          response: openedResource ?? null,
+          discovered: discoveredResponse?.result?.structuredContent ?? null,
+        }),
+    );
+  }
+  const state = await waitForActiveWorld(client, worldResource, readiness);
+  return {
+    editor: worldEditor,
+    openedEditor,
+    openedResource,
+    state,
+  };
+}
+
+export async function waitForActiveWorld(client, expectedWorldResource, readiness = {}) {
+  const timeoutMs = readiness.timeoutMs ?? 120000;
+  const intervalMs = readiness.intervalMs ?? 1000;
+  const started = performanceNow();
+  let attempts = 0;
+  let lastState;
+  let lastError;
+  while (performanceNow() - started <= timeoutMs) {
+    attempts += 1;
+    try {
+      const response = await client.callTool("workbench_state", {});
+      lastState = response?.result?.structuredContent;
+      if (
+        response?.result?.isError !== true &&
+        lastState?.activeWorldPath === expectedWorldResource
+      ) {
+        return {
+          ...lastState,
+          attempts,
+          elapsedMs: performanceNow() - started,
+        };
+      }
+      lastError = "Workbench state did not report the expected active world";
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await delay(intervalMs);
+  }
+  throw new Error(
+    "Fixture active world did not become ready after " +
+      timeoutMs +
+      "ms: " +
+      JSON.stringify({
+        expectedWorldResource,
+        attempts,
+        lastState: lastState ?? null,
+        lastError: lastError ?? null,
+      }),
+  );
+}
+
 export async function runScenario({
   client,
   name,
@@ -539,6 +607,10 @@ export async function runScenario({
 }) {
   const observations = [];
   let ok = true;
+  const scenarioContext = {
+    ...context,
+    scenario: {},
+  };
   const totalIterations = Math.max(1, Number(iterations));
   const warmupIterations = Math.max(0, Number(warmup));
   for (let iteration = 0; iteration < warmupIterations + totalIterations; iteration += 1) {
@@ -550,7 +622,7 @@ export async function runScenario({
       try {
         timed = await client.callToolTimed(
           step.tool,
-          materialize(step.arguments ?? {}, context),
+          materialize(step.arguments ?? {}, scenarioContext),
         );
         response = timed.response;
         const actualIsError = response?.result?.isError === true;
@@ -563,7 +635,7 @@ export async function runScenario({
         for (const [pointer, expectedValue] of Object.entries(
           step.expect?.pointers ?? {},
         )) {
-          const expected = materialize(expectedValue, context);
+          const expected = materialize(expectedValue, scenarioContext);
           const actual = readJsonPointer(response, pointer);
           if (!Object.is(actual, expected)) {
             reasons.push(
@@ -571,12 +643,46 @@ export async function runScenario({
             );
           }
         }
+        for (const [pointer, expectedValues] of Object.entries(
+          step.expect?.contains ?? {},
+        )) {
+          const actual = readJsonPointer(response, pointer);
+          if (
+            !Array.isArray(actual) ||
+            !expectedValues.every((expectedValue) =>
+              actual.includes(materialize(expectedValue, scenarioContext)),
+            )
+          ) {
+            reasons.push(
+              "expected " + pointer + " to contain " + JSON.stringify(expectedValues),
+            );
+          }
+        }
+        if (reasons.length === 0 && isObject(step.capture)) {
+          for (const [nameToCapture, pointer] of Object.entries(step.capture)) {
+            const captured = readJsonPointer(response, pointer);
+            if (captured === undefined) {
+              reasons.push(
+                "capture " + nameToCapture + " could not read " + pointer,
+              );
+            } else {
+              scenarioContext.scenario[nameToCapture] = captured;
+            }
+          }
+        }
       } catch (error) {
         reasons = [error instanceof Error ? error.message : String(error)];
       }
       if (iteration < warmupIterations) {
         if (reasons.length > 0) {
-          throw new Error("Workbench scenario warmup failed: " + reasons.join("; "));
+          throw new Error(
+            "Workbench scenario warmup failed for " +
+              step.tool +
+              " (" +
+              (step.name ?? "unnamed") +
+              "): " +
+              reasons.join("; "),
+          );
         }
         continue;
       }
@@ -594,6 +700,15 @@ export async function runScenario({
         requestBytes: timed?.timing.requestBytes ?? null,
         responseBytes: timed?.timing.responseBytes ?? null,
       };
+      const errorContent = response?.result?.structuredContent;
+      if (actualIsError && isObject(errorContent)) {
+        observation.error = {
+          code: errorContent.code ?? null,
+          phase: errorContent.phase ?? null,
+          retryable: errorContent.retryable ?? null,
+          logReference: errorContent.logReference ?? null,
+        };
+      }
       if (totalIterations > 1) {
         observation.iteration = iteration - warmupIterations + 1;
       }
@@ -602,12 +717,6 @@ export async function runScenario({
         ok = false;
       }
       observations.push(observation);
-      if (!ok) {
-        break;
-      }
-    }
-    if (!ok) {
-      break;
     }
   }
   return {
@@ -635,7 +744,7 @@ export async function runContractReport({
   }
   const started = performanceNow();
   const fixture = fixturePath
-    ? new DisposableWorkbenchProcess(loadFixtureManifest(fixturePath))
+    ? new WorkbenchMcpSession(loadFixtureManifest(fixturePath))
     : undefined;
   const client = new McpStdioClient({ serverPath, args });
   let fixtureLaunch;
@@ -644,11 +753,11 @@ export async function runContractReport({
   let cleanupError;
   let report;
   try {
-    if (fixture) {
-      fixtureLaunch = fixture.start();
-    }
     const initialize = await client.initialize();
     clientInitialized = true;
+    if (fixture) {
+      fixtureLaunch = await fixture.start(client);
+    }
     const listed = await client.listTools();
     const tools = listed?.result?.tools;
     if (!Array.isArray(tools)) {
@@ -674,16 +783,12 @@ export async function runContractReport({
         client,
         fixture.manifest.readiness,
       );
-      const stateResponse = await client.callTool("workbench_state", {});
-      const state = stateResponse?.result?.structuredContent;
-      if (
-        stateResponse?.result?.isError === true ||
-        state?.activeWorldPath !== fixture.manifest.expected.worldResource
-      ) {
-        throw new Error(
-          "Fixture active world identity did not match expected.worldResource",
-        );
-      }
+      const worldOpen = await openFixtureWorld(
+        client,
+        fixture.manifest.expected.worldResource,
+        fixture.manifest.readiness,
+      );
+      const state = worldOpen.state;
       const projectResponse = await client.callTool("workbench_project_context", {});
       const project = projectResponse?.result?.structuredContent;
       const expectedLoadedAddons = fixture.manifest.expected.loadedAddonIds ?? [];
@@ -699,6 +804,9 @@ export async function runContractReport({
         expected: fixture.manifest.expected,
         processId: fixtureLaunch.processId,
         readiness,
+        editor: worldOpen.editor,
+        openedEditor: worldOpen.openedEditor,
+        openedResource: worldOpen.openedResource,
         activeWorldPath: state.activeWorldPath,
         bridgeVersion: state.bridgeVersion ?? null,
         bridgeProtocolVersion: state.protocolVersion ?? null,

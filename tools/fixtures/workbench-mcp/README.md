@@ -16,13 +16,9 @@ The live runner takes a manifest owned by the test invocation:
     "gproj": "mcp-conformance/mcp-conformance.gproj",
     "addonsDir": "C:/path/to/ArmaReforger/addons"
   },
-  "workbench": {
-    "executable": "C:/path/to/Workbench.exe",
-    "workingDirectory": "C:/path/to/workbench"
-  },
   "expected": {
     "worldResource": "McpFixture/Worlds/Conformance.ent",
-    "loadedAddonIds": ["McpFixture"]
+    "loadedAddonIds": ["ArmaReforger", "McpFixture"]
   },
   "readiness": {
     "timeoutMs": 120000,
@@ -31,12 +27,17 @@ The live runner takes a manifest owned by the test invocation:
 }
 ```
 
-`gproj` and `profileRoot` must be inside `fixtureRoot`. The runner passes the
-resolved paths as separate process arguments (`-profile`, `-gproj`, and
-`-addonsDir`) so spaces are preserved, starts World Editor with the canonical
-fixture world through Workbench's typed `-wbModule WorldEditor -run -load`
-startup parameters, waits for `workbench_status.isRunning`, and cleans up only
-the process it started.
+`gproj` and `profileRoot` must be inside `fixtureRoot` for a disposable
+fixture. The runner uses the MCP `workbench_launch` operation to launch or
+reuse the Workbench process configured for the MCP server; it never constructs
+a Workbench process command line. The manifest's expected add-on list must
+include `ArmaReforger`, and the configured project must make that base-game
+add-on available. The runner waits for `workbench_status.isRunning`, discovers
+the World Editor through `workbench_list_editors`, opens it through
+`workbench_open_editor`, opens the canonical fixture world through
+`workbench_open_resource`, and cleans up only a process that the MCP launch
+operation reported as newly started. A reused process is an explicit smoke-test
+mode, not disposable isolation.
 
 The fixture itself must provide the stable project, world, resource, entity,
 component, layer, prefab, shape, and terrain identities used by the scenario

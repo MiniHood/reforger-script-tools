@@ -251,6 +251,8 @@ test("reports the exact published tools still missing live evidence", () => {
     ok: false,
     expectedCount: 2,
     coveredCount: 1,
+    successfulCount: 0,
+    expectedErrorCount: 0,
     missing: ["workbench_create_entity"],
     unexpected: [],
   });
@@ -260,10 +262,8 @@ test("loads a disposable fixture manifest with an isolated profile and world", (
   const root = mkdtempSync(join(process.cwd(), ".cache", "workbench-fixture-test-"));
   try {
     mkdirSync(join(root, "project"), { recursive: true });
-    mkdirSync(join(root, "workbench"), { recursive: true });
     mkdirSync(join(root, "addons"), { recursive: true });
     writeFileSync(join(root, "project", "fixture.gproj"), "{}\n");
-    writeFileSync(join(root, "workbench", "Workbench.exe"), "fixture\n");
     writeFileSync(
       join(root, "fixture.manifest.json"),
       JSON.stringify({
@@ -272,11 +272,10 @@ test("loads a disposable fixture manifest with an isolated profile and world", (
         fixtureRoot: ".",
         profileRoot: "profile",
         project: { gproj: "project/fixture.gproj", addonsDir: "addons" },
-        workbench: {
-          executable: "workbench/Workbench.exe",
-          workingDirectory: "workbench",
+        expected: {
+          worldResource: "Fixture/World.ent",
+          loadedAddonIds: ["ArmaReforger"],
         },
-        expected: { worldResource: "Fixture/World.ent" },
       }),
     );
 

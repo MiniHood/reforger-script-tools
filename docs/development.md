@@ -85,10 +85,11 @@ Workbench tool returned by `tools/list` with the generated MCP API Reference,
 checks the public descriptor envelope, and writes a sanitized report beneath
 `.cache/reports/`. It does not contact Workbench or launch processes. Live
 scenarios are explicit and may be supplied with `--scenario <path>` together
-with `--fixture <manifest>`. The fixture runner owns the explicitly launched
-Workbench process, waits for typed `workbench_status.isRunning` readiness, and
-records per-tool minimum, maximum, p50, p95, p99, and failure counts. Live
-scenarios remain outside the normal fast test gate; see
+with `--fixture <manifest>`. The fixture runner uses the public
+`workbench_launch` MCP operation, waits for typed `workbench_status.isRunning`
+readiness, and owns cleanup only when that operation reports that it started a
+new process. It records per-tool minimum, maximum, p50, p95, p99, and failure
+counts. Live scenarios remain outside the normal fast test gate; see
 `tools/fixtures/workbench-mcp/README.md` for the manifest contract.
 
 To extract only `.c` entries, pass `--extract-scripts <output-root>` before the
@@ -272,10 +273,15 @@ single argument: quote both the `-gproj` path and the base-game `-addonsDir`
 path, and use the Workbench installation directory as the working directory.
 Otherwise Workbench can truncate a path at its first space, fail to load base
 addon `58D0FB3206B6F859` (Arma Reforger), and cannot initialize the project.
-The live MCP fixture runner additionally supplies a fixture-owned `-profile`
-root and uses Workbench's `-wbModule WorldEditor -run -load <resource>` startup
-parameters to request the known world before verifying its canonical path via
-`workbench_state`. See the [official startup parameter reference](https://community.bistudio.com/wiki/Arma_Reforger%3AStartup_Parameters).
+The live MCP fixture runner uses the public `workbench_launch` MCP operation;
+it never manually constructs a Workbench process command line. It discovers
+World Editor through `workbench_list_editors`, opens it with
+`workbench_open_editor`, opens the known world with `workbench_open_resource`,
+and verifies the canonical active path through `workbench_state`. The project
+configuration used by `workbench_launch` must include the base-game add-on and
+the test add-on dependencies in one available add-on tree. See the [official
+startup parameter reference](https://community.bistudio.com/wiki/Arma_Reforger%3AStartup_Parameters)
+for Workbench's own project configuration when preparing that environment.
 Run a clean `WORKBENCH` validation, introduce and save a deliberate compiler
 error, and confirm the reported file and line. Then edit again to observe a
 stale finding and fix the error to observe atomic replacement. Also verify

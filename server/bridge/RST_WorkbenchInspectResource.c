@@ -11,6 +11,8 @@ class RST_WorkbenchInspectResourceRequest : JsonApiStruct
 
 class RST_WorkbenchInspectResourceResponse : JsonApiStruct
 {
+	string bridgeVersion;
+	int protocolVersion;
 	bool found;
 	string status;
 	string resourceName;
@@ -35,6 +37,8 @@ class RST_WorkbenchInspectResource : NetApiHandler
 	{
 		RST_WorkbenchInspectResourceRequest typedRequest = RST_WorkbenchInspectResourceRequest.Cast(request);
 		RST_WorkbenchInspectResourceResponse response = new RST_WorkbenchInspectResourceResponse();
+		response.bridgeVersion = "1.52.12";
+		response.protocolVersion = 1;
 		ResourceManager resourceManager = Workbench.GetModule(ResourceManager);
 		if (!resourceManager)
 		{
