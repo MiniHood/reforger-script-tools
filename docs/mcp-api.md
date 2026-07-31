@@ -16894,9 +16894,377 @@ Read a bounded tail from either the integration support log or the latest known 
 
 Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
 
+## `workbench_list_windows`
+
+List visible top-level windows owned by one exact observed Workbench process. Window identities are opaque and short-lived; this is host-process observation and does not use the Workbench Gateway.
+
+### Annotations
+
+```json
+{
+  "title": "List Workbench windows",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "processId": {
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "processId"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchWindow": {
+      "properties": {
+        "foreground": {
+          "type": "boolean"
+        },
+        "height": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minimized": {
+          "type": "boolean"
+        },
+        "title": {
+          "type": "string"
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "width": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "windowId": {
+          "type": "string"
+        },
+        "x": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "y": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "windowId",
+        "title",
+        "x",
+        "y",
+        "width",
+        "height",
+        "visible",
+        "minimized",
+        "foreground"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "processId": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "windows": {
+      "items": {
+        "$ref": "#/$defs/WorkbenchWindow"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "processId",
+    "windows"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_capture_window`
+
+Capture one visible top-level Workbench window as in-memory PNG image content for AI visual inspection. The default is a full-window overview bounded to a 1920px long edge; provide maxDimension for a larger overview or one normalized region after inspecting the overview to obtain a closer native-pixel view. This never saves a file, changes focus, uses the Workbench Gateway, or captures another process.
+
+### Annotations
+
+```json
+{
+  "title": "Capture Workbench window",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$defs": {
+    "CaptureRegion": {
+      "additionalProperties": false,
+      "properties": {
+        "height": {
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "width": {
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "x": {
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "y": {
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "maxDimension": {
+      "maximum": 4096,
+      "minimum": 512,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "processId": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "region": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CaptureRegion"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "windowId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "processId"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "CaptureRegion": {
+      "additionalProperties": false,
+      "properties": {
+        "height": {
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "width": {
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "x": {
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "y": {
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "type": "object"
+    },
+    "WorkbenchWindow": {
+      "properties": {
+        "foreground": {
+          "type": "boolean"
+        },
+        "height": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minimized": {
+          "type": "boolean"
+        },
+        "title": {
+          "type": "string"
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "width": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "windowId": {
+          "type": "string"
+        },
+        "x": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "y": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "windowId",
+        "title",
+        "x",
+        "y",
+        "width",
+        "height",
+        "visible",
+        "minimized",
+        "foreground"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "capturedAtMs": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "encodedBytes": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "format": {
+      "type": "string"
+    },
+    "outputHeight": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "outputWidth": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "processId": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "region": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CaptureRegion"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "scale": {
+      "format": "double",
+      "type": "number"
+    },
+    "sourceHeight": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "sourceWidth": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "window": {
+      "$ref": "#/$defs/WorkbenchWindow"
+    }
+  },
+  "required": [
+    "processId",
+    "window",
+    "sourceWidth",
+    "sourceHeight",
+    "outputWidth",
+    "outputHeight",
+    "scale",
+    "format",
+    "encodedBytes",
+    "capturedAtMs"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
 ## `workbench_launch`
 
-Explicit host-process control: launch the discovered Workbench executable or reuse the exact existing Workbench process, then wait for native NET API readiness. This is not a Workbench Capability or source of live editor truth.
+Explicit host-process control: launch the discovered Workbench executable for an optional exact .gproj project, or reuse the exact existing Workbench process when no project is supplied, then wait for native NET API readiness. This is not a Workbench Capability or source of live editor truth.
 
 ### Annotations
 
@@ -16914,8 +17282,18 @@ Explicit host-process control: launch the discovered Workbench executable or reu
 
 ```json
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "properties": {},
+  "properties": {
+    "projectPath": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
   "type": "object"
 }
 ```

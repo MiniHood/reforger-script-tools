@@ -109,7 +109,14 @@ acceptance remain in the relevant research journals.
 exception: they are host-process controls, so they use exact Windows process
 identity and filesystem launch context. They are not Workbench Capabilities or
 sources of live editor truth; once Workbench is running, normal MCP operations
-use only the typed Gateway route.
+use only the typed Gateway route. The read-only `workbench_list_windows` and
+`workbench_capture_window` tools are a separate host-process observation path:
+they enumerate visible top-level windows owned by the exact observed process
+and capture one selected window into an in-memory MCP PNG image. Capture uses a
+bounded long-edge size and optional normalized full-window region so an AI can
+request a readable overview first and a native-resolution detail crop when
+needed. It never focuses a window, writes a screenshot file, retains history,
+or uses the Workbench NET API.
 
 Shape geometry follows the same boundary: point coordinate conversion, named
 whole-shape transforms, and polyline resampling are separate typed capabilities,

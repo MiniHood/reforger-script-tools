@@ -177,6 +177,7 @@ path = "../tools/server-reports/pack_catalogue_report.rs"
 
 [dependencies]
 ahash = "0.8"
+base64 = "0.22"
 flate2 = "1.0"
 rmcp = { version = "=2.2.0", default-features = false, features = ["server", "macros", "transport-io"] }
 schemars = "1.0"
@@ -186,6 +187,16 @@ serde_json = "1.0"
 sha2 = "0.10"
 tokio = { version = "1.49", features = ["macros", "rt-multi-thread", "sync", "time"] }
 url = "2.5"
+
+[target.'cfg(windows)'.dependencies]
+png = "0.17"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_Xps",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.dev]
 opt-level = 2

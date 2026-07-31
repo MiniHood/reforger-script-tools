@@ -32,4 +32,5 @@ pub mod symbol_display;
 pub mod syntax;
 pub mod type_facts;
 pub mod workbench;
+pub mod workbench_capture;
 mod workbench_bridge;

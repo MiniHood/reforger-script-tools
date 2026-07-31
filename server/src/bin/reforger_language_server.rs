@@ -204,6 +204,9 @@ fn run_workbench_api(
                 WorkbenchFailureCode::Timeout => "timeout",
                 WorkbenchFailureCode::Protocol => "protocol",
                 WorkbenchFailureCode::WorkbenchError => "workbench-error",
+                WorkbenchFailureCode::CaptureUnavailable
+                | WorkbenchFailureCode::CaptureInvalidRegion
+                | WorkbenchFailureCode::CaptureTooLarge => "capture",
             };
             println!(
                 "{}",
@@ -291,6 +294,10 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
                 workbench.user_directory =
                     Some(path_value(&mut args, "--workbench-user-directory")?)
             }
+            "--workbench-profile-directory" => {
+                workbench.profile_directory =
+                    Some(path_value(&mut args, "--workbench-profile-directory")?)
+            }
             _ => return Err(format!("unknown MCP argument '{argument}'")),
         }
     }
@@ -318,7 +325,7 @@ fn string_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<S
 
 fn print_help() {
     println!(
-        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|integration-status|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --index-cache <path>\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>"
+        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|integration-status|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --index-cache <path>\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <test/development override>"
     );
 }
 
@@ -376,6 +383,27 @@ mod tests {
         ] {
             assert!(parse_args_from(arguments.into_iter()).is_err());
         }
+    }
+
+    #[test]
+    fn explicit_mcp_mode_accepts_a_workbench_profile_directory() {
+        let mode = parse_args_from(
+            [
+                "mcp".to_string(),
+                "--workbench-profile-directory".to_string(),
+                "fixture-profile".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("valid MCP arguments");
+
+        let ServerMode::Mcp(options) = mode else {
+            panic!("expected MCP mode");
+        };
+        assert_eq!(
+            options.workbench.profile_directory,
+            Some(PathBuf::from("fixture-profile"))
+        );
     }
 
     #[test]

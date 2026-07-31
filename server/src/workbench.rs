@@ -1,4 +1,8 @@
 use crate::workbench_bridge::*;
+use crate::workbench_capture::{
+    self, CaptureError, CaptureRegion, CapturedWindow, WorkbenchWindowList,
+    DEFAULT_MAX_DIMENSION, MAX_MAX_DIMENSION, MIN_MAX_DIMENSION,
+};
 use schemars::JsonSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -102,6 +106,9 @@ pub enum WorkbenchFailureCode {
     Timeout,
     Protocol,
     WorkbenchError,
+    CaptureUnavailable,
+    CaptureInvalidRegion,
+    CaptureTooLarge,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +136,7 @@ pub enum WorkbenchInstallAuthorization {
 pub struct WorkbenchControllerOptions {
     pub gateway: WorkbenchGatewayOptions,
     pub user_directory: Option<PathBuf>,
+    pub profile_directory: Option<PathBuf>,
     pub game_directory: Option<PathBuf>,
     pub tools_directory: Option<PathBuf>,
     pub executable: Option<PathBuf>,
@@ -139,6 +147,7 @@ impl Default for WorkbenchControllerOptions {
         Self {
             gateway: WorkbenchGatewayOptions::default(),
             user_directory: None,
+            profile_directory: None,
             game_directory: None,
             tools_directory: None,
             executable: None,
@@ -1086,6 +1095,7 @@ pub struct WorkbenchController {
     observed_processes: Arc<Mutex<HashSet<ProcessIdentity>>>,
     validation_snapshot: Arc<Mutex<Option<(String, WorkbenchValidation)>>>,
     maintenance_lock: Arc<Mutex<()>>,
+    capture_lock: Arc<Mutex<()>>,
     delete_confirmations: Arc<Mutex<HashMap<String, (String, Instant)>>>,
     property_write_descriptors: Arc<Mutex<HashMap<String, PropertyWriteDescriptor>>>,
 }
@@ -1099,6 +1109,7 @@ impl WorkbenchController {
             observed_processes: Arc::new(Mutex::new(HashSet::new())),
             validation_snapshot: Arc::new(Mutex::new(None)),
             maintenance_lock: Arc::new(Mutex::new(())),
+            capture_lock: Arc::new(Mutex::new(())),
             delete_confirmations: Arc::new(Mutex::new(HashMap::new())),
             property_write_descriptors: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -4282,8 +4293,119 @@ impl WorkbenchController {
         Ok(result)
     }
 
-    pub fn launch(&self) -> Result<WorkbenchProcessResult, WorkbenchFailure> {
-        self.launch_project(None)
+    pub fn list_windows(&self, process_id: u32) -> Result<WorkbenchWindowList, WorkbenchFailure> {
+        let process = self.capture_process(process_id, "list_windows")?;
+        let windows = workbench_capture::list_windows(process.id).map_err(|error| {
+            self.capture_failure(
+                "list_windows",
+                process,
+                error,
+                WorkbenchFailureCode::CaptureUnavailable,
+            )
+        })?;
+        Ok(WorkbenchWindowList {
+            process_id: process.id,
+            windows,
+        })
+    }
+
+    pub fn capture_window(
+        &self,
+        process_id: u32,
+        window_id: Option<&str>,
+        max_dimension: Option<u32>,
+        region: Option<CaptureRegion>,
+    ) -> Result<CapturedWindow, WorkbenchFailure> {
+        let process = self.capture_process(process_id, "capture_window")?;
+        let max_dimension = max_dimension.unwrap_or(DEFAULT_MAX_DIMENSION);
+        if !(MIN_MAX_DIMENSION..=MAX_MAX_DIMENSION).contains(&max_dimension) {
+            return Err(self.correlate_failure_details(
+                "capture_window",
+                "invalid-max-dimension",
+                failure(WorkbenchFailureCode::CaptureUnavailable),
+                json!({
+                    "processId": process.id,
+                    "maxDimension": max_dimension,
+                    "minimum": MIN_MAX_DIMENSION,
+                    "maximum": MAX_MAX_DIMENSION,
+                }),
+            ));
+        }
+        let _capture_guard = self.capture_lock.lock().map_err(|_| {
+            self.correlate_failure_details(
+                "capture_window",
+                "capture-admission-unavailable",
+                failure(WorkbenchFailureCode::CaptureUnavailable),
+                json!({"processId": process.id}),
+            )
+        })?;
+        workbench_capture::capture_window(process.id, window_id, max_dimension, region).map_err(
+            |error| {
+                let code = match error {
+                    CaptureError::InvalidRegion => WorkbenchFailureCode::CaptureInvalidRegion,
+                    CaptureError::TooLarge => WorkbenchFailureCode::CaptureTooLarge,
+                    CaptureError::Unsupported
+                    | CaptureError::NoWindow
+                    | CaptureError::InvalidWindowId
+                    | CaptureError::Minimized
+                    | CaptureError::NativeCapture
+                    | CaptureError::Encoding => WorkbenchFailureCode::CaptureUnavailable,
+                };
+                self.capture_failure("capture_window", process, error, code)
+            },
+        )
+    }
+
+    fn capture_process(
+        &self,
+        process_id: u32,
+        operation: &str,
+    ) -> Result<ProcessIdentity, WorkbenchFailure> {
+        let observed = self.observed_processes.lock().ok().and_then(|processes| {
+            processes
+                .iter()
+                .find(|process| process.id == process_id)
+                .copied()
+        });
+        let current = workbench_processes();
+        if observed.is_none() || !current.iter().any(|process| Some(*process) == observed) {
+            return Err(self.correlate_failure_details(
+                operation,
+                "stale-or-unobserved-process",
+                failure(WorkbenchFailureCode::CaptureUnavailable),
+                json!({
+                    "processId": process_id,
+                    "observedBySession": observed.is_some(),
+                    "currentIdentityMatched": false,
+                }),
+            ));
+        }
+        Ok(observed.expect("capture process identity was checked"))
+    }
+
+    fn capture_failure(
+        &self,
+        operation: &str,
+        process: ProcessIdentity,
+        error: CaptureError,
+        code: WorkbenchFailureCode,
+    ) -> WorkbenchFailure {
+        self.correlate_failure_details(
+            operation,
+            "window-capture-failed",
+            failure(code),
+            json!({
+                "processId": process.id,
+                "captureError": error.to_string(),
+            }),
+        )
+    }
+
+    pub fn launch(
+        &self,
+        project: Option<&std::path::Path>,
+    ) -> Result<WorkbenchProcessResult, WorkbenchFailure> {
+        self.launch_project(project)
     }
 
     fn launch_project(
@@ -4291,9 +4413,41 @@ impl WorkbenchController {
         project: Option<&std::path::Path>,
     ) -> Result<WorkbenchProcessResult, WorkbenchFailure> {
         let started = Instant::now();
+        if let Some(project) = project {
+            if !project.is_file()
+                || !project
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("gproj"))
+            {
+                return Err(self.correlate_failure_details(
+                    "launch",
+                    "project-unavailable",
+                    failure(WorkbenchFailureCode::Unavailable),
+                    json!({"project": project}),
+                ));
+            }
+        }
         let existing = workbench_processes();
         self.observe_processes(&existing);
         if let Some(process) = existing.first() {
+            if let Some(requested_project) = project {
+                let observed_project = workbench_project_gproj(*process);
+                if observed_project
+                    .as_deref()
+                    .is_none_or(|observed| !paths_equal(observed, requested_project))
+                {
+                    return Err(self.correlate_failure_details(
+                        "launch",
+                        "existing-process-project-mismatch",
+                        failure(WorkbenchFailureCode::Unavailable),
+                        json!({
+                            "processId": process.id,
+                            "requestedProject": requested_project,
+                            "observedProject": observed_project,
+                        }),
+                    ));
+                }
+            }
             let net_api_connected =
                 self.native_status().is_ok() || self.wait_for_net_api(Duration::from_secs(90));
             if !net_api_connected {
@@ -4338,7 +4492,7 @@ impl WorkbenchController {
             })?;
         let working_directory = executable.parent().map(std::path::Path::to_path_buf);
         let arguments =
-            workbench_launch_arguments(project, paths.game.as_deref()).ok_or_else(|| {
+            workbench_launch_arguments(project, paths.game.as_deref(), Some(&paths.profile)).ok_or_else(|| {
                 self.correlate_failure_details(
                     "launch",
                     "base-game-addon-directory-unavailable",
@@ -4837,11 +4991,20 @@ impl WorkbenchController {
             .clone()
             .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
             .unwrap_or_default();
-        let workbench_root = user
-            .join("Documents")
-            .join("My Games")
-            .join("ArmaReforgerWorkbench");
-        let profile = workbench_root.join("profile");
+        let profile = self
+            .options
+            .profile_directory
+            .clone()
+            .unwrap_or_else(|| {
+                user.join("Documents")
+                    .join("My Games")
+                    .join("ArmaReforgerWorkbench")
+                    .join("profile")
+            });
+        let workbench_root = profile
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| profile.clone());
         let scripts_directory = profile.join("scripts");
         let bridge_directory = scripts_directory
             .join("WorkbenchGame")
@@ -5310,6 +5473,9 @@ fn failure_code(code: WorkbenchFailureCode) -> &'static str {
         WorkbenchFailureCode::Timeout => "workbench_timeout",
         WorkbenchFailureCode::Protocol => "workbench_protocol_error",
         WorkbenchFailureCode::WorkbenchError => "workbench_error",
+        WorkbenchFailureCode::CaptureUnavailable => "workbench_capture_unavailable",
+        WorkbenchFailureCode::CaptureInvalidRegion => "workbench_capture_invalid_region",
+        WorkbenchFailureCode::CaptureTooLarge => "workbench_screenshot_too_large",
     }
 }
 
@@ -7050,6 +7216,12 @@ fn is_workbench_executable(path: &std::path::Path) -> bool {
         })
 }
 
+fn paths_equal(left: &std::path::Path, right: &std::path::Path) -> bool {
+    let left = fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
+    let right = fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
+    left == right
+}
+
 fn manifest_matches_payload(manifest: &BridgeManifest) -> bool {
     manifest_matches_payload_for(manifest, bridge_payload())
 }
@@ -7544,8 +7716,15 @@ fn base_game_addons_directory(game_directory: Option<&std::path::Path>) -> Optio
 fn workbench_launch_arguments(
     project: Option<&std::path::Path>,
     game_directory: Option<&std::path::Path>,
+    profile: Option<&std::path::Path>,
 ) -> Option<Vec<std::ffi::OsString>> {
     let mut arguments = vec![std::ffi::OsString::from("-noThrow")];
+    if let Some(profile) = profile {
+        arguments.extend([
+            std::ffi::OsString::from("-profile"),
+            profile.as_os_str().to_os_string(),
+        ]);
+    }
     let game_addons = base_game_addons_directory(game_directory)?;
     if let Some(project) = project {
         arguments.extend([
@@ -10865,18 +11044,31 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            super::workbench_launch_arguments(None, Some(&game)),
+            super::workbench_launch_arguments(None, Some(&game), None),
             Some(vec![
                 std::ffi::OsString::from("-noThrow"),
                 std::ffi::OsString::from("-addonsDir"),
                 game.join("addons").into_os_string(),
             ]),
         );
-        assert_eq!(super::workbench_launch_arguments(None, None), None);
+        assert_eq!(super::workbench_launch_arguments(None, None, None), None);
         assert_eq!(
-            super::workbench_launch_arguments(Some(&project), Some(&game)),
+            super::workbench_launch_arguments(Some(&project), Some(&game), None),
             Some(vec![
                 std::ffi::OsString::from("-noThrow"),
+                std::ffi::OsString::from("-gproj"),
+                project.clone().into_os_string(),
+                std::ffi::OsString::from("-addonsDir"),
+                game.join("addons").into_os_string(),
+            ]),
+        );
+        let profile = root.join("profile");
+        assert_eq!(
+            super::workbench_launch_arguments(Some(&project), Some(&game), Some(&profile)),
+            Some(vec![
+                std::ffi::OsString::from("-noThrow"),
+                std::ffi::OsString::from("-profile"),
+                profile.into_os_string(),
                 std::ffi::OsString::from("-gproj"),
                 project.into_os_string(),
                 std::ffi::OsString::from("-addonsDir"),

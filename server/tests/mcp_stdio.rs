@@ -96,7 +96,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tools/list result");
-    assert_eq!(listed.len(), 72);
+    assert_eq!(listed.len(), 74);
     assert_eq!(listed[0].get("name"), Some(&json!("game_data_status")));
     assert!(listed
         .iter()
@@ -195,6 +195,8 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         "workbench_stop_play_session",
         "workbench_reload",
         "workbench_read_logs",
+        "workbench_list_windows",
+        "workbench_capture_window",
         "workbench_launch",
         "workbench_stop",
         "workbench_restart",
@@ -581,7 +583,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tool catalogue");
-    assert_eq!(listed.len(), 72);
+    assert_eq!(listed.len(), 74);
     assert_eq!(
         listed[2].get("name"),
         Some(&json!("search_game_data_examples"))
