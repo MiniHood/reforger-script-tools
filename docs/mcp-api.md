@@ -17264,7 +17264,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_launch`
 
-Explicit host-process control: launch the discovered Workbench executable for an optional exact .gproj project, or reuse the exact existing Workbench process when no project is supplied, then wait for native NET API readiness. This is not a Workbench Capability or source of live editor truth.
+Explicit host-process control: launch the discovered Workbench executable for one exact .gproj project with the required Arma Reforger and Workbench base add-ons, or reuse an existing Workbench process only when it was launched for that same project, then wait for native NET API readiness. This is not a Workbench Capability or source of live editor truth.
 
 ### Annotations
 
@@ -17288,12 +17288,12 @@ Explicit host-process control: launch the discovered Workbench executable for an
     "projectPath": {
       "maxLength": 4096,
       "minLength": 1,
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     }
   },
+  "required": [
+    "projectPath"
+  ],
   "type": "object"
 }
 ```

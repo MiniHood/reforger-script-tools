@@ -273,6 +273,10 @@ single argument: quote both the `-gproj` path and the base-game `-addonsDir`
 path, and use the Workbench installation directory as the working directory.
 Otherwise Workbench can truncate a path at its first space, fail to load base
 addon `58D0FB3206B6F859` (Arma Reforger), and cannot initialize the project.
+The MCP launcher does not scan disks or guess a conventional installation
+folder. It reads Steam's registered installation root, follows
+`libraryfolders.vdf`, resolves app manifests `1874880` and `1874910`, and
+accepts only one unambiguous manifest-backed installation for each app.
 The live MCP fixture runner uses the public `workbench_launch` MCP operation;
 it never manually constructs a Workbench process command line. It discovers
 World Editor through `workbench_list_editors`, opens it with

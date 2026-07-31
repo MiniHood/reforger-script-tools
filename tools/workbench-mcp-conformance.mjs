@@ -45,6 +45,7 @@ const toolFamilyRules = [
   ["shape-write", /^(edit_shape_points|set_polyline_regular_polygon|convert_shape_points|transform_shape_points|resample_polyline)$/],
   ["play-session", /^(start|stop)_play_session$/],
   ["save", /^save_(all|world)$/],
+  ["window", /^(list_windows|capture_window)$/],
 ];
 
 export function extractWorkbenchToolNames(apiReference) {
@@ -304,17 +305,28 @@ export class McpStdioClient {
       params,
     });
     while (true) {
-      const next = await Promise.race([
-        this.messages.next(),
-        delay(this.requestTimeoutMs).then(() => {
-          throw new Error(
-            "MCP request timed out after " +
-              this.requestTimeoutMs +
-              "ms: " +
-              method,
+      const next = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(
+            new Error(
+              "MCP request timed out after " +
+                this.requestTimeoutMs +
+                "ms: " +
+                method,
+            ),
           );
-        }),
-      ]);
+        }, this.requestTimeoutMs);
+        this.messages.next().then(
+          (value) => {
+            clearTimeout(timer);
+            resolve(value);
+          },
+          (error) => {
+            clearTimeout(timer);
+            reject(error);
+          },
+        );
+      });
       if (next.done) {
         throw new Error(
           "MCP process ended before responding to " +
@@ -400,6 +412,7 @@ export function loadFixtureManifest(manifestPath) {
     fixtureRoot,
     projectPath,
     profileRoot: externalProfileRoot,
+    allowExistingProcess: manifest.allowExistingProcess === true,
     addonsDir,
     expected: isObject(manifest.expected) ? manifest.expected : {},
     readiness: {
@@ -418,7 +431,9 @@ export class WorkbenchMcpSession {
   }
 
   async start(client) {
-    const response = await client.callTool("workbench_launch", {});
+    const response = await client.callTool("workbench_launch", {
+      projectPath: this.manifest.projectPath,
+    });
     const launch = response?.result?.structuredContent;
     if (response?.result?.isError === true || !launch) {
       throw new Error(
@@ -429,6 +444,12 @@ export class WorkbenchMcpSession {
     this.launch = launch;
     this.processId = launch.processId ?? null;
     this.ownsProcess = launch.alreadyRunning !== true;
+    if (launch.alreadyRunning === true && !this.manifest.allowExistingProcess) {
+      throw new Error(
+        "Workbench fixture launch reused an existing process; " +
+          "refusing to run without disposable ownership",
+      );
+    }
     return {
       processId: this.processId,
       ownsProcess: this.ownsProcess,
@@ -658,6 +679,11 @@ export async function runScenario({
             );
           }
         }
+        for (const pointer of step.expect?.exists ?? []) {
+          if (readJsonPointer(response, pointer) === undefined) {
+            reasons.push("expected " + pointer + " to exist");
+          }
+        }
         if (reasons.length === 0 && isObject(step.capture)) {
           for (const [nameToCapture, pointer] of Object.entries(step.capture)) {
             const captured = readJsonPointer(response, pointer);
@@ -746,6 +772,11 @@ export async function runContractReport({
   const fixture = fixturePath
     ? new WorkbenchMcpSession(loadFixtureManifest(fixturePath))
     : undefined;
+  if (fixture) {
+    if (!fixture.manifest.allowExistingProcess) {
+      args.push("--workbench-profile-directory", fixture.manifest.profileRoot);
+    }
+  }
   const client = new McpStdioClient({ serverPath, args });
   let fixtureLaunch;
   let fixtureCleanup;

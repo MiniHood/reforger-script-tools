@@ -125,6 +125,7 @@ pub struct WorkbenchGateway {
 
 pub const WORKBENCH_BRIDGE_VERSION: &str = "1.52.12";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
+const WORKBENCH_REQUIRED_ADDONS: &str = "58D0FB3206B6F859,5614BBCCBB55ED1C";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkbenchInstallAuthorization {
@@ -4403,9 +4404,9 @@ impl WorkbenchController {
 
     pub fn launch(
         &self,
-        project: Option<&std::path::Path>,
+        project: &std::path::Path,
     ) -> Result<WorkbenchProcessResult, WorkbenchFailure> {
-        self.launch_project(project)
+        self.launch_project(Some(project))
     }
 
     fn launch_project(
@@ -4491,8 +4492,13 @@ impl WorkbenchController {
                 )
             })?;
         let working_directory = executable.parent().map(std::path::Path::to_path_buf);
+        let profile_root = self
+            .options
+            .profile_directory
+            .as_deref()
+            .and_then(std::path::Path::parent);
         let arguments =
-            workbench_launch_arguments(project, paths.game.as_deref(), Some(&paths.profile)).ok_or_else(|| {
+            workbench_launch_arguments(project, paths.game.as_deref(), profile_root).ok_or_else(|| {
                 self.correlate_failure_details(
                     "launch",
                     "base-game-addon-directory-unavailable",
@@ -4500,6 +4506,7 @@ impl WorkbenchController {
                     json!({
                         "project": project,
                         "gameDirectoryDiscovered": paths.game.is_some(),
+                        "gameDirectorySource": paths.game_source,
                     }),
                 )
             })?;
@@ -5013,18 +5020,12 @@ impl WorkbenchController {
         let (game, game_source) = if let Some(game) = self.options.game_directory.clone() {
             (Some(game), "explicit".to_string())
         } else {
-            (
-                discover_steam_app("1874880", "Arma Reforger"),
-                "steam-discovery".to_string(),
-            )
+            discover_steam_app("1874880").into_path_and_source()
         };
         let (tools, tools_source) = if let Some(tools) = self.options.tools_directory.clone() {
             (Some(tools), "explicit".to_string())
         } else {
-            (
-                discover_steam_app("1874910", "Arma Reforger Tools"),
-                "steam-discovery".to_string(),
-            )
+            discover_steam_app("1874910").into_path_and_source()
         };
         let (executable, executable_source) =
             if let Some(executable) = self.options.executable.clone() {
@@ -7716,13 +7717,16 @@ fn base_game_addons_directory(game_directory: Option<&std::path::Path>) -> Optio
 fn workbench_launch_arguments(
     project: Option<&std::path::Path>,
     game_directory: Option<&std::path::Path>,
-    profile: Option<&std::path::Path>,
+    profile_root: Option<&std::path::Path>,
 ) -> Option<Vec<std::ffi::OsString>> {
-    let mut arguments = vec![std::ffi::OsString::from("-noThrow")];
-    if let Some(profile) = profile {
+    let mut arguments = vec![
+        std::ffi::OsString::from("-noThrow"),
+        std::ffi::OsString::from("-forceUpdate"),
+    ];
+    if let Some(profile_root) = profile_root {
         arguments.extend([
             std::ffi::OsString::from("-profile"),
-            profile.as_os_str().to_os_string(),
+            profile_root.as_os_str().to_os_string(),
         ]);
     }
     let game_addons = base_game_addons_directory(game_directory)?;
@@ -7733,25 +7737,114 @@ fn workbench_launch_arguments(
         ]);
     }
     arguments.extend([
+        std::ffi::OsString::from("-addons"),
+        std::ffi::OsString::from(WORKBENCH_REQUIRED_ADDONS),
         std::ffi::OsString::from("-addonsDir"),
         game_addons.into_os_string(),
     ]);
     Some(arguments)
 }
 
-fn discover_steam_app(app_id: &str, default_folder: &str) -> Option<PathBuf> {
-    let steam_root = std::env::var_os("ProgramFiles(x86)")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Program Files (x86)"))
-        .join("Steam");
-    discover_steam_app_from_root(&steam_root, app_id, default_folder)
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SteamAppDiscovery {
+    Found(PathBuf),
+    RegistrationUnavailable,
+    ManifestUnavailable,
+    InvalidInstallation,
+    AmbiguousInstallations,
 }
 
+impl SteamAppDiscovery {
+    fn into_path_and_source(self) -> (Option<PathBuf>, String) {
+        match self {
+            Self::Found(path) => (Some(path), "steam-registry".to_string()),
+            Self::RegistrationUnavailable => {
+                (None, "steam-registration-unavailable".to_string())
+            }
+            Self::ManifestUnavailable => (None, "steam-manifest-unavailable".to_string()),
+            Self::InvalidInstallation => (None, "steam-installation-invalid".to_string()),
+            Self::AmbiguousInstallations => {
+                (None, "steam-installation-ambiguous".to_string())
+            }
+        }
+    }
+}
+
+fn discover_steam_app(app_id: &str) -> SteamAppDiscovery {
+    discover_steam_app_from_roots(&registered_steam_roots(), app_id)
+}
+
+#[cfg(test)]
 fn discover_steam_app_from_root(
     steam_root: &std::path::Path,
     app_id: &str,
-    default_folder: &str,
-) -> Option<PathBuf> {
+) -> SteamAppDiscovery {
+    discover_steam_app_from_roots(&[steam_root.to_path_buf()], app_id)
+}
+
+fn discover_steam_app_from_roots(
+    steam_roots: &[PathBuf],
+    app_id: &str,
+) -> SteamAppDiscovery {
+    if steam_roots.is_empty() {
+        return SteamAppDiscovery::RegistrationUnavailable;
+    }
+    let mut libraries = steam_roots
+        .iter()
+        .flat_map(|steam_root| steam_libraries(steam_root))
+        .collect::<Vec<_>>();
+    libraries.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
+    libraries.dedup_by(|left, right| paths_equal(left, right));
+
+    let mut manifest_found = false;
+    let mut invalid_installation = false;
+    let mut candidates = Vec::new();
+    for library in libraries {
+        let steamapps = library.join("steamapps");
+        let manifest = steamapps.join(format!("appmanifest_{app_id}.acf"));
+        let Ok(content) = fs::read_to_string(manifest) else {
+            continue;
+        };
+        manifest_found = true;
+        let Some(install_dir) = acf_string(&content, "installdir") else {
+            invalid_installation = true;
+            continue;
+        };
+        let candidate = steamapps.join("common").join(install_dir);
+        if valid_steam_app_install(app_id, &candidate) {
+            candidates.push(candidate);
+        } else {
+            invalid_installation = true;
+        }
+    }
+    candidates.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
+    candidates.dedup_by(|left, right| paths_equal(left, right));
+    match candidates.len() {
+        1 => SteamAppDiscovery::Found(candidates.remove(0)),
+        2.. => SteamAppDiscovery::AmbiguousInstallations,
+        _ if invalid_installation => SteamAppDiscovery::InvalidInstallation,
+        _ if manifest_found => SteamAppDiscovery::InvalidInstallation,
+        _ => SteamAppDiscovery::ManifestUnavailable,
+    }
+}
+
+fn valid_steam_app_install(app_id: &str, candidate: &std::path::Path) -> bool {
+    match app_id {
+        "1874880" => candidate
+            .join("addons")
+            .join("data")
+            .join("ArmaReforger.gproj")
+            .is_file(),
+        "1874910" => is_workbench_executable(
+            &candidate
+                .join("Workbench")
+                .join("ArmaReforgerWorkbenchSteamDiag.exe"),
+        ),
+        _ => false,
+    }
+}
+
+fn steam_libraries(steam_root: &std::path::Path) -> Vec<PathBuf> {
     let mut libraries = vec![steam_root.to_path_buf()];
     if let Ok(vdf) = fs::read_to_string(steam_root.join("steamapps").join("libraryfolders.vdf")) {
         for line in vdf.lines() {
@@ -7767,29 +7860,93 @@ fn discover_steam_app_from_root(
             }
         }
     }
-    let mut candidates = libraries
+    libraries
+}
+
+#[cfg(windows)]
+fn registered_steam_roots() -> Vec<PathBuf> {
+    use windows_sys::Win32::System::Registry::{
+        HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
+    };
+
+    let registrations = [
+        (HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\WOW6432Node\Valve\Steam",
+            "InstallPath",
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Valve\Steam",
+            "InstallPath",
+        ),
+    ];
+    let mut roots = registrations
         .iter()
-        .filter_map(|library| {
-            let steamapps = library.join("steamapps");
-            let manifest = steamapps.join(format!("appmanifest_{app_id}.acf"));
-            let content = fs::read_to_string(manifest).ok()?;
-            let install_dir =
-                acf_string(&content, "installdir").unwrap_or_else(|| default_folder.to_string());
-            let candidate = steamapps.join("common").join(install_dir);
-            candidate.is_dir().then_some(candidate)
-        })
+        .filter_map(|(hive, key, value)| windows_registry_string(*hive, key, value))
+        .map(PathBuf::from)
+        .filter_map(|path| fs::canonicalize(path).ok())
         .collect::<Vec<_>>();
-    let canonical = steam_root
-        .join("steamapps")
-        .join("common")
-        .join(default_folder);
-    candidates.sort();
-    candidates.dedup();
-    match candidates.len() {
-        0 => canonical.is_dir().then_some(canonical),
-        1 => Some(candidates.remove(0)),
-        _ => None,
+    roots.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
+    roots.dedup_by(|left, right| paths_equal(left, right));
+    roots
+}
+
+#[cfg(not(windows))]
+fn registered_steam_roots() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+#[cfg(windows)]
+fn windows_registry_string(
+    hive: windows_sys::Win32::System::Registry::HKEY,
+    key: &str,
+    value: &str,
+) -> Option<String> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{RegGetValueW, RRF_RT_REG_SZ};
+
+    let key = key.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+    let value = value
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut byte_count = 0u32;
+    let status = unsafe {
+        RegGetValueW(
+            hive,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut byte_count,
+        )
+    };
+    if status != ERROR_SUCCESS || byte_count < 2 || byte_count % 2 != 0 {
+        return None;
     }
+
+    let mut buffer = vec![0u16; byte_count as usize / 2];
+    let status = unsafe {
+        RegGetValueW(
+            hive,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buffer.as_mut_ptr().cast(),
+            &mut byte_count,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+    let length = buffer.iter().position(|unit| *unit == 0).unwrap_or(buffer.len());
+    String::from_utf16(&buffer[..length])
+        .ok()
+        .filter(|text| !text.trim().is_empty())
 }
 
 fn acf_string(content: &str, key: &str) -> Option<String> {
@@ -11031,7 +11188,7 @@ mod tests {
     }
 
     #[test]
-    fn workbench_launch_arguments_always_disable_error_dialogs() {
+    fn workbench_launch_arguments_load_the_required_base_addons() {
         let root = test_root("launch-arguments");
         let game = root.join("game");
         let project = root.join("project").join("Example.gproj");
@@ -11047,6 +11204,9 @@ mod tests {
             super::workbench_launch_arguments(None, Some(&game), None),
             Some(vec![
                 std::ffi::OsString::from("-noThrow"),
+                std::ffi::OsString::from("-forceUpdate"),
+                std::ffi::OsString::from("-addons"),
+                std::ffi::OsString::from("58D0FB3206B6F859,5614BBCCBB55ED1C"),
                 std::ffi::OsString::from("-addonsDir"),
                 game.join("addons").into_os_string(),
             ]),
@@ -11056,21 +11216,27 @@ mod tests {
             super::workbench_launch_arguments(Some(&project), Some(&game), None),
             Some(vec![
                 std::ffi::OsString::from("-noThrow"),
+                std::ffi::OsString::from("-forceUpdate"),
                 std::ffi::OsString::from("-gproj"),
                 project.clone().into_os_string(),
+                std::ffi::OsString::from("-addons"),
+                std::ffi::OsString::from("58D0FB3206B6F859,5614BBCCBB55ED1C"),
                 std::ffi::OsString::from("-addonsDir"),
                 game.join("addons").into_os_string(),
             ]),
         );
-        let profile = root.join("profile");
+        let profile_root = root.join("isolated-workbench");
         assert_eq!(
-            super::workbench_launch_arguments(Some(&project), Some(&game), Some(&profile)),
+            super::workbench_launch_arguments(Some(&project), Some(&game), Some(&profile_root)),
             Some(vec![
                 std::ffi::OsString::from("-noThrow"),
+                std::ffi::OsString::from("-forceUpdate"),
                 std::ffi::OsString::from("-profile"),
-                profile.into_os_string(),
+                profile_root.into_os_string(),
                 std::ffi::OsString::from("-gproj"),
                 project.into_os_string(),
+                std::ffi::OsString::from("-addons"),
+                std::ffi::OsString::from("58D0FB3206B6F859,5614BBCCBB55ED1C"),
                 std::ffi::OsString::from("-addonsDir"),
                 game.join("addons").into_os_string(),
             ]),
@@ -11322,8 +11488,8 @@ mod tests {
         );
 
         assert_eq!(
-            super::discover_steam_app_from_root(&steam, "1874880", "Arma Reforger"),
-            Some(
+            super::discover_steam_app_from_root(&steam, "1874880"),
+            super::SteamAppDiscovery::Found(
                 game_library
                     .join("steamapps")
                     .join("common")
@@ -11331,8 +11497,8 @@ mod tests {
             )
         );
         assert_eq!(
-            super::discover_steam_app_from_root(&steam, "1874910", "Arma Reforger Tools"),
-            Some(
+            super::discover_steam_app_from_root(&steam, "1874910"),
+            super::SteamAppDiscovery::Found(
                 tools_library
                     .join("steamapps")
                     .join("common")
@@ -11343,9 +11509,13 @@ mod tests {
     }
 
     #[test]
-    fn steam_discovery_uses_canonical_only_as_fallback_and_rejects_metadata_ambiguity() {
+    fn steam_discovery_requires_manifest_metadata_and_rejects_ambiguity() {
         let root = test_root("steam-ambiguity");
         let steam = root.join("Steam");
+        assert_eq!(
+            super::discover_steam_app_from_roots(&[], "1874910"),
+            super::SteamAppDiscovery::RegistrationUnavailable
+        );
         let canonical = steam
             .join("steamapps")
             .join("common")
@@ -11353,8 +11523,29 @@ mod tests {
         fs::create_dir_all(&canonical).unwrap();
 
         assert_eq!(
-            super::discover_steam_app_from_root(&steam, "1874910", "Arma Reforger Tools"),
-            Some(canonical)
+            super::discover_steam_app_from_root(&steam, "1874910"),
+            super::SteamAppDiscovery::ManifestUnavailable
+        );
+
+        let invalid = root.join("InvalidLibrary");
+        write_steam_app(
+            &invalid,
+            "1874910",
+            "Arma Reforger Tools",
+            "Arma Reforger Tools",
+        );
+        fs::remove_file(
+            invalid
+                .join("steamapps")
+                .join("common")
+                .join("Arma Reforger Tools")
+                .join("Workbench")
+                .join("ArmaReforgerWorkbenchSteamDiag.exe"),
+        )
+        .unwrap();
+        assert_eq!(
+            super::discover_steam_app_from_root(&invalid, "1874910"),
+            super::SteamAppDiscovery::InvalidInstallation
         );
 
         let other = root.join("OtherLibrary");
@@ -11366,8 +11557,8 @@ mod tests {
             "Arma Reforger Tools",
         );
         assert_eq!(
-            super::discover_steam_app_from_root(&steam, "1874910", "Arma Reforger Tools"),
-            Some(
+            super::discover_steam_app_from_root(&steam, "1874910"),
+            super::SteamAppDiscovery::Found(
                 other
                     .join("steamapps")
                     .join("common")
@@ -11384,8 +11575,8 @@ mod tests {
             "Arma Reforger Tools",
         );
         assert_eq!(
-            super::discover_steam_app_from_root(&steam, "1874910", "Arma Reforger Tools"),
-            None
+            super::discover_steam_app_from_root(&steam, "1874910"),
+            super::SteamAppDiscovery::AmbiguousInstallations
         );
         fs::remove_dir_all(root).unwrap();
     }
@@ -11518,7 +11709,26 @@ mod tests {
 
     fn write_steam_app(library: &std::path::Path, app_id: &str, install_dir: &str, folder: &str) {
         let steamapps = library.join("steamapps");
-        fs::create_dir_all(steamapps.join("common").join(folder)).unwrap();
+        let installation = steamapps.join("common").join(folder);
+        fs::create_dir_all(&installation).unwrap();
+        match app_id {
+            "1874880" => {
+                let project = installation
+                    .join("addons")
+                    .join("data")
+                    .join("ArmaReforger.gproj");
+                fs::create_dir_all(project.parent().unwrap()).unwrap();
+                fs::write(project, "GameProject {}").unwrap();
+            }
+            "1874910" => {
+                let executable = installation
+                    .join("Workbench")
+                    .join("ArmaReforgerWorkbenchSteamDiag.exe");
+                fs::create_dir_all(executable.parent().unwrap()).unwrap();
+                fs::write(executable, b"fixture").unwrap();
+            }
+            _ => {}
+        }
         fs::write(
             steamapps.join(format!("appmanifest_{app_id}.acf")),
             format!("\"AppState\"\n{{\n\"installdir\"\t\"{install_dir}\"\n}}\n"),

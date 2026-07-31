@@ -9,7 +9,7 @@
   },
   "expected": {
     "worldResource": "$McpConformanceFixture:worlds/McpConformance.ent",
-    "loadedAddonIds": ["ArmaReforger", "McpConformanceFixture"]
+    "loadedAddonIds": ["ArmaReforger", "TestBullshit", "McpConformanceFixture"]
   },
   "readiness": {
     "timeoutMs": 120000,

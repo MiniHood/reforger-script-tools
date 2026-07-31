@@ -225,7 +225,7 @@ const WORKBENCH_RELOAD_DESCRIPTION: &str = "Confirm Save All for currently open 
 const WORKBENCH_SAVE_ALL_DESCRIPTION: &str = "Save all currently open Workbench tabs through the fixed in-process Resource Manager Save All action and, only when the active World Editor has an existing world path, save that world through WorldEditor.Save(). An absent or untitled world is reported as skipped; no name is invented and no Save As dialog is opened. The tool uses in-process actions only and waits briefly after an accepted save action before returning.";
 const WORKBENCH_SAVE_WORLD_DESCRIPTION: &str = "Save the active World Editor document through WorldEditor.Save() only when it already has a world path. An absent or untitled world is reported as skipped; no name is invented and no Save As dialog is opened. It remains separate from workbench_save_all, uses no UI automation, and waits briefly after a successful save action before returning.";
 const WORKBENCH_READ_LOGS_DESCRIPTION: &str = "Read a bounded tail from either the integration support log or the latest known Workbench console log. This is diagnostic history, not live Workbench state or reload-success evidence; arbitrary paths are not accepted.";
-const WORKBENCH_LAUNCH_DESCRIPTION: &str = "Explicit host-process control: launch the discovered Workbench executable for an optional exact .gproj project, or reuse the exact existing Workbench process when no project is supplied, then wait for native NET API readiness. This is not a Workbench Capability or source of live editor truth.";
+const WORKBENCH_LAUNCH_DESCRIPTION: &str = "Explicit host-process control: launch the discovered Workbench executable for one exact .gproj project with the required Arma Reforger and Workbench base add-ons, or reuse an existing Workbench process only when it was launched for that same project, then wait for native NET API readiness. This is not a Workbench Capability or source of live editor truth.";
 const WORKBENCH_STOP_DESCRIPTION: &str = "Explicit host-process control: request graceful closure of one exact observed Workbench process. This is not a Workbench Capability or source of live editor truth.";
 const WORKBENCH_RESTART_DESCRIPTION: &str = "Explicit host-process control: save through the typed Workbench Gateway, force-close one exact observed Workbench process, and relaunch its resolved project. This is not a Workbench Capability or source of live editor truth.";
 const WORKBENCH_LIST_WINDOWS_DESCRIPTION: &str = "List visible top-level windows owned by one exact observed Workbench process. Window identities are opaque and short-lived; this is host-process observation and does not use the Workbench Gateway.";
@@ -300,7 +300,7 @@ struct McpWorkbenchCaptureResult {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct McpWorkbenchLaunchInput {
     #[schemars(length(min = 1, max = 4096))]
-    project_path: Option<std::path::PathBuf>,
+    project_path: std::path::PathBuf,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -2992,7 +2992,7 @@ impl ReforgerMcpServer {
             let workbench = self.workbench.clone();
             return blocking_workbench_call(self.admission.clone(), context, "launch", move || {
                 workbench
-                    .launch(input.project_path.as_deref())
+                    .launch(&input.project_path)
                     .map_err(|failure| workbench.correlate_failure("launch", failure))
             })
             .await;
