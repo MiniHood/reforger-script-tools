@@ -5,6 +5,7 @@ export const workbenchConfig = {
 		host: 'host',
 		port: 'port',
 		saveOnIdle: 'saveOnIdle',
+		autoInstallIntegration: 'autoInstallIntegration',
 	},
 } as const;
 
@@ -13,6 +14,7 @@ export const workbenchDefaults = {
 	host: '127.0.0.1',
 	port: 5775,
 	saveOnIdle: true,
+	autoInstallIntegration: true,
 } as const;
 
 export const workbenchCommands = {

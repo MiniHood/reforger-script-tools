@@ -45,17 +45,15 @@ trademarks or registered trademarks of Bohemia Interactive a.s.
 The extension recognizes `.c` files under `Scripts` or `scripts` directories as
 Enfusion Script.
 
-## Enable the Workbench NET API
+## Workbench Integration
 
-Workbench compiler validation requires Arma Reforger Tools and a running
-Workbench instance with your addon project open.
-
-1. In Workbench, select **Workbench > Options**.
-2. Open the **Workbench** tab.
-3. Enable **Enable net API**.
-4. Select **OK** to save the setting.
-5. In VS Code, leave the extension endpoint at its default
-   `127.0.0.1:5775`, or set it to the loopback endpoint used by Workbench.
+On first activation, the extension asks whether to enable **Workbench
+Integration**. After approval, it enables Workbench's local NET API, installs
+the managed bridge, and remembers the approval for future bridge updates. If
+Workbench is open, restart it when prompted. If it is closed, the extension
+launches the default Reforger project automatically. Set
+`reforgerScriptTools.workbench.autoInstallIntegration` to `false` to disable
+this automatic workflow.
 
 The extension reconnects automatically. The Workbench status item shows
 availability, and **Reforger Script Tools: Validate Scripts in Workbench** runs
@@ -89,6 +87,7 @@ Tools`, or add the keys to `settings.json`.
 | `reforgerScriptTools.workbench.host` | `"127.0.0.1"` | Workbench NET API loopback host. IPv4 loopback addresses and `::1` are accepted. |
 | `reforgerScriptTools.workbench.port` | `5775` | Workbench NET API port, from `1` through `65535`. The extension does not scan other ports. |
 | `reforgerScriptTools.workbench.saveOnIdle` | `true` | After three seconds without typing, save the active Enforce Script and validate in Workbench. Disable to validate only on explicit save or command. |
+| `reforgerScriptTools.workbench.autoInstallIntegration` | `true` | After approval, automatically maintain the Workbench bridge and launch the default Reforger project when needed. |
 
 ## Customize Semantic Colors
 

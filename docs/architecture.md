@@ -127,10 +127,11 @@ schemas, explicit coordinate spaces, and result framing.
 
 The optional managed handler package lives under the current Windows user's
 `Documents\My Games\ArmaReforgerWorkbench\profile\scripts\WorkbenchGame\reforger-script-tools`
-directory. Its manifest is both file ownership and continuing-maintenance
-consent: after a successful native connection, the VS Code extension owns the
-one-time first-install prompt and invokes a private Rust installer only when the
-user accepts. Public MCP cannot create that first manifest; its explicit
+directory. The VS Code extension owns a one-time first-install prompt and
+stores the resulting approval as an internal durable extension state. The
+approval is not a user setting and permits automatic bridge maintenance on
+later activations. The managed manifest remains the file-ownership and version
+record. Public MCP cannot create that first manifest; its explicit
 installer may maintain an existing consented installation. A prior
 manifest-owned flat-profile package is migrated to this `WorkbenchGame` module
 path without touching unknown files. `workbench_status` is read-only: it
@@ -161,9 +162,12 @@ classes, field blocks from methods, sibling methods, and their attached member
 comments; consecutive blank lines are not permitted. This preserves compiler
 validation as the Workbench authority while making the reviewed source directly
 inspectable.
-When no consent manifest exists, status reports installation as available only
-if the existing profile and native connection make the approval-bearing
-operation usable; status itself creates nothing.
+The extension's bootstrap operation writes Workbench's `NetAPI_Enabled` value
+as `REG_SZ "1"` only during first approval, then installs or updates the
+managed bridge without requiring an existing NET API connection. If Workbench
+is already running, the extension asks the user to restart it. If it is closed,
+the extension may launch only the discovered default `ArmaReforger.gproj`
+project.
 Unknown profile files are preserved, newer package versions are never
 downgraded, and failed activation is left installed for diagnosis rather than
 rolled back. Version precedence follows semantic-version ordering; an
@@ -284,7 +288,7 @@ raw NET API payloads, property values, confirmation tokens, or source text.
 | `src/mcp/` | MCP client configuration from the packaged runtime and stable source/cache inputs | Protocol serving, indexing, or semantic queries |
 | `src/workbenchNetApi/gateway/` | Thin TypeScript process bridge from editor compiler features to the bundled Rust Workbench Gateway | NET API framing, VS Code UI, raw endpoint dispatch, or Enfusion language decisions |
 | `src/workbenchNetApi/compiler/` | VS Code scheduling, compiler diagnostic rendering, and Workbench status UI | NET API framing, endpoint discovery, or language-engine diagnostics |
-| `src/workbenchNetApi/integration/` | One-session first-install prompt and progress/notification presentation after a confirmed connection | Profile writes, consent persistence outside the manifest, NET API framing, or automatic process lifecycle |
+| `src/workbenchNetApi/integration/` | One-time approval, bootstrap/maintenance orchestration, and progress/notification presentation | Registry/profile/process implementation, NET API framing, or language/index decisions |
 | `server/src/bin/reforger_language_server.rs` | Process-mode parsing and dispatch to one protocol adapter | Protocol behaviour, language analysis, or tool definitions |
 | `server/src/lsp/` | LSP transport, document lifecycle, and language-feature projection | MCP serving or a second Enfusion analysis implementation |
 | `server/src/mcp/` | MCP schemas, protocol serving, and bounded result mapping | LSP lifecycle or a second Game Data/Official Wiki authority |

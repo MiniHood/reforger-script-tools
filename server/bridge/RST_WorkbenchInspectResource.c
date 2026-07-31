@@ -52,7 +52,13 @@ class RST_WorkbenchInspectResource : NetApiHandler
 			response.status = "resource-not-found";
 			return response;
 		}
-		BaseContainer configuration = meta.GetObjectArray("Configurations")[0];
+		ref BaseContainerList configurations = meta.GetObjectArray("Configurations");
+		if (!configurations || configurations.Count() == 0)
+		{
+			response.status = "resource-configuration-unavailable";
+			return response;
+		}
+		BaseContainer configuration = configurations.Get(0);
 		if (!configuration)
 		{
 			response.status = "resource-configuration-unavailable";

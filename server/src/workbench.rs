@@ -204,6 +204,25 @@ pub struct WorkbenchBridgeInstallResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct WorkbenchIntegrationBootstrapResult {
+    pub net_api_enabled: bool,
+    pub net_api_write_performed: bool,
+    pub bridge_installed: bool,
+    pub bridge_version: Option<String>,
+    pub bridge_changed: bool,
+    pub profile_available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchProcessStatus {
+    pub is_open: bool,
+    pub process_id: Option<u32>,
+    pub project_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkbenchLiveState {
     pub bridge_version: String,
     pub protocol_version: u32,
@@ -1203,6 +1222,162 @@ impl WorkbenchController {
         result
     }
 
+    pub fn bootstrap_integration(
+        &self,
+    ) -> Result<WorkbenchIntegrationBootstrapResult, WorkbenchFailure> {
+        let _maintenance = self
+            .maintenance_lock
+            .lock()
+            .map_err(|_| failure(WorkbenchFailureCode::Unavailable))?;
+        let started = Instant::now();
+        let net_api_write_performed = enable_workbench_net_api().map_err(|error| {
+            self.correlate_failure_details(
+                "integration-bootstrap",
+                "net-api-enable-failed",
+                failure(WorkbenchFailureCode::Unavailable),
+                json!({"errorKind": format!("{:?}", error.kind())}),
+            )
+        })?;
+        let result = self.prepare_bridge_locked(true)?;
+        self.log_event_timed(
+            "integration-bootstrap",
+            "ready",
+            started,
+            json!({
+                "netApiEnabled": true,
+                "netApiWritePerformed": net_api_write_performed,
+                "bridgeInstalled": result.bridge_installed,
+                "bridgeVersion": result.bridge_version.clone(),
+                "bridgeChanged": result.bridge_changed,
+                "profileAvailable": result.profile_available,
+            }),
+        );
+        Ok(WorkbenchIntegrationBootstrapResult {
+            net_api_enabled: true,
+            net_api_write_performed,
+            ..result
+        })
+    }
+
+    pub fn maintain_integration(
+        &self,
+    ) -> Result<WorkbenchIntegrationBootstrapResult, WorkbenchFailure> {
+        let _maintenance = self
+            .maintenance_lock
+            .lock()
+            .map_err(|_| failure(WorkbenchFailureCode::Unavailable))?;
+        let result = self.prepare_bridge_locked(true)?;
+        Ok(WorkbenchIntegrationBootstrapResult {
+            net_api_enabled: false,
+            net_api_write_performed: false,
+            ..result
+        })
+    }
+
+    pub fn process_status(&self) -> WorkbenchProcessStatus {
+        let process = workbench_processes().into_iter().next();
+        let process_id = process.as_ref().map(|value| value.id);
+        let project_path = process.and_then(workbench_project_gproj);
+        WorkbenchProcessStatus {
+            is_open: process_id.is_some(),
+            process_id,
+            project_path,
+        }
+    }
+
+    pub fn launch_default_project(&self) -> Result<WorkbenchProcessResult, WorkbenchFailure> {
+        let project = self
+            .paths()
+            .game
+            .as_ref()
+            .map(|game| game.join("addons").join("data").join("ArmaReforger.gproj"))
+            .filter(|project| project.is_file())
+            .ok_or_else(|| {
+                self.correlate_failure_details(
+                    "launch-default",
+                    "default-project-unavailable",
+                    failure(WorkbenchFailureCode::Unavailable),
+                    json!({"projectFound": false}),
+                )
+            })?;
+        self.launch(&project)
+    }
+
+    fn prepare_bridge_locked(
+        &self,
+        allow_first_install: bool,
+    ) -> Result<WorkbenchIntegrationBootstrapResult, WorkbenchFailure> {
+        let paths = self.paths();
+        if !paths.profile.is_dir() {
+            return Ok(WorkbenchIntegrationBootstrapResult {
+                net_api_enabled: false,
+                net_api_write_performed: false,
+                bridge_installed: false,
+                bridge_version: None,
+                bridge_changed: false,
+                profile_available: false,
+            });
+        }
+        let manifest_path = paths
+            .bridge_directory
+            .join("reforger-script-tools.manifest.json");
+        let mut existing_manifest = fs::read(&manifest_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok());
+        if existing_manifest.is_none()
+            && self
+                .migrate_legacy_bridge(&paths.legacy_bridge_directory, &paths.bridge_directory)
+                .unwrap_or(false)
+        {
+            existing_manifest = fs::read(&manifest_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok());
+        }
+        if existing_manifest.is_none() && !allow_first_install {
+            return Err(self.correlate_failure_details(
+                "integration-maintenance",
+                "consent-required",
+                failure(WorkbenchFailureCode::ConsentRequired),
+                json!({"managedDirectoryCreated": false, "manifestFound": false}),
+            ));
+        }
+        let bridge_changed = existing_manifest.as_ref().is_none_or(|manifest| {
+            version_order(&manifest.bridge_version, WORKBENCH_BRIDGE_VERSION).is_lt()
+                || (manifest.bridge_version == WORKBENCH_BRIDGE_VERSION
+                    && (manifest.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+                        || !manifest_matches_payload(manifest)
+                        || bridge_payload().iter().any(|(name, content)| {
+                            fs::read(paths.bridge_directory.join(name))
+                                .ok()
+                                .is_none_or(|bytes| sha256(&bytes) != sha256(content.as_bytes()))
+                        })))
+        });
+        if bridge_changed {
+            self.write_managed_files(&paths.bridge_directory).map_err(|error| {
+                self.correlate_failure_details(
+                    "integration-maintenance",
+                    "write-failed",
+                    failure(WorkbenchFailureCode::Unavailable),
+                    json!({
+                        "errorKind": format!("{:?}", error.kind()),
+                        "managedFileCount": bridge_payload().len(),
+                    }),
+                )
+            })?;
+            existing_manifest = fs::read(&manifest_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok());
+        }
+        Ok(WorkbenchIntegrationBootstrapResult {
+            net_api_enabled: false,
+            net_api_write_performed: false,
+            bridge_installed: existing_manifest.is_some(),
+            bridge_version: existing_manifest.map(|manifest| manifest.bridge_version),
+            bridge_changed,
+            profile_available: true,
+        })
+    }
+
     pub fn install_bridge(
         &self,
         authorization: WorkbenchInstallAuthorization,
@@ -1221,7 +1396,10 @@ impl WorkbenchController {
             ));
         }
         let paths = self.paths();
-        if !paths.profile.is_dir() {
+        let prepared = self.prepare_bridge_locked(
+            authorization == WorkbenchInstallAuthorization::UserApprovedFirstInstall,
+        )?;
+        if !prepared.profile_available {
             return Err(self.correlate_failure_details(
                 "install",
                 "profile-missing",
@@ -1232,39 +1410,13 @@ impl WorkbenchController {
                 }),
             ));
         }
-        let mut existing_manifest = fs::read(
+        let existing_manifest = fs::read(
             paths
                 .bridge_directory
                 .join("reforger-script-tools.manifest.json"),
         )
         .ok()
         .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok());
-        if existing_manifest.is_none()
-            && self
-                .migrate_legacy_bridge(&paths.legacy_bridge_directory, &paths.bridge_directory)
-                .unwrap_or(false)
-        {
-            existing_manifest = fs::read(
-                paths
-                    .bridge_directory
-                    .join("reforger-script-tools.manifest.json"),
-            )
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok());
-        }
-        if existing_manifest.is_none()
-            && authorization != WorkbenchInstallAuthorization::UserApprovedFirstInstall
-        {
-            return Err(self.correlate_failure_details(
-                "install",
-                "consent-required",
-                failure(WorkbenchFailureCode::ConsentRequired),
-                json!({
-                    "managedDirectoryCreated": false,
-                    "manifestFound": false,
-                }),
-            ));
-        }
         if let Some(manifest) = existing_manifest.as_ref().filter(|manifest| {
             version_order(&manifest.bridge_version, WORKBENCH_BRIDGE_VERSION).is_gt()
         }) {
@@ -1294,21 +1446,6 @@ impl WorkbenchController {
                 }),
             );
             return Ok(result);
-        }
-        if let Err(error) = self.write_managed_files(&paths.bridge_directory) {
-            return Err(self.correlate_failure_details(
-                "install",
-                "write-failed",
-                failure(WorkbenchFailureCode::Unavailable),
-                json!({
-                    "errorKind": format!("{:?}", error.kind()),
-                    "managedFileCount": bridge_payload().len(),
-                    "managedFiles": bridge_payload()
-                        .iter()
-                        .map(|(name, _)| *name)
-                        .collect::<Vec<_>>(),
-                }),
-            ));
         }
         let validation = self.gateway.validate_scripts();
         let result = WorkbenchBridgeInstallResult {
@@ -1824,12 +1961,13 @@ impl WorkbenchController {
         let (source_addons, source_addons_truncated) =
             split_bounded_list(&raw.source_addons, 64, 4 * 1024);
         let result = WorkbenchResourceInspection {
-            found: raw.found,
+            found: workbench_bool(&raw.found),
             status: raw.status,
             resource_name: raw.resource_name,
             class_name: raw.class_name,
             source_addons,
-            source_addons_truncated: raw.source_addons_truncated || source_addons_truncated,
+            source_addons_truncated: workbench_bool(&raw.source_addons_truncated)
+                || source_addons_truncated,
         };
         self.log_event_timed(
             "inspect-resource",
@@ -2046,7 +2184,7 @@ impl WorkbenchController {
         ).map_err(|failure| self.correlate_failure_details(
             operation, failure_code(failure.code), failure, json!({"handler": "RST_WorkbenchPlaySession"}),
         ))?;
-        let result: WorkbenchPlaySessionResult = serde_json::from_value(value).map_err(|_| {
+        let raw: RawBridgePlaySessionResult = serde_json::from_value(value).map_err(|_| {
             self.correlate_failure_details(
                 operation,
                 "workbench_protocol_error",
@@ -2054,6 +2192,10 @@ impl WorkbenchController {
                 json!({"handler": "RST_WorkbenchPlaySession"}),
             )
         })?;
+        let result = WorkbenchPlaySessionResult {
+            accepted: workbench_bool(&raw.accepted),
+            status: raw.status,
+        };
         self.log_event_timed(
             operation,
             &result.status,
@@ -4647,6 +4789,56 @@ impl WorkbenchController {
             }
             std::thread::sleep(Duration::from_millis(250));
         }
+        if save_confirmed {
+            // A saved Workbench can still keep its main window alive while a modal or
+            // editor-owned shutdown path settles. The exact identity was captured above and
+            // Save All was confirmed, so finish the public stop operation through the same
+            // identity-checked force-close path used when save confirmation is unavailable.
+            self.log_event_timed(
+                "stop",
+                "graceful-close-timeout-falling-back-to-force",
+                started,
+                json!({
+                    "processId": process_id,
+                    "closeMode": close_mode,
+                }),
+            );
+            let force_status = std::process::Command::new("powershell.exe")
+                .args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    &force_stop_workbench_script(observed),
+                ])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            if force_status.is_ok_and(|status| status.success()) {
+                for _ in 0..20 {
+                    if !workbench_process_ids().contains(&process_id) {
+                        self.log_event_timed(
+                            "stop",
+                            "exited-after-force-fallback",
+                            started,
+                            json!({
+                                "processId": process_id,
+                                "closeMode": "force-after-graceful-timeout",
+                            }),
+                        );
+                        return Ok(WorkbenchProcessResult {
+                            process_id: Some(process_id),
+                            already_running: false,
+                            net_api_connected: false,
+                            exited: true,
+                            user_interaction_required: false,
+                        });
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+            }
+        }
         let result = WorkbenchProcessResult {
             process_id: Some(process_id),
             already_running: false,
@@ -5660,7 +5852,7 @@ struct RawBridgeResourceList {
 
 #[derive(Deserialize)]
 struct RawBridgeResourceInspection {
-    found: bool,
+    found: Value,
     status: String,
     #[serde(rename = "resourceName")]
     resource_name: Option<String>,
@@ -5669,7 +5861,13 @@ struct RawBridgeResourceInspection {
     #[serde(rename = "sourceAddons", default)]
     source_addons: String,
     #[serde(rename = "sourceAddonsTruncated", default)]
-    source_addons_truncated: bool,
+    source_addons_truncated: Value,
+}
+
+#[derive(Deserialize)]
+struct RawBridgePlaySessionResult {
+    accepted: Value,
+    status: String,
 }
 
 #[derive(Deserialize)]
@@ -8037,6 +8235,93 @@ fn windows_registry_string(
         .filter(|text| !text.trim().is_empty())
 }
 
+#[cfg(windows)]
+fn enable_workbench_net_api() -> std::io::Result<bool> {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyW, RegGetValueW, RegSetValueExW, HKEY_CURRENT_USER, REG_SZ,
+        RRF_RT_REG_SZ,
+    };
+
+    const KEY_PATH: &str = r"Software\Bohemia Interactive\Arma Reforger Workbench\Workbench";
+    const VALUE_NAME: &str = "NetAPI_Enabled";
+    let key_path = KEY_PATH.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+    let value_name = VALUE_NAME
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let enabled = "1".encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+
+    let mut key = null_mut();
+    let status = unsafe { RegCreateKeyW(HKEY_CURRENT_USER, key_path.as_ptr(), &mut key) };
+    if status != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(status as i32));
+    }
+
+    let mut byte_count = 0u32;
+    let read_status = unsafe {
+        RegGetValueW(
+            key,
+            null_mut(),
+            value_name.as_ptr(),
+            RRF_RT_REG_SZ,
+            null_mut(),
+            null_mut(),
+            &mut byte_count,
+        )
+    };
+    let already_enabled = if read_status == ERROR_SUCCESS && byte_count >= 2 {
+        let mut buffer = vec![0u16; (byte_count / 2) as usize];
+        let read_status = unsafe {
+            RegGetValueW(
+                key,
+                null_mut(),
+                value_name.as_ptr(),
+                RRF_RT_REG_SZ,
+                null_mut(),
+                buffer.as_mut_ptr().cast(),
+                &mut byte_count,
+            )
+        };
+        read_status == ERROR_SUCCESS
+            && String::from_utf16_lossy(&buffer)
+                .trim_end_matches('\0')
+                .eq("1")
+    } else {
+        false
+    };
+    if already_enabled {
+        unsafe { RegCloseKey(key) };
+        return Ok(false);
+    }
+
+    let byte_count = (enabled.len() * std::mem::size_of::<u16>()) as u32;
+    let status = unsafe {
+        RegSetValueExW(
+            key,
+            value_name.as_ptr(),
+            0,
+            REG_SZ,
+            enabled.as_ptr().cast(),
+            byte_count,
+        )
+    };
+    unsafe { RegCloseKey(key) };
+    if status != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(status as i32));
+    }
+    Ok(true)
+}
+
+#[cfg(not(windows))]
+fn enable_workbench_net_api() -> std::io::Result<bool> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Workbench NET API enablement is only supported on Windows",
+    ))
+}
+
 fn acf_string(content: &str, key: &str) -> Option<String> {
     content.lines().find_map(|line| {
         let values = line
@@ -8900,6 +9185,51 @@ mod tests {
         assert_eq!(page.results[0].name, "Test");
         assert_eq!(page.results[0].addon_id.as_deref(), Some("TestBullshit"));
         assert!(!page.truncated);
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resource_inspection_accepts_workbenchs_numeric_boolean_fields() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({
+                    "APIFunc": "RST_WorkbenchInspectResource",
+                    "resourceName": "{00B6CAF6E4A5BAB4}Prefabs/Props/Test.et"
+                })
+            );
+            json!({
+                "bridgeVersion": "1.52.12",
+                "protocolVersion": 1,
+                "found": 1,
+                "status": "found",
+                "resourceName": "{00B6CAF6E4A5BAB4}Prefabs/Props/Test.et",
+                "className": "GenericEntity",
+                "sourceAddons": "TestBullshit",
+                "sourceAddonsTruncated": 0
+            })
+        });
+        let root = test_root("resource-inspection-numeric-booleans");
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        let inspection = controller
+            .inspect_resource("{00B6CAF6E4A5BAB4}Prefabs/Props/Test.et")
+            .unwrap();
+
+        assert!(inspection.found);
+        assert_eq!(inspection.status, "found");
+        assert_eq!(inspection.class_name.as_deref(), Some("GenericEntity"));
+        assert_eq!(inspection.source_addons, vec!["TestBullshit"]);
+        assert!(!inspection.source_addons_truncated);
         peer.join().unwrap();
         fs::remove_dir_all(root).unwrap();
     }
@@ -10432,6 +10762,15 @@ mod tests {
     }
 
     #[test]
+    fn resource_inspection_handles_resources_without_configurations() {
+        assert!(super::BRIDGE_INSPECT_RESOURCE_SOURCE
+            .contains("ref BaseContainerList configurations = meta.GetObjectArray(\"Configurations\");"));
+        assert!(super::BRIDGE_INSPECT_RESOURCE_SOURCE
+            .contains("configurations.Count() == 0"));
+        assert!(super::BRIDGE_INSPECT_RESOURCE_SOURCE.contains("configurations.Get(0)"));
+    }
+
+    #[test]
     fn play_session_preserves_direct_observations_without_claiming_runtime_certainty() {
         assert_eq!(
             super::play_session(&Some("editing".to_string()), true, true),
@@ -10453,6 +10792,42 @@ mod tests {
             super::play_session(&Some("running".to_string()), true, false),
             None
         );
+    }
+
+    #[test]
+    fn play_session_accepts_workbenchs_numeric_boolean_response() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({
+                    "APIFunc": "RST_WorkbenchPlaySession",
+                    "start": true,
+                    "debugMode": false,
+                    "fullScreen": false
+                })
+            );
+            json!({
+                "accepted": 1,
+                "status": "play-started"
+            })
+        });
+        let root = test_root("play-session-numeric-boolean");
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        let result = controller.set_play_session(true, false, false).unwrap();
+
+        assert!(result.accepted);
+        assert_eq!(result.status, "play-started");
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -9,6 +9,8 @@ import {
 } from './languageClient/languageClient';
 import { registerMcpConfigurationCommand } from './mcp/mcpConfiguration';
 import { registerWorkbenchCompilerFeatures } from './workbenchNetApi/compiler/workbenchCompiler';
+import { createWorkbenchIntegration } from './workbenchNetApi/integration/workbenchIntegration';
+import { resolveLanguageServerPath } from './languageClient/serverPath';
 
 export function activate(context: vscode.ExtensionContext) {
 	initializeDiagnostics(context);
@@ -18,10 +20,14 @@ export function activate(context: vscode.ExtensionContext) {
 		extensionMode: extensionModeName(context.extensionMode),
 		workspaceFolders: String(vscode.workspace.workspaceFolders?.length ?? 0),
 	});
-	const refreshLanguageClientGameData = registerLanguageClientFeatures(context);
+	const integration = context.extensionMode === vscode.ExtensionMode.Test
+		? undefined
+		: createWorkbenchIntegration(context, resolveLanguageServerPath(context));
+	const workbenchReady = integration?.start() ?? Promise.resolve(true);
+	registerWorkbenchCompilerFeatures(context, integration);
+	const refreshLanguageClientGameData = registerLanguageClientFeatures(context, workbenchReady);
 	registerGameDataFeatures(context, refreshLanguageClientGameData);
 	registerMcpConfigurationCommand(context);
-	registerWorkbenchCompilerFeatures(context);
 	logLanguageClientStartupTiming(context, 'activationEnd');
 	diagnostic('activationEnd');
 }

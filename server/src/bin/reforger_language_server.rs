@@ -28,6 +28,10 @@ enum WorkbenchApiCommand {
     Validate,
     LoadedAddonGraph,
     IntegrationStatus,
+    BootstrapIntegration,
+    MaintainIntegration,
+    ProcessStatus,
+    LaunchDefault,
     InstallBridge,
     ReloadBridge,
 }
@@ -116,6 +120,10 @@ fn parse_workbench_api_args(mut args: impl Iterator<Item = String>) -> Result<Se
         Some("validate") => WorkbenchApiCommand::Validate,
         Some("loaded-addon-graph") => WorkbenchApiCommand::LoadedAddonGraph,
         Some("integration-status") => WorkbenchApiCommand::IntegrationStatus,
+        Some("bootstrap-integration") => WorkbenchApiCommand::BootstrapIntegration,
+        Some("maintain-integration") => WorkbenchApiCommand::MaintainIntegration,
+        Some("process-status") => WorkbenchApiCommand::ProcessStatus,
+        Some("launch-default") => WorkbenchApiCommand::LaunchDefault,
         Some("install-bridge") => WorkbenchApiCommand::InstallBridge,
         Some("reload-bridge") => WorkbenchApiCommand::ReloadBridge,
         Some(value) => return Err(format!("unknown workbench-api command '{value}'")),
@@ -184,6 +192,30 @@ fn run_workbench_api(
             serde_json::to_value(controller.overview()).unwrap_or_else(|_| unreachable!()),
             None,
         )),
+        WorkbenchApiCommand::BootstrapIntegration => controller
+            .bootstrap_integration()
+            .and_then(|value| {
+                serde_json::to_value(value)
+                    .map(|value| (value, None))
+                    .map_err(|_| unreachable!())
+            }),
+        WorkbenchApiCommand::MaintainIntegration => controller
+            .maintain_integration()
+            .and_then(|value| {
+                serde_json::to_value(value)
+                    .map(|value| (value, None))
+                    .map_err(|_| unreachable!())
+            }),
+        WorkbenchApiCommand::ProcessStatus => serde_json::to_value(controller.process_status())
+            .map(|value| (value, None))
+            .map_err(|_| unreachable!()),
+        WorkbenchApiCommand::LaunchDefault => controller
+            .launch_default_project()
+            .and_then(|value| {
+                serde_json::to_value(value)
+                    .map(|value| (value, None))
+                    .map_err(|_| unreachable!())
+            }),
         WorkbenchApiCommand::InstallBridge => controller
             .install_bridge(WorkbenchInstallAuthorization::UserApprovedFirstInstall)
             .and_then(|value| {
@@ -340,7 +372,7 @@ fn string_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<S
 
 fn print_help() {
     println!(
-        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server mcp-api-bundle\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|integration-status|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --index-cache <path>\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <test/development override>"
+        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server mcp-api-bundle\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|integration-status|bootstrap-integration|maintain-integration|process-status|launch-default|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --index-cache <path>\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <test/development override>"
     );
 }
 

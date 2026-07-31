@@ -314,6 +314,68 @@ export function buildLiveCoverageReport(contract, scenarios = []) {
   };
 }
 
+export function buildEndpointCorpusReport(contract, scenarios = []) {
+  const observationsByTool = new Map();
+  for (const scenario of scenarios) {
+    for (const step of scenario.steps ?? []) {
+      const observations = observationsByTool.get(step.tool) ?? [];
+      observations.push({
+        scenario: scenario.name ?? null,
+        name: step.name ?? null,
+        outcome: step.outcome ?? "unknown",
+        completion: step.completion ?? true,
+        durationMs: step.durationMs ?? null,
+        error: step.error ?? null,
+        reasons: step.reasons ?? [],
+      });
+      observationsByTool.set(step.tool, observations);
+    }
+  }
+
+  const endpoints = contract.expectedNames.map((tool) => {
+    const observations = observationsByTool.get(tool) ?? [];
+    const hasFailure = observations.some((observation) =>
+      observation.outcome === "failure",
+    );
+    const hasIncomplete = observations.some((observation) =>
+      observation.completion === false,
+    );
+    const hasLiveEvidence = observations.some((observation) =>
+      ["success", "expected-error", "expected-unavailable"].includes(
+        observation.outcome,
+      ),
+    );
+    const status = hasFailure
+      ? "failed"
+      : hasIncomplete
+        ? "incomplete"
+        : hasLiveEvidence
+          ? "approved"
+          : "not-tested";
+    const contractEntry = contract.coverage?.find((entry) => entry.tool === tool);
+    return {
+      tool,
+      family: contractEntry?.family ?? classifyTool(tool),
+      contractEvidence: contractEntry?.contractEvidence ?? "missing",
+      status,
+      observationCount: observations.length,
+      observations,
+    };
+  });
+
+  const counts = Object.fromEntries(
+    ["approved", "failed", "incomplete", "not-tested"].map((status) => [
+      status,
+      endpoints.filter((endpoint) => endpoint.status === status).length,
+    ]),
+  );
+  return {
+    endpointCount: endpoints.length,
+    counts,
+    endpoints,
+  };
+}
+
 export class McpStdioClient {
   constructor({ serverPath, args = [], env = {}, requestTimeoutMs = 120000 }) {
     this.child = spawn(serverPath, args, {
@@ -492,6 +554,7 @@ export function loadFixtureManifest(manifestPath) {
     fixtureRoot,
     projectPath,
     profileRoot: externalProfileRoot,
+    useProfile: manifest.useProfile !== false,
     allowExistingProcess: manifest.allowExistingProcess === true,
     addonsDir,
     expected: isObject(manifest.expected) ? manifest.expected : {},
@@ -561,6 +624,56 @@ export class WorkbenchMcpSession {
   }
 }
 
+export async function verifyOwnedStopRestartLifecycle({ client, session }) {
+  if (!session?.ownsProcess || !session.processId) {
+    throw new Error("Owned Workbench lifecycle requires a process started by MCP launch");
+  }
+  const originalProcessId = session.processId;
+  const restartResponse = await client.callTool("workbench_restart", {
+    processId: originalProcessId,
+  });
+  const restarted = restartResponse?.result?.structuredContent;
+  if (
+    restartResponse?.result?.isError === true ||
+    !restarted ||
+    restarted.alreadyRunning === true ||
+    restarted.netApiConnected !== true ||
+    !Number.isInteger(restarted.processId) ||
+    restarted.processId <= 0
+  ) {
+    throw new Error(
+      "Workbench MCP restart did not confirm an owned replacement process: " +
+        JSON.stringify(restarted ?? restartResponse?.result ?? null),
+    );
+  }
+  session.processId = restarted.processId;
+
+  const stopResponse = await client.callTool("workbench_stop", {
+    processId: session.processId,
+  });
+  const stopped = stopResponse?.result?.structuredContent;
+  if (
+    stopResponse?.result?.isError === true ||
+    !stopped ||
+    stopped.exited !== true
+  ) {
+    throw new Error(
+      "Workbench MCP stop did not confirm the restarted owned process exit: " +
+        JSON.stringify(stopped ?? stopResponse?.result ?? null),
+    );
+  }
+  const restartedProcessId = session.processId;
+  session.processId = null;
+  session.ownsProcess = false;
+  return {
+    outcome: "graceful",
+    originalProcessId,
+    restartedProcessId,
+    restart: restarted,
+    stop: stopped,
+  };
+}
+
 export async function waitForWorkbenchReady(client, readiness = {}) {
   const timeoutMs = readiness.timeoutMs ?? 120000;
   const intervalMs = readiness.intervalMs ?? 1000;
@@ -596,14 +709,7 @@ export async function waitForWorkbenchReady(client, readiness = {}) {
 }
 
 export async function openFixtureWorld(client, worldResource, readiness = {}) {
-  const editorsResponse = await client.callTool("workbench_list_editors", {});
-  const editors = editorsResponse?.result?.structuredContent?.editors;
-  if (editorsResponse?.result?.isError === true || !Array.isArray(editors)) {
-    throw new Error(
-      "Fixture Workbench did not return an editor catalogue: " +
-        JSON.stringify(editorsResponse?.result?.structuredContent ?? null),
-    );
-  }
+  const { editors } = await waitForWorkbenchEditors(client, readiness);
   const worldEditor = editors.find((editor) =>
     /world editor/i.test(String(editor?.displayName ?? "")),
   );
@@ -656,6 +762,38 @@ export async function openFixtureWorld(client, worldResource, readiness = {}) {
     openedResource,
     state,
   };
+}
+
+export async function waitForWorkbenchEditors(client, readiness = {}) {
+  const timeoutMs = readiness.timeoutMs ?? 120000;
+  const intervalMs = readiness.intervalMs ?? 1000;
+  const started = performanceNow();
+  let attempts = 0;
+  let lastResponse;
+  while (performanceNow() - started <= timeoutMs) {
+    attempts += 1;
+    try {
+      const response = await client.callTool("workbench_list_editors", {});
+      const editors = response?.result?.structuredContent?.editors;
+      if (response?.result?.isError !== true && Array.isArray(editors)) {
+        return {
+          editors,
+          attempts,
+          elapsedMs: performanceNow() - started,
+        };
+      }
+      lastResponse = response?.result?.structuredContent ?? response?.result ?? null;
+    } catch (error) {
+      lastResponse = error instanceof Error ? error.message : String(error);
+    }
+    await delay(intervalMs);
+  }
+  throw new Error(
+    "Workbench editor catalogue readiness timed out after " +
+      timeoutMs +
+      "ms" +
+      (lastResponse ? ": " + JSON.stringify(lastResponse) : ""),
+  );
 }
 
 export async function waitForActiveWorld(client, expectedWorldResource, readiness = {}) {
@@ -881,7 +1019,7 @@ export async function runContractReport({
     ? new WorkbenchMcpSession(loadFixtureManifest(fixturePath))
     : undefined;
   if (fixture) {
-    if (!fixture.manifest.allowExistingProcess) {
+    if (!fixture.manifest.allowExistingProcess && fixture.manifest.useProfile) {
       args.push("--workbench-profile-directory", fixture.manifest.profileRoot);
     }
   }
@@ -989,6 +1127,7 @@ export async function runContractReport({
         required: requireLiveCoverage,
         ...buildLiveCoverageReport(report.contract, runs),
       };
+      report.endpointCorpus = buildEndpointCorpusReport(report.contract, runs);
       const evidenceTools = new Set(
         runs.flatMap((run) =>
           run.steps
@@ -1006,6 +1145,13 @@ export async function runContractReport({
         required: requireLiveCoverage,
         ...buildLiveCoverageReport(report.contract),
       };
+      report.endpointCorpus = buildEndpointCorpusReport(report.contract);
+    }
+    if (fixture && !fixture.manifest.allowExistingProcess) {
+      report.ownedLifecycle = await verifyOwnedStopRestartLifecycle({
+        client,
+        session: fixture,
+      });
     }
   } finally {
     try {

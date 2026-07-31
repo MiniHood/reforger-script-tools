@@ -77,19 +77,20 @@ profile paths; reports process and native connection state; exposes native
 `IsWorkbenchRunning` and fixed-configuration `ValidateScripts`; and owns the
 NET API framing used by both MCP and the existing TypeScript compiler feature.
 
-The optional handler package is first installed only after the VS Code
-extension observes a successful native connection and the user accepts its
-one-time prompt. The extension invokes the bundled Rust runtime through a
-private operation; public `workbench_install_bridge` cannot create the first
-manifest and returns `workbench_installation_consent_required` without writing
-files. The installer creates only
+The optional handler package is first installed after the VS Code extension
+shows its one-time approval prompt. Approval is retained as internal durable
+extension state. The extension invokes the bundled Rust runtime through a
+private bootstrap operation that writes `NetAPI_Enabled` as `REG_SZ "1"` once
+and can install the bridge before a native connection exists; public
+`workbench_install_bridge` cannot create the first manifest and returns
+`workbench_installation_consent_required` without writing files. The installer creates only
 `profile\scripts\WorkbenchGame\reforger-script-tools` after the parent Workbench profile
 exists. Its manifest lists owned files, package semver, protocol version, and
-hashes. Before that consent exists, status reports `installationAvailable`
-only when the profile already exists and the native API is connected, without
-creating any directory or file. Once that manifest exists, successful NET API
-status checks may repair or upgrade owned files and invoke native script
-validation. Live acceptance established that these actions do not register a
+hashes. The bootstrap does not create a missing parent profile. If Workbench is
+closed, the extension may launch only the default Reforger project so Workbench
+can create its profile, then retry bridge installation. Once approval exists,
+later activations may repair or upgrade owned files without prompting. Live
+acceptance established that these actions do not register a
 new profile `NetApiHandler` in an already-running Workbench: the installer
 reports the package as installed and asks the user to refresh Workbench with
 `Ctrl+Shift+R`, rather than probing the handler and emitting a false NET API

@@ -148,7 +148,8 @@ function sanitizeDiagnosticFields(
 }
 
 export function registerLanguageClientFeatures(
-  context: vscode.ExtensionContext,
+	context: vscode.ExtensionContext,
+	workbenchReady?: Promise<boolean>,
 ): () => Promise<void> {
   logLanguageClientStartupTiming(context, "languageClientRegistrationStart");
   const outputChannel = vscode.window.createOutputChannel(
@@ -211,10 +212,26 @@ export function registerLanguageClientFeatures(
   );
 
   const bracketColoring = getBracketColoringMode();
-  const startup = synchronizeBracketColoringEditorMode(
-    bracketColoring,
-    outputChannel,
-  ).then(() => startLanguageClient(context, outputChannel, bracketColoring));
+	const startup = Promise.resolve(vscode.window.withProgress(
+		{
+			location: vscode.ProgressLocation.Window,
+			title: 'Reforger: Indexing loaded add-ons',
+			cancellable: false,
+		},
+		progress => {
+			progress.report({ message: 'Waiting for Workbench integration' });
+			return synchronizeBracketColoringEditorMode(
+				bracketColoring,
+				outputChannel,
+			).then(() => startLanguageClient(
+				context,
+				outputChannel,
+				bracketColoring,
+				progress,
+				workbenchReady,
+			));
+		},
+	));
   initialStartup = startup;
   void startup.finally(() => {
     if (initialStartup === startup) {
@@ -296,10 +313,11 @@ export async function deactivateLanguageClient(): Promise<void> {
 }
 
 async function startLanguageClient(
-  context: vscode.ExtensionContext,
-  outputChannel: vscode.LogOutputChannel,
-  bracketColoring: BracketColoringMode,
-  externalIndexProgress?: ExternalIndexProgress,
+	context: vscode.ExtensionContext,
+	outputChannel: vscode.LogOutputChannel,
+	bracketColoring: BracketColoringMode,
+	externalIndexProgress?: ExternalIndexProgress,
+	workbenchReady?: Promise<boolean>,
 ): Promise<void> {
   logLanguageClientStartupTiming(context, "languageClientStartBegin");
   const serverPath = await resolveLanguageServerPath(context);
@@ -333,6 +351,7 @@ async function startLanguageClient(
     context,
     serverPath,
     outputChannel,
+    workbenchReady,
   );
   const workspaceScriptRootsPromise = discoverWorkspaceScriptRoots();
   const serverArgs = [
@@ -519,7 +538,11 @@ async function resolveWorkbenchLoadedAddonInventory(
   context: vscode.ExtensionContext,
   serverPath: string,
   outputChannel: vscode.LogOutputChannel,
+	workbenchReady?: Promise<boolean>,
 ): Promise<string | undefined> {
+	if (workbenchReady && !(await workbenchReady)) {
+		return undefined;
+	}
   const configuration = vscode.workspace.getConfiguration(
     workbenchConfig.section,
   );

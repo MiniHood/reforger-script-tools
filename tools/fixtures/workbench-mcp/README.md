@@ -12,6 +12,7 @@ The live runner takes a manifest owned by the test invocation:
   "revision": "2026-07-31",
   "fixtureRoot": "C:/path/to/disposable-project",
   "profileRoot": "profile",
+  "useProfile": true,
   "project": {
     "gproj": "mcp-conformance/mcp-conformance.gproj",
     "addonsDir": "C:/path/to/ArmaReforger/addons"
@@ -28,7 +29,8 @@ The live runner takes a manifest owned by the test invocation:
 ```
 
 `gproj` and `profileRoot` must be inside `fixtureRoot` for a disposable
-fixture. The runner starts its MCP server with the manifest's profile root,
+fixture unless `profileRootOutsideFixture` is explicitly set. With
+`useProfile:true`, the runner starts its MCP server with the manifest's profile root,
 then calls the public `workbench_launch` operation with the exact fixture
 `.gproj`; it never constructs a Workbench process command line. The launch
 implementation always supplies the discovered base-game add-on directory and
@@ -40,6 +42,13 @@ opens the canonical fixture world through `workbench_open_resource`, and
 cleans up only a process that the MCP launch operation reported as newly
 started. A reused process is permitted only for an explicitly marked smoke
 manifest; it is not disposable isolation.
+
+`useProfile:false` is an explicit escape hatch for a pre-provisioned local
+profile whose managed bridge and base-game setup are already installed. It
+does not permit process reuse: the fixture must still launch with
+`allowExistingProcess:false`, and ownership is verified from the public launch
+result. Use this only when first-install bridge consent cannot be supplied to
+the disposable profile by the public MCP contract.
 
 The fixture itself must provide the stable project, world, resource, entity,
 component, layer, prefab, shape, and terrain identities used by the scenario
@@ -64,11 +73,24 @@ capabilities that the target Workbench cannot complete in the current session.
 An environment-dependent step may set `expect.allowError` when both a success
 result and a structured unavailable result are valid outcomes; it must also
 provide an explicit `expect.error` code/phase oracle. This is reserved for
-window capture and script reload in the live fixture and remains visible in the
+window capture and any reload run whose replacement generation cannot be
+observed; such a result remains visible in the
 report's `expectedErrorCount`. Steps marked `expect.completion: false` remain
 live evidence for inventory coverage, but appear in `liveCoverage.incomplete`
 and increment `expectedUnavailableCount`, so an unavailable or unsupported
 operation cannot be mistaken for completed editor behavior.
+
+Each JSON report also contains `endpointCorpus`. It has one record for every
+published endpoint, with `approved`, `failed`, `incomplete`, or `not-tested`
+status, the scenario observations that support the status, timing, structured
+errors, and assertion reasons. An expected structured error is approved when
+it matches its explicit oracle; an endpoint is incomplete when its scenario
+marks the capability as unavailable.
+
+For a disposable manifest with `allowExistingProcess` omitted or false, the
+runner verifies the owned lifecycle after the scenario: it restarts the exact
+process returned by launch, adopts the returned replacement process ID, and
+stops that replacement. The result is recorded under `ownedLifecycle`.
 
 Run a live scenario only with both explicit inputs:
 

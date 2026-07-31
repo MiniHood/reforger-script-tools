@@ -96,6 +96,15 @@ oracle. Steps that observe an unavailable or unsupported operation can be
 marked incomplete; they count toward inventory coverage but are listed in
 `liveCoverage.incomplete` (and counted in `expectedUnavailableCount`) rather
 than being reported as completed behavior.
+Each report also contains `endpointCorpus`, a one-record-per-published-endpoint
+inventory with `approved`, `failed`, `incomplete`, or `not-tested` status and
+the observations, timings, structured errors, and assertion reasons supporting
+that status.
+When a fixture manifest disallows reuse of an existing Workbench process, the
+runner also verifies the owned lifecycle: it restarts the exact process
+reported by `workbench_launch`, adopts the replacement process ID, and stops
+that replacement through the public MCP operations. The report records this
+as `ownedLifecycle`; a reused-process smoke manifest intentionally skips it.
 Live scenarios remain outside the normal fast test gate; the complete current
 63-tool scenario is
 `tools/fixtures/workbench-mcp/scenarios/test-bullshit-all-apis.json`. See
@@ -237,13 +246,19 @@ also stops repository-owned running language-server processes before replacing
 them, so verify the active development session after a server rebuild rather
 than assuming a previous process reflects the change.
 
-On first activation the extension discovers the conventional Arma Reforger,
-Workbench, and user add-on roots. Set the three `gameData.*AddonsFolder`
-settings or use their folder-picker commands when an installation is elsewhere.
-Refreshing local add-on sources atomically replaces the source inventory and
-restarts the language server. The **Reforger game data** progress notification
-remains visible through PAC inspection and index publication; wait for it to
-close before judging game-API language features.
+On first activation, when `workbench.autoInstallIntegration` is enabled, the
+extension asks for one-time approval to enable Workbench integration. Approval
+is retained as internal extension state. The first approval writes
+`NetAPI_Enabled` as `REG_SZ "1"`, installs the managed bridge, and either asks
+the user to restart an open Workbench or launches the default
+`ArmaReforger.gproj` project. Later activations maintain or upgrade the bridge
+without prompting and never rewrite the registry value.
+
+After Workbench is connected, the extension publishes the exact loaded add-on
+graph and Rust indexes it. The **Reforger: Indexing loaded add-ons** progress
+indicator remains visible in the VS Code status bar through graph loading, PAC
+inspection, and index publication; wait for it to close before judging
+game-API language features.
 
 The active base-game artifacts are:
 

@@ -22,7 +22,6 @@ import {
 } from './workbenchDiagnosticSpan';
 import { resolveLanguageServerPath } from '../../languageClient/serverPath';
 import {
-	createWorkbenchIntegration,
 	WorkbenchIntegrationCoordinator,
 } from '../integration/workbenchIntegration';
 
@@ -98,12 +97,12 @@ interface WorkbenchCompilerFailure {
 	recoveryHint: string;
 }
 
-export function registerWorkbenchCompilerFeatures(context: vscode.ExtensionContext): void {
+export function registerWorkbenchCompilerFeatures(
+	context: vscode.ExtensionContext,
+	integration?: WorkbenchIntegrationCoordinator,
+): void {
 	const startupValidationEnabled = context.extensionMode !== vscode.ExtensionMode.Test;
 	const serverPath = resolveLanguageServerPath(context);
-	const integration = context.extensionMode === vscode.ExtensionMode.Test
-		? undefined
-		: createWorkbenchIntegration(serverPath);
 	let controller = new WorkbenchCompilerController(
 		startupValidationEnabled,
 		serverPath,
@@ -723,6 +722,10 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.lastFailure = undefined;
 		this.lastStatus = result.value;
 		this.setPhase('ready');
+		void this.integration?.onWorkbenchConnected({
+			host: this.configuration.host,
+			port: this.configuration.port,
+		});
 		if (this.shouldRequestStartupValidation()) {
 			this.startupValidationAttempted = true;
 			const request: ValidationRequest = {
@@ -737,10 +740,6 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			void this.queueValidation(request);
 			return;
 		}
-		void this.integration?.onWorkbenchConnected({
-			host: this.configuration.host,
-			port: this.configuration.port,
-		});
 		this.scheduleProbe(readyHeartbeatMs, generation);
 	}
 

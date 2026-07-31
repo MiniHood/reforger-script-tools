@@ -98,6 +98,21 @@ export interface WorkbenchLoadedAddonGraph {
   addons: WorkbenchLoadedAddon[];
 }
 
+export interface WorkbenchIntegrationBootstrap {
+  netApiEnabled: boolean;
+  netApiWritePerformed: boolean;
+  bridgeInstalled: boolean;
+  bridgeVersion?: string;
+  bridgeChanged: boolean;
+  profileAvailable: boolean;
+}
+
+export interface WorkbenchProcessStatus {
+  isOpen: boolean;
+  processId?: number;
+  projectPath?: string;
+}
+
 export type WorkbenchAvailability =
   | { kind: "disabled" }
   | { kind: "unavailable"; failure: WorkbenchGatewayFailure }
@@ -132,6 +147,10 @@ export type WorkbenchPrivateApiCommand =
   | "validate"
   | "loaded-addon-graph"
   | "integration-status"
+  | "bootstrap-integration"
+  | "maintain-integration"
+  | "process-status"
+  | "launch-default"
   | "install-bridge";
 
 export class WorkbenchGateway {

@@ -4,12 +4,15 @@ import test from "node:test";
 import { join } from "node:path";
 import {
   buildLiveCoverageReport,
+  buildEndpointCorpusReport,
   buildContractReport,
   classifyTool,
   loadFixtureManifest,
   runScenario,
   summarizePerformance,
   summarizeSamples,
+  verifyOwnedStopRestartLifecycle,
+  waitForWorkbenchEditors,
 } from "./workbench-mcp-conformance.mjs";
 
 const reference = [
@@ -381,6 +384,133 @@ test("reports covered but incomplete capabilities separately", () => {
   assert.equal(report.expectedUnavailableCount, 1);
 });
 
+test("records an approval or failure status for every published endpoint", () => {
+  const report = buildEndpointCorpusReport(
+    {
+      expectedNames: [
+        "workbench_status",
+        "workbench_reload",
+        "workbench_save",
+        "workbench_stop",
+      ],
+      coverage: [
+        { tool: "workbench_status", family: "status", contractEvidence: "tools/list" },
+        { tool: "workbench_reload", family: "reload", contractEvidence: "tools/list" },
+        { tool: "workbench_save", family: "save", contractEvidence: "tools/list" },
+        { tool: "workbench_stop", family: "lifecycle", contractEvidence: "tools/list" },
+      ],
+    },
+    [
+      {
+        name: "corpus",
+        steps: [
+          { tool: "workbench_status", name: "status", outcome: "success", durationMs: 4 },
+          {
+            tool: "workbench_reload",
+            name: "reload",
+            outcome: "expected-unavailable",
+            completion: false,
+            error: { code: "workbench_timeout" },
+          },
+          {
+            tool: "workbench_save",
+            name: "save",
+            outcome: "failure",
+            reasons: ["save failed"],
+          },
+        ],
+      },
+    ],
+  );
+
+  assert.deepEqual(report.counts, {
+    approved: 1,
+    failed: 1,
+    incomplete: 1,
+    "not-tested": 1,
+  });
+  assert.deepEqual(
+    report.endpoints.map(({ tool, status }) => ({ tool, status })),
+    [
+      { tool: "workbench_status", status: "approved" },
+      { tool: "workbench_reload", status: "incomplete" },
+      { tool: "workbench_save", status: "failed" },
+      { tool: "workbench_stop", status: "not-tested" },
+    ],
+  );
+  assert.equal(report.endpoints[1].observations[0].error.code, "workbench_timeout");
+});
+
+test("waits for the editor catalogue after Workbench NET readiness", async () => {
+  let attempts = 0;
+  const result = await waitForWorkbenchEditors(
+    {
+      async callTool() {
+        attempts += 1;
+        if (attempts === 1) {
+          return {
+            result: {
+              isError: true,
+              structuredContent: { code: "workbench_error", phase: "list_editors" },
+            },
+          };
+        }
+        return {
+          result: {
+            isError: false,
+            structuredContent: { editors: [{ id: "world", displayName: "World Editor" }] },
+          },
+        };
+      },
+    },
+    { timeoutMs: 100, intervalMs: 0 },
+  );
+
+  assert.equal(attempts, 2);
+  assert.deepEqual(result.editors, [{ id: "world", displayName: "World Editor" }]);
+});
+
+test("verifies restart and stop against the owned replacement process", async () => {
+  const calls = [];
+  const session = { ownsProcess: true, processId: 41 };
+  const client = {
+    async callTool(name, argumentsValue) {
+      calls.push({ name, argumentsValue });
+      if (name === "workbench_restart") {
+        return {
+          result: {
+            isError: false,
+            structuredContent: {
+              processId: 42,
+              alreadyRunning: false,
+              exited: false,
+              netApiConnected: true,
+              userInteractionRequired: false,
+            },
+          },
+        };
+      }
+      return {
+        result: {
+          isError: false,
+          structuredContent: { processId: 42, exited: true },
+        },
+      };
+    },
+  };
+
+  const result = await verifyOwnedStopRestartLifecycle({ client, session });
+
+  assert.deepEqual(calls, [
+    { name: "workbench_restart", argumentsValue: { processId: 41 } },
+    { name: "workbench_stop", argumentsValue: { processId: 42 } },
+  ]);
+  assert.equal(result.originalProcessId, 41);
+  assert.equal(result.restartedProcessId, 42);
+  assert.equal(session.processId, null);
+  assert.equal(session.ownsProcess, false);
+});
+
 test("loads a disposable fixture manifest with an isolated profile and world", () => {
   const root = mkdtempSync(join(process.cwd(), ".cache", "workbench-fixture-test-"));
   try {
@@ -394,6 +524,7 @@ test("loads a disposable fixture manifest with an isolated profile and world", (
         revision: "test",
         fixtureRoot: ".",
         profileRoot: "profile",
+        useProfile: false,
         project: { gproj: "project/fixture.gproj", addonsDir: "addons" },
         expected: {
           worldResource: "Fixture/World.ent",
@@ -406,6 +537,7 @@ test("loads a disposable fixture manifest with an isolated profile and world", (
     assert.equal(manifest.name, "fixture");
     assert.equal(manifest.expected.worldResource, "Fixture/World.ent");
     assert.equal(manifest.profileRoot, join(root, "profile"));
+    assert.equal(manifest.useProfile, false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
