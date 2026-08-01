@@ -1,7 +1,6 @@
-import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { languageClientIndexCache } from '../extensionConfig/languageClient';
 import { mcpCommands, mcpServer } from '../extensionConfig/mcp';
+import { resolveBaseGameIndexCache } from '../gameData/baseGameIndexCache';
 import { resolveLanguageServerPath } from '../languageClient/serverPath';
 import { discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
 
@@ -73,11 +72,7 @@ export function registerMcpConfigurationCommand(
 			}
 			const launch = buildMcpLaunchConfiguration({
 				serverPath,
-				indexCache: path.join(
-					context.globalStorageUri.fsPath,
-					languageClientIndexCache.rootFolder,
-					languageClientIndexCache.baseGameIndexFile,
-				),
+				indexCache: await resolveBaseGameIndexCache(context.globalStorageUri.fsPath),
 				workspaceScripts: await discoverWorkspaceScriptRoots(),
 			});
 			const configuration = format === 'codex'
