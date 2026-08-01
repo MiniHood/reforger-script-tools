@@ -83,6 +83,11 @@ is unavailable, malformed, cancelled, or fails to acquire an instance, the
 Workbench-sourced layer is unavailable; the engine never reuses an earlier graph
 or substitutes a local source.
 
+The cache root also maintains a compact `cache-catalogue.json` for exact
+instance selection. Enumerating cache roots is restricted to catalogue
+recovery and maintenance; the normal dependency warm path does not inspect
+every cache directory.
+
 The extension's explicit `loaded` startup path provides a provisional dependency
 scope derived from the opened project's `.gproj` dependency GUIDs. Rust also
 uses the authoritative source roots recorded by cached add-on manifests to
@@ -93,14 +98,15 @@ matching cache instances by GUID, and prefers an unpacked source-root cache over
 a packed-only duplicate. It hydrates compatible cached indexes only; it does
 not scan arbitrary filesystem locations or inspect/build source before
 Workbench is available. The offline cache is the first usable source, and a
-later Workbench graph is the authoritative reconciliation that validates and
-builds missing or changed source roots. The result is explicitly labelled
+later Workbench graph immediately promotes a matching scope while scheduling
+source validation in the background; only missing or changed source roots
+replace the warm generation. The result is explicitly labelled
 `project-dependencies-provisional`, is not a live Workbench graph, and is
 replaced by the next authoritative graph publication. If the graph has the
 same canonical `(GUID, source-root)` sequence as the warm scope, the existing
 immutable layer remains published and graph scope authority is promoted
-without decoding or composing a replacement snapshot. Source validation stays
-deferred until a later source-refresh opportunity.
+without decoding or composing a replacement snapshot. Source validation runs
+after that promotion and retains the warm snapshot if validation fails.
 
 The binary payload persists canonical public symbol facts, source metadata, and
 source line starts; dense symbol IDs and lookup maps are structural or derived

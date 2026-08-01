@@ -293,6 +293,7 @@ The active base-game artifacts are:
 
 ```text
 <global storage>/addon-sources/workbench-graph-v1.json
+<global storage>/addon-indexes/cache-catalogue.json
 <global storage>/addon-indexes/<instance-key>/manifest.json
 <global storage>/addon-indexes/<instance-key>/manifest-header.json
 <global storage>/addon-indexes/<instance-key>/symbols.bin

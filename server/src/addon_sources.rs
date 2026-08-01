@@ -29,6 +29,7 @@ pub const BASE_GAME_GUID: &str = "58D0FB3206B6F859";
 pub const VIRTUAL_SOURCE_SCHEME: &str = "reforger-pak";
 const MAX_ADDON_INDEX_WORKERS: usize = 4;
 const ADDON_MANIFEST_HEADER_FILE: &str = "manifest-header.json";
+const ADDON_CACHE_CATALOGUE_FILE: &str = "cache-catalogue.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddonScopeAuthority {
@@ -295,6 +296,13 @@ struct AddonIndexManifestHeader {
     manifest_sha256: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddonCacheCatalogue {
+    schema: String,
+    entries: Vec<AddonIndexManifestHeader>,
+}
+
 impl AddonIndexManifest {
     fn header(&self) -> AddonIndexManifestHeader {
         AddonIndexManifestHeader {
@@ -393,13 +401,15 @@ pub fn load_or_build_base_game_index(
 ) -> Result<GameDataIndexCacheResult, String> {
     let inspection_started = std::time::Instant::now();
     let inspection = inspect_base_game(inventory_path, control)?;
-    load_or_build_inspected_addon(
+    let result = load_or_build_inspected_addon(
         inspection,
         storage_root,
         control,
         inspection_started.elapsed(),
         standalone_source_build_worker_count(),
-    )
+    )?;
+    let _ = refresh_cache_catalogue(storage_root);
+    Ok(result)
 }
 
 /// Builds an independent compact index for every packed add-on that the live
@@ -639,7 +649,7 @@ fn load_or_build_addon_indexes(
         indexes.push(result.index);
     }
     let (index, layer_timings) = SymbolIndex::layered_with_timings(indexes);
-    Ok(LoadedAddonIndexResult {
+    let result = LoadedAddonIndexResult {
         index: Arc::new(index),
         scope_authority,
         summary,
@@ -662,7 +672,9 @@ fn load_or_build_addon_indexes(
         },
         instances,
         scope_instances,
-    })
+    };
+    let _ = refresh_cache_catalogue(storage_root);
+    Ok(result)
 }
 
 /// Delivers every compatible cache named by the current Workbench graph
@@ -851,6 +863,43 @@ pub fn load_cached_loaded_addon_indexes(
     })
 }
 
+/// Validates the current source identity for an already-published exact graph
+/// without decoding, rebuilding, or recomposing any cached index. `false`
+/// means that the caller must run the authoritative replacement path.
+pub fn loaded_addon_sources_are_current(
+    inventory_path: &Path,
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+) -> Result<bool, String> {
+    let graph = read_loaded_addon_graph(inventory_path)?;
+    let workspace_roots = workspace_roots
+        .iter()
+        .filter_map(|root| fs::canonicalize(root).ok())
+        .collect::<Vec<_>>();
+    for addon in graph.addons {
+        control.check()?;
+        if workspace_roots
+            .iter()
+            .any(|workspace_root| workspace_root.starts_with(&addon.source_root))
+        {
+            continue;
+        }
+        let archives = addon_archive_paths(&addon.source_root)?;
+        let inspection = inspect_packed_addon(
+            addon.guid,
+            format!("{} ({})", addon.id, addon.title),
+            addon.source_root,
+            archives,
+            control,
+        )?;
+        if !cached_manifest_matches_inspection(&inspection, storage_root)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 pub fn load_all_cached_addon_indexes(
     storage_root: &Path,
     workspace_roots: &[PathBuf],
@@ -873,15 +922,150 @@ pub fn load_cached_dependency_addon_indexes(
     workspace_roots: &[PathBuf],
     control: &IndexBuildControl,
 ) -> Result<LoadedAddonIndexResult, String> {
-    let cached_project_files = cached_dependency_project_files(storage_root)?;
     let dependency_guids =
-        read_project_dependency_scope_guids(project_files, &cached_project_files)?;
+        read_project_dependency_scope_guids(project_files, storage_root, control)?;
     load_cached_indexes_from_storage(
         storage_root,
         workspace_roots,
         control,
         false,
         Some(&dependency_guids),
+    )
+}
+
+fn cached_manifest_descriptors(
+    storage_root: &Path,
+    control: &IndexBuildControl,
+) -> Result<Vec<(AddonIndexManifestHeader, PathBuf)>, String> {
+    if !storage_root.is_dir() {
+        return Ok(Vec::new());
+    }
+    if let Some(catalogue) = read_cache_catalogue(storage_root) {
+        let descriptors = catalogue
+            .entries
+            .into_iter()
+            .map(|manifest| {
+                let cache_root =
+                    storage_root.join(addon_instance_key(&manifest.guid, &manifest.source_root));
+                (manifest, cache_root.join("symbols.bin"))
+            })
+            .collect::<Vec<_>>();
+        if descriptors
+            .iter()
+            .all(|(_, cache_path)| cache_path.is_file())
+        {
+            return Ok(descriptors);
+        }
+    }
+
+    let descriptors = scan_cached_manifest_descriptors(storage_root)?;
+    control.check()?;
+    let _ = write_cache_catalogue(
+        storage_root,
+        descriptors.iter().map(|(manifest, _)| manifest.clone()),
+    );
+    Ok(descriptors)
+}
+
+fn scan_cached_manifest_descriptors(
+    storage_root: &Path,
+) -> Result<Vec<(AddonIndexManifestHeader, PathBuf)>, String> {
+    let entries = match fs::read_dir(storage_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(format!(
+                "Failed to read add-on index storage {}: {error}",
+                storage_root.display()
+            ))
+        }
+    };
+    let mut descriptors = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if !entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+            || !is_addon_instance_key(&entry.file_name().to_string_lossy())
+        {
+            continue;
+        }
+        let cache_root = entry.path();
+        let manifest_bytes = match fs::read(cache_root.join(ADDON_MANIFEST_HEADER_FILE)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match fs::read(cache_root.join("manifest.json")) {
+                    Ok(bytes) => bytes,
+                    Err(_) => continue,
+                }
+            }
+            Err(_) => continue,
+        };
+        let Ok(manifest) = serde_json::from_slice::<AddonIndexManifestHeader>(&manifest_bytes)
+            .or_else(|_| {
+                serde_json::from_slice::<AddonIndexManifest>(&manifest_bytes)
+                    .map(|manifest| manifest.header())
+            })
+        else {
+            continue;
+        };
+        if manifest.schema != "reforger-addon-index-manifest-v3"
+            || manifest.index_file != "symbols.bin"
+        {
+            continue;
+        }
+        descriptors.push((manifest, cache_root.join("symbols.bin")));
+    }
+    descriptors.sort_by(|(left, _), (right, _)| {
+        (&left.guid, &left.source_root, &left.display_id).cmp(&(
+            &right.guid,
+            &right.source_root,
+            &right.display_id,
+        ))
+    });
+    Ok(descriptors)
+}
+
+fn read_cache_catalogue(storage_root: &Path) -> Option<AddonCacheCatalogue> {
+    let bytes = fs::read(storage_root.join(ADDON_CACHE_CATALOGUE_FILE)).ok()?;
+    let catalogue = serde_json::from_slice::<AddonCacheCatalogue>(&bytes).ok()?;
+    (catalogue.schema == "reforger-addon-cache-catalogue-v1").then_some(catalogue)
+}
+
+fn write_cache_catalogue(
+    storage_root: &Path,
+    entries: impl IntoIterator<Item = AddonIndexManifestHeader>,
+) -> Result<(), String> {
+    let mut entries = entries.into_iter().collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        (&left.guid, &left.source_root, &left.display_id).cmp(&(
+            &right.guid,
+            &right.source_root,
+            &right.display_id,
+        ))
+    });
+    entries.dedup_by(|left, right| {
+        left.guid.eq_ignore_ascii_case(&right.guid) && left.source_root == right.source_root
+    });
+    write_json_atomic(
+        &storage_root.join(ADDON_CACHE_CATALOGUE_FILE),
+        &AddonCacheCatalogue {
+            schema: "reforger-addon-cache-catalogue-v1".to_string(),
+            entries,
+        },
+    )?;
+    Ok(())
+}
+
+fn refresh_cache_catalogue(storage_root: &Path) -> Result<(), String> {
+    if !storage_root.is_dir() {
+        return Ok(());
+    }
+    let descriptors = scan_cached_manifest_descriptors(storage_root)?;
+    write_cache_catalogue(
+        storage_root,
+        descriptors.into_iter().map(|(manifest, _)| manifest),
     )
 }
 
@@ -899,55 +1083,16 @@ fn load_cached_indexes_from_storage(
         .filter_map(|root| fs::canonicalize(root).ok())
         .collect::<Vec<_>>();
     let workspace_root_resolution = graph_start.elapsed();
+    if !storage_root.is_dir() {
+        return Ok(empty_cached_index_result(
+            total_start.elapsed(),
+            workspace_root_resolution,
+            dependency_guids.is_some(),
+        ));
+    }
     let mut descriptors = Vec::new();
-    let entries = match fs::read_dir(storage_root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(empty_cached_index_result(
-                total_start.elapsed(),
-                workspace_root_resolution,
-                dependency_guids.is_some(),
-            ))
-        }
-        Err(error) => {
-            return Err(format!(
-                "Failed to read add-on index storage {}: {error}",
-                storage_root.display()
-            ))
-        }
-    };
-    for entry in entries {
+    for (manifest, cache_path) in cached_manifest_descriptors(storage_root, control)? {
         control.check()?;
-        let entry = entry.map_err(|error| error.to_string())?;
-        if !entry
-            .file_type()
-            .map_err(|error| error.to_string())?
-            .is_dir()
-        {
-            continue;
-        }
-        let cache_root = entry.path();
-        if !is_addon_instance_key(&entry.file_name().to_string_lossy()) {
-            continue;
-        }
-        let manifest_bytes = match fs::read(cache_root.join(ADDON_MANIFEST_HEADER_FILE)) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                match fs::read(cache_root.join("manifest.json")) {
-                    Ok(bytes) => bytes,
-                    Err(_) => continue,
-                }
-            }
-            Err(_) => continue,
-        };
-        let manifest =
-            serde_json::from_slice::<AddonIndexManifestHeader>(&manifest_bytes).or_else(|_| {
-                serde_json::from_slice::<AddonIndexManifest>(&manifest_bytes)
-                    .map(|manifest| manifest.header())
-            });
-        let Ok(manifest) = manifest else {
-            continue;
-        };
         if manifest.schema != "reforger-addon-index-manifest-v3"
             || manifest.index_file != "symbols.bin"
             || (base_game_only && !is_base_game_manifest(&manifest))
@@ -959,7 +1104,7 @@ fn load_cached_indexes_from_storage(
         {
             continue;
         }
-        descriptors.push((manifest, cache_root.join("symbols.bin")));
+        descriptors.push((manifest, cache_path));
     }
     if dependency_guids.is_some() {
         descriptors.sort_by(|(left, _), (right, _)| {
@@ -1287,7 +1432,11 @@ fn addon_index_worker_count(storage_root: &Path, task_count: usize) -> Result<us
 
 fn addon_index_storage_is_empty(storage_root: &Path) -> Result<bool, String> {
     match fs::read_dir(storage_root) {
-        Ok(mut entries) => Ok(entries.next().is_none()),
+        Ok(entries) => Ok(!entries.flatten().any(|entry| {
+            entry.file_type().is_ok_and(|kind| {
+                kind.is_dir() && is_addon_instance_key(&entry.file_name().to_string_lossy())
+            })
+        })),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
         Err(error) => Err(format!(
             "Failed to inspect add-on index storage {}: {error}",
@@ -1409,6 +1558,58 @@ fn manifest_matches_current_source(
         && manifest.index_bytes == index_bytes
 }
 
+fn cached_manifest_matches_inspection(
+    inspection: &BaseGameInspection,
+    storage_root: &Path,
+) -> Result<bool, String> {
+    let (pack_count, script_count) = match &inspection.fingerprint {
+        SourceFingerprint::Addon {
+            pack_count,
+            catalogue_entry_count,
+            ..
+        } => (*pack_count, *catalogue_entry_count),
+        _ => return Ok(false),
+    };
+    let addon_root = storage_root.join(addon_instance_key(&inspection.guid, &inspection.root));
+    let cache = addon_root.join("symbols.bin");
+    let manifest_path = addon_root.join("manifest.json");
+    let manifest_header_path = addon_root.join(ADDON_MANIFEST_HEADER_FILE);
+    let cache_bytes = cache.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let (cache_schema, cache_format_version, cache_index_shape) = cache_format_identity();
+    let manifest_header = match fs::read(&manifest_header_path) {
+        Ok(bytes) => serde_json::from_slice::<AddonIndexManifestHeader>(&bytes)
+            .ok()
+            .map(|manifest| (manifest, true)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::read(&manifest_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<AddonIndexManifest>(&bytes).ok())
+            .map(|manifest| (manifest.header(), false)),
+        Err(_) => None,
+    };
+    Ok(manifest_header.is_some_and(|(manifest, compact_header)| {
+        manifest_matches_current_source(
+            &manifest,
+            cache_schema,
+            cache_format_version,
+            cache_index_shape,
+            &inspection.guid,
+            &inspection.display_id,
+            &inspection.root,
+            &inspection.artifact_digest,
+            pack_count,
+            script_count,
+            &inspection.artifacts,
+            cache_bytes,
+        ) && (!compact_header
+            || match manifest.manifest_sha256.as_deref() {
+                Some(expected) => {
+                    fs::read(&manifest_path).is_ok_and(|bytes| sha256_hex(&bytes) == expected)
+                }
+                None => false,
+            })
+    }))
+}
+
 fn load_or_build_inspected_addon(
     inspection: BaseGameInspection,
     storage_root: &Path,
@@ -1438,40 +1639,8 @@ fn load_or_build_inspected_addon(
     let manifest_path = addon_root.join("manifest.json");
     let manifest_header_path = addon_root.join(ADDON_MANIFEST_HEADER_FILE);
     let (cache_schema, cache_format_version, cache_index_shape) = cache_format_identity();
-    let cache_bytes = cache.metadata().map(|metadata| metadata.len()).unwrap_or(0);
     let cache_metadata_read_start = Instant::now();
-    let manifest_header = match fs::read(&manifest_header_path) {
-        Ok(bytes) => serde_json::from_slice::<AddonIndexManifestHeader>(&bytes)
-            .ok()
-            .map(|manifest| (manifest, true)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::read(&manifest_path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<AddonIndexManifest>(&bytes).ok())
-            .map(|manifest| (manifest.header(), false)),
-        Err(_) => None,
-    };
-    let manifest_reusable = manifest_header.is_some_and(|(manifest, compact_header)| {
-        manifest_matches_current_source(
-            &manifest,
-            cache_schema,
-            cache_format_version,
-            cache_index_shape,
-            &addon_guid,
-            &addon_display_id,
-            &source_root,
-            &artifact_digest,
-            pack_count,
-            script_count,
-            &pack_artifacts,
-            cache_bytes,
-        ) && (!compact_header
-            || match manifest.manifest_sha256.as_deref() {
-                Some(expected) => {
-                    fs::read(&manifest_path).is_ok_and(|bytes| sha256_hex(&bytes) == expected)
-                }
-                None => false,
-            })
-    });
+    let manifest_reusable = cached_manifest_matches_inspection(&inspection, storage_root)?;
     let cache_metadata_read = cache_metadata_read_start.elapsed();
     let rebuild_reason = if manifest_reusable {
         "cache-missing-invalid-or-source-changed"
@@ -2406,6 +2575,74 @@ struct DependencyProjectCandidate {
 /// stronger source-usability and ambiguity checks.
 fn read_project_dependency_scope_guids(
     project_files: &[PathBuf],
+    storage_root: &Path,
+    control: &IndexBuildControl,
+) -> Result<BTreeSet<String>, String> {
+    if read_cache_catalogue(storage_root).is_some() {
+        let _ = cached_manifest_descriptors(storage_root, control)?;
+        if read_cache_catalogue(storage_root).is_none() {
+            let cached_project_files = cached_dependency_project_files(storage_root)?;
+            return read_project_dependency_scope_guids_from_candidates(
+                project_files,
+                &cached_project_files,
+            );
+        }
+        return read_catalogued_project_dependency_scope_guids(
+            project_files,
+            storage_root,
+            control,
+        );
+    }
+    let cached_project_files = cached_dependency_project_files(storage_root)?;
+    read_project_dependency_scope_guids_from_candidates(project_files, &cached_project_files)
+}
+
+fn read_catalogued_project_dependency_scope_guids(
+    project_files: &[PathBuf],
+    storage_root: &Path,
+    control: &IndexBuildControl,
+) -> Result<BTreeSet<String>, String> {
+    if project_files.is_empty() {
+        return Err("No opened project descriptor was provided".to_string());
+    }
+    let catalogue = read_cache_catalogue(storage_root)
+        .ok_or_else(|| "Add-on cache catalogue is unavailable".to_string())?;
+    let mut scope = BTreeSet::from([BASE_GAME_GUID.to_string()]);
+    let mut queue = project_files
+        .iter()
+        .map(|project_file| fs::canonicalize(project_file).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, String>>()?;
+    let mut visited_projects = BTreeSet::new();
+    while let Some(project_file) = queue.pop() {
+        control.check()?;
+        if !visited_projects.insert(project_file.clone()) {
+            continue;
+        }
+        if let Ok(candidate) = read_dependency_project_candidate(&project_file) {
+            scope.insert(candidate.addon.guid);
+        }
+        for dependency_guid in read_project_dependency_guids(&[project_file])? {
+            scope.insert(dependency_guid.clone());
+            for manifest in catalogue
+                .entries
+                .iter()
+                .filter(|manifest| manifest.guid.eq_ignore_ascii_case(&dependency_guid))
+            {
+                if manifest.source_root.is_dir() {
+                    let mut dependency_projects = BTreeSet::new();
+                    if collect_gproj_files(&manifest.source_root, &mut dependency_projects).is_ok()
+                    {
+                        queue.extend(dependency_projects);
+                    }
+                }
+            }
+        }
+    }
+    Ok(scope)
+}
+
+fn read_project_dependency_scope_guids_from_candidates(
+    project_files: &[PathBuf],
     candidate_project_files: &[PathBuf],
 ) -> Result<BTreeSet<String>, String> {
     if project_files.is_empty() {
@@ -2450,47 +2687,8 @@ fn read_project_dependency_scope_guids(
 }
 
 fn cached_dependency_project_files(storage_root: &Path) -> Result<Vec<PathBuf>, String> {
-    let entries = match fs::read_dir(storage_root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => {
-            return Err(format!(
-                "Failed to read add-on index storage {}: {error}",
-                storage_root.display()
-            ))
-        }
-    };
-
     let mut project_files = BTreeSet::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| error.to_string())?;
-        if !entry
-            .file_type()
-            .map_err(|error| error.to_string())?
-            .is_dir()
-            || !is_addon_instance_key(&entry.file_name().to_string_lossy())
-        {
-            continue;
-        }
-        let cache_root = entry.path();
-        let manifest_bytes = match fs::read(cache_root.join(ADDON_MANIFEST_HEADER_FILE)) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                match fs::read(cache_root.join("manifest.json")) {
-                    Ok(bytes) => bytes,
-                    Err(_) => continue,
-                }
-            }
-            Err(_) => continue,
-        };
-        let Ok(manifest) = serde_json::from_slice::<AddonIndexManifestHeader>(&manifest_bytes)
-            .or_else(|_| {
-                serde_json::from_slice::<AddonIndexManifest>(&manifest_bytes)
-                    .map(|manifest| manifest.header())
-            })
-        else {
-            continue;
-        };
+    for (manifest, _) in cached_manifest_descriptors(storage_root, &IndexBuildControl::default())? {
         if manifest.schema != "reforger-addon-index-manifest-v3" {
             continue;
         }
@@ -3223,11 +3421,21 @@ mod tests {
             .instances
             .iter()
             .all(|instance| instance.cache_detail.as_deref() == Some("cache-missing")));
-        assert_eq!(fs::read_dir(&storage).unwrap().count(), 2);
+        assert_eq!(
+            fs::read_dir(&storage)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().is_dir())
+                .count(),
+            2
+        );
+        assert!(storage.join(ADDON_CACHE_CATALOGUE_FILE).is_file());
         let manifests = fs::read_dir(&storage)
             .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_dir())
             .map(|entry| {
-                let path = entry.unwrap().path().join("manifest.json");
+                let path = entry.path().join("manifest.json");
                 let bytes = fs::read(&path).unwrap();
                 fs::remove_file(&path).unwrap();
                 (path, bytes)
@@ -3287,7 +3495,14 @@ mod tests {
         assert_eq!(second.instances.len(), 1);
         assert_eq!(second.instances[0].cache_status, "loaded");
         assert!(second.instances[0].cache_file_bytes.is_some());
-        assert_eq!(fs::read_dir(&storage).unwrap().count(), 1);
+        assert_eq!(
+            fs::read_dir(&storage)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().is_dir())
+                .count(),
+            1
+        );
         write_fixture_pak(
             &packed.join("data.pak"),
             &[("Packed.c", b"class ChangedPacked {}")],
@@ -3332,7 +3547,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(removed.index.files().len(), 1);
-        assert_eq!(fs::read_dir(&storage).unwrap().count(), 1);
+        assert_eq!(
+            fs::read_dir(&storage)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().is_dir())
+                .count(),
+            1
+        );
         let _ = fs::remove_dir_all(root);
     }
 

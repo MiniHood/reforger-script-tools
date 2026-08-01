@@ -44,9 +44,9 @@ source root contains unpacked scripts.
 When the live graph has the same canonical `(GUID, source-root)` sequence as
 the already-published warm scope, Rust keeps that immutable snapshot in place
 and promotes the graph scope authority without a second optimistic cache
-hydration or snapshot composition. Source validation remains deferred to the
-next source-refresh opportunity; only a changed, missing, or rebuilt instance
-causes a replacement generation.
+hydration or snapshot composition. Source validation runs after the warm-ready
+snapshot is published as a background reconciliation step; only a changed,
+missing, or rebuilt instance causes a replacement generation.
 
 Changing `externalIndexMode` invalidates any in-flight language-server startup,
 restarts the client with the new mode, and republishes the selected external
@@ -91,6 +91,9 @@ with the selected instance. Each completed instance has exactly one flattened
 cache at `globalStorageUri/addon-indexes/<instance-key>/symbols.bin` with its
 matching `manifest.json` beside it. A compact `manifest-header.json` companion
 is used for warm validation and contains a digest of the locator manifest.
+The cache root also maintains a compact `cache-catalogue.json`; dependency
+selection reads that catalogue directly and only scans cache roots to repair a
+missing or invalid catalogue.
 Retired pointer/revision layouts are never read or migrated; they are
 discarded and rebuilt from the current Workbench graph.
 A cancelled or

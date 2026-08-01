@@ -7,8 +7,8 @@ use super::{
 use crate::addon_sources::{
     load_all_cached_addon_indexes, load_cached_dependency_addon_indexes,
     load_cached_loaded_addon_indexes, load_or_build_loaded_addon_indexes,
-    loaded_workbench_graph_matches_scope, AddonScopeAuthority, LoadedAddonIndexResult,
-    LoadedAddonInstanceIdentity,
+    loaded_addon_sources_are_current, loaded_workbench_graph_matches_scope, AddonScopeAuthority,
+    LoadedAddonIndexResult, LoadedAddonInstanceIdentity,
 };
 use crate::index::SymbolIndex;
 use crate::index_cache::RuntimeIndexSummary;
@@ -301,9 +301,9 @@ impl ExternalIndexHandle {
                         state.status = ExternalIndexStatus::Ready;
                         state.game_data_scope_authority =
                             Some(AddonScopeAuthority::WorkbenchLoaded);
-                        state.cache_status = Some("loaded".to_string());
+                        state.cache_status = Some("optimistic-loaded".to_string());
                         state.cache_detail = Some(format!(
-                            "scopeAuthority={} loadedInstances={} sourceValidation=deferred warmSnapshot=reused",
+                            "scopeAuthority={} loadedInstances={} sourceValidation=pending warmSnapshot=reused",
                             AddonScopeAuthority::WorkbenchLoaded.as_str(),
                             warm_scope.len(),
                         ));
@@ -321,45 +321,70 @@ impl ExternalIndexHandle {
                 if let Some(sender) = &event_sender {
                     let _ = sender.send(ServerEvent::ExternalIndexChanged);
                 }
-                return;
-            }
-            let cached = load_cached_loaded_addon_indexes(
-                &inventory_path,
-                &storage,
-                &workspace_roots,
-                &control,
-            );
-            if let Ok(cached) = cached {
-                let mut state = state.lock().unwrap();
-                if state.graph_generation == graph_generation && cached.loaded_instances > 0 {
-                    publish_loaded_addon_result(&mut state, &cached, true);
-                    logger.diagnostic_lazy("externalIndex.optimisticCacheDelivered", || json!({
-                        "phase": index_phase(cached.scope_authority),
-                        "elapsedMs": started.elapsed().as_millis(),
-                        "loadedInstances": cached.loaded_instances,
-                        "missingInstances": cached.missing_instances,
-                        "workspaceExcludedInstances": cached.workspace_excluded_instances,
-                        "timingsMs": {
-                            "graphRead": cached.timings.graph_read.as_millis(),
-                            "workspaceRootResolution": cached.timings.workspace_root_resolution.as_millis(),
-                            "cachePrune": cached.timings.cache_prune.as_millis(),
-                            "cacheMetadataRead": cached.timings.cache_metadata_read.as_millis(),
-                            "indexLoad": cached.timings.index_load_or_build.as_millis(),
-                            "layerCompose": cached.timings.layer_compose.as_millis(),
-                            "total": cached.timings.total.as_millis(),
+                match loaded_addon_sources_are_current(
+                    &inventory_path,
+                    &storage,
+                    &workspace_roots,
+                    &control,
+                ) {
+                    Ok(true) => {
+                        if let Ok(mut state) = state.lock() {
+                            if state.graph_generation == graph_generation {
+                                state.cache_status = Some("loaded".to_string());
+                                state.cache_detail = Some(format!(
+                                    "scopeAuthority={} loadedInstances={} sourceValidation=complete warmSnapshot=reused",
+                                    AddonScopeAuthority::WorkbenchLoaded.as_str(),
+                                    warm_scope.len(),
+                                ));
+                                state.error = None;
+                            }
                         }
-                    }));
-                }
-                if cached.loaded_instances > 0 {
-                    if let Some(sender) = &event_sender {
-                        let _ = sender.send(ServerEvent::ExternalIndexProgress {
-                            phase: index_phase(cached.scope_authority).to_string(),
+                        logger.diagnostic_lazy("externalIndex.warmSnapshotValidated", || {
+                            json!({
+                                "phase": "workbench-reconciliation",
+                                "elapsedMs": started.elapsed().as_millis(),
+                                "instances": warm_scope.len(),
+                                "reused": true
+                            })
+                        });
+                        return;
+                    }
+                    Ok(false) => {
+                        logger.diagnostic_lazy("externalIndex.warmSnapshotChanged", || {
+                            json!({
+                                "phase": "workbench-reconciliation",
+                                "elapsedMs": started.elapsed().as_millis(),
+                                "instances": warm_scope.len(),
+                                "reused": false
+                            })
                         });
                     }
+                    Err(error) => {
+                        if let Ok(mut state) = state.lock() {
+                            if state.graph_generation == graph_generation {
+                                state.error = Some(error.clone());
+                                state.cache_status = Some("optimistic-loaded".to_string());
+                                state.cache_detail = Some(format!(
+                                    "scopeAuthority={} loadedInstances={} sourceValidation=failed",
+                                    AddonScopeAuthority::WorkbenchLoaded.as_str(),
+                                    warm_scope.len(),
+                                ));
+                                state.status = ExternalIndexStatus::Ready;
+                            }
+                        }
+                        logger.diagnostic_lazy(
+                            "externalIndex.deferredSourceValidationFailed",
+                            || {
+                                json!({
+                                    "phase": "workbench-reconciliation",
+                                    "elapsedMs": started.elapsed().as_millis(),
+                                    "error": error
+                                })
+                            },
+                        );
+                        return;
+                    }
                 }
-            }
-            if let Some(sender) = &event_sender {
-                let _ = sender.send(ServerEvent::ExternalIndexChanged);
             }
             let result = load_or_build_loaded_addon_indexes(
                 &inventory_path,

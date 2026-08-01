@@ -80,6 +80,9 @@ implementation slice is progress, not a completed ticket.
 - [Current indexing performance baseline](research/current-indexing-performance-baseline.md):
   measured physical Game Data cache, source-validation, PAC extraction, and
   bare-server startup timings for evaluating the PAC-backed design.
+- [Warm manifest and locator overhead research](research/warm-manifest-locator-overhead-research.md):
+  measured manifest/locator costs and the recommended lazy, compact, and binary
+  representations for warm startup and first source navigation.
 - [s&box MCP server review](research/sbox-mcp-research.md): comparative source
   examples for future evaluation; it does not define Reforger MCP architecture.
 - [Official Wiki Corpus report](research/official-wiki-corpus-report.md): validated
