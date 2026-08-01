@@ -92,6 +92,13 @@ interface ValidationOutputLink {
 	tooltip: string;
 }
 
+export function workbenchConnectionStarted(
+	previous: WorkbenchStatus | undefined,
+	current: WorkbenchStatus,
+): boolean {
+	return current.isRunning && previous?.isRunning !== true;
+}
+
 interface WorkbenchCompilerFailure {
 	category: WorkbenchGatewayFailureCategory | 'save-failed';
 	recoveryHint: string;
@@ -726,9 +733,15 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			this.scheduleProbe(unavailableRetryMs, generation);
 			return;
 		}
-		const becameConnected = this.lastStatus === undefined;
+		const becameConnected = workbenchConnectionStarted(this.lastStatus, result.value);
 		this.lastFailure = undefined;
 		this.lastStatus = result.value;
+		if (!result.value.isRunning) {
+			this.integration?.onWorkbenchDisconnected();
+			this.setPhase('connecting');
+			this.scheduleProbe(readyHeartbeatMs, generation);
+			return;
+		}
 		this.setPhase('ready');
 		void this.integration?.onWorkbenchConnected({
 			host: this.configuration.host,
@@ -828,7 +841,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.statusItem.tooltip = [
 			detail,
 			`Endpoint: ${endpoint}`,
-			...(this.lastStatus
+			...(this.lastStatus?.isRunning
 				? [
 					'Workbench API: connected.',
 					this.lastStatus.scriptsCompiled

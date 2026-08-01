@@ -60,7 +60,9 @@ authority for the `loaded` live scope: the extension does not
 scan, configure, or choose add-on folders. The NET API connection state is
 independent of Workbench's `scriptsCompiled` flag: compiler findings remain
 compiler diagnostics, while a connected bridge can still provide the loaded-
-addon graph. Rust begins add-on indexing from the offline cache/dependency
+addon graph. A reachable endpoint with Workbench closed (`isRunning: false`)
+is not a connection; the later `false`-to-`true` transition triggers the live
+graph refresh. Rust begins add-on indexing from the offline cache/dependency
 scope and then reconciles it with the live graph; a newer delivered graph
 supersedes an older in-flight rebuild. The graph carries GUID, display identity,
 and one exact source root for every loaded GUID. The

@@ -10,7 +10,10 @@ import {
 	workbenchDiagnostics,
 	workbenchTestCommands,
 } from '../extensionConfig/workbench';
-import type { WorkbenchCompilerObservation } from '../workbenchNetApi/compiler/workbenchCompiler';
+import {
+	workbenchConnectionStarted,
+	type WorkbenchCompilerObservation,
+} from '../workbenchNetApi/compiler/workbenchCompiler';
 import { startNetApiPeer } from './netApiPeer';
 
 const workbenchFixtureSource = 'class WorkbenchCompilerFixture\n{\n}\n';
@@ -237,6 +240,30 @@ suite('Workbench compiler validation', () => {
 		} finally {
 			await peer.close();
 		}
+	});
+
+	test('treats Workbench starting after a reachable closed state as a new connection', () => {
+		assert.strictEqual(
+			workbenchConnectionStarted(
+				{ isRunning: false, scriptsCompiled: true },
+				{ isRunning: true, scriptsCompiled: true },
+			),
+			true,
+		);
+		assert.strictEqual(
+			workbenchConnectionStarted(
+				undefined,
+				{ isRunning: false, scriptsCompiled: true },
+			),
+			false,
+		);
+		assert.strictEqual(
+			workbenchConnectionStarted(
+				{ isRunning: true, scriptsCompiled: true },
+				{ isRunning: true, scriptsCompiled: false },
+			),
+			false,
+		);
 	});
 
 	test('idle validation saves only the active script before compiling', async function () {
