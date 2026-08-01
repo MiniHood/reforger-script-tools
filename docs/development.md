@@ -304,6 +304,12 @@ No extracted script tree is part of the runtime contract. Go-to-definition
 opens a read-only `reforger-pak:` document whose single source entry is decoded
 by the Rust server on demand.
 
+`symbols.bin` is a sectioned binary container. Its semantic-index section is
+the warm-start payload; its optional locator section is read only when a packed
+source document is first requested. `manifest-header.json` supplies compact
+identity and artifact validation, and the full `manifest.json` is retained for
+repair and diagnostics rather than the normal warm path.
+
 To inspect the current graph/cache relationship, run **Reforger Script Tools:
 Open Add-on Index Report**. It writes a report under extension global storage
 with the Workbench graph snapshot, cache headers and exact source roots, and

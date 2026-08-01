@@ -29,7 +29,7 @@ use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufWriter, Read, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -37,6 +37,10 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 const CACHE_FORMAT_VERSION: u32 = 16;
 const CACHE_SCHEMA: &str = "reforger-symbol-index";
 const CACHE_MAGIC: &[u8; 8] = b"RSTIDX16";
+const CACHE_CONTAINER_MAGIC: &[u8; 8] = b"RSTCNT17";
+const CACHE_CONTAINER_VERSION: u32 = 1;
+const CACHE_CONTAINER_HEADER_BYTES: u64 = 8 + 4 + (8 * 4);
+const MAX_CACHE_SECTION_BYTES: u64 = 512 * 1024 * 1024;
 const CACHE_INDEX_SHAPE: &str = "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v9:narrow-u32-integers-v1:packed-symbol-flags-v1:string-table-v1:canonical-public-facts-v1:parser-source-line-map-v1:delta-line-map-v1:source-content-digest-v1:addon-fingerprint-v1:typed-virtual-source-v1:source-category-v2";
 const LEGACY_CACHE_FORMAT_VERSION: u32 = 9;
 const LEGACY_CACHE_MAGIC: &[u8; 8] = b"RSTIDX09";
@@ -113,6 +117,26 @@ pub(crate) fn load_or_build_archive_index_with_reuse(
     rebuild_reason: &str,
     build: impl FnOnce() -> Result<IndexBuildResult, String>,
 ) -> Result<GameDataIndexCacheResult, String> {
+    load_or_build_archive_index_with_reuse_and_locator(
+        cache_path,
+        fingerprint,
+        source_digest,
+        allow_reuse,
+        rebuild_reason,
+        || Ok(None),
+        build,
+    )
+}
+
+pub(crate) fn load_or_build_archive_index_with_reuse_and_locator(
+    cache_path: &Path,
+    fingerprint: SourceFingerprint,
+    source_digest: String,
+    allow_reuse: bool,
+    rebuild_reason: &str,
+    locator_builder: impl FnOnce() -> Result<Option<Vec<u8>>, String>,
+    build: impl FnOnce() -> Result<IndexBuildResult, String>,
+) -> Result<GameDataIndexCacheResult, String> {
     let total_start = Instant::now();
     let mut timings = IndexCacheTimings::default();
     let load_start = Instant::now();
@@ -159,6 +183,7 @@ pub(crate) fn load_or_build_archive_index_with_reuse(
     let cached_summary = CachedIndexSummary::from(&summary);
     timings.cache_payload_prepare = cache_payload_prepare_start.elapsed();
     timings.cache_prepare = cache_prepare_start.elapsed();
+    let locator_payload = locator_builder()?;
     let write_start = Instant::now();
     let write_timings = write_runtime_cache_payload(
         cache_path,
@@ -167,6 +192,7 @@ pub(crate) fn load_or_build_archive_index_with_reuse(
         &fingerprint,
         &source_digest,
         &cached_summary,
+        locator_payload.as_deref(),
     )?;
     timings.cache_encode = write_timings.encode;
     timings.cache_atomic_write = write_timings.atomic_write;
@@ -1017,12 +1043,7 @@ pub fn load_game_data_index_cache_with_control(
 
     let cache_file_bytes = cache_file_bytes(cache_path);
     let read_start = Instant::now();
-    let bytes = fs::read(cache_path).map_err(|error| {
-        format!(
-            "Failed to read index cache {}: {error}",
-            cache_path.display()
-        )
-    })?;
+    let bytes = read_index_cache_payload(cache_path)?;
     timings.cache_file_read = read_start.elapsed();
     if !bytes.starts_with(CACHE_MAGIC) {
         return Ok(None);
@@ -1196,6 +1217,7 @@ fn load_or_build_game_data_index_with_progress_and_control(
         &fingerprint,
         &source_digest,
         &cached_summary,
+        None,
     ) {
         Ok(write_timings) => {
             timings.cache_encode = write_timings.encode;
@@ -1285,44 +1307,19 @@ fn load_cached_index(
     }
 
     let read_start = Instant::now();
-    let mut file = fs::File::open(cache_path).map_err(|error| {
-        format!(
-            "Failed to open index cache {}: {error}",
-            cache_path.display()
-        )
-    })?;
-    let file_bytes = file
-        .metadata()
-        .map_err(|error| {
-            format!(
-                "Failed to stat index cache {}: {error}",
-                cache_path.display()
-            )
-        })?
-        .len();
-    let mut magic = [0_u8; CACHE_MAGIC.len()];
-    file.read_exact(&mut magic).map_err(|error| {
-        format!(
-            "Failed to read index cache magic {}: {error}",
-            cache_path.display()
-        )
-    })?;
-    if (magic == *V10_CACHE_MAGIC || magic == *LEGACY_CACHE_MAGIC)
+    let file_bytes = cache_file_bytes(cache_path).unwrap_or_default();
+    let bytes = read_index_cache_payload(cache_path)?;
+    let magic = bytes
+        .get(..CACHE_MAGIC.len())
+        .ok_or_else(|| "Index cache is shorter than its magic".to_string())?;
+    if (magic == V10_CACHE_MAGIC || magic == LEGACY_CACHE_MAGIC)
         && file_bytes > MAX_LEGACY_CACHE_BYTES
     {
         return Ok(None);
     }
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&magic);
-    file.read_to_end(&mut bytes).map_err(|error| {
-        format!(
-            "Failed to read index cache {}: {error}",
-            cache_path.display()
-        )
-    })?;
     timings.cache_file_read = read_start.elapsed();
     let decode_start = Instant::now();
-    let load = if magic == *CACHE_MAGIC {
+    let load = if magic == CACHE_MAGIC {
         let cached = decode_runtime_cache(&bytes).map_err(|error| {
             format!(
                 "Failed to decode index cache {}: {error}",
@@ -1331,7 +1328,7 @@ fn load_cached_index(
         })?;
         drop(bytes);
         CacheLoad::Current(cached)
-    } else if magic == *V10_CACHE_MAGIC {
+    } else if magic == V10_CACHE_MAGIC {
         let v10 = decode_v10_cached_index(&bytes).map_err(|error| {
             format!(
                 "Failed to decode v10 index cache {}: {error}",
@@ -1350,7 +1347,7 @@ fn load_cached_index(
         timings.cache_decode = decode_start.elapsed();
         timings.cache_validate = timings.cache_decode;
         return Ok(None);
-    } else if magic == *LEGACY_CACHE_MAGIC {
+    } else if magic == LEGACY_CACHE_MAGIC {
         let legacy = decode_legacy_cached_index(&bytes).map_err(|error| {
             format!(
                 "Failed to decode legacy index cache {}: {error}",
@@ -1414,6 +1411,7 @@ fn write_runtime_cache_payload(
     fingerprint: &SourceFingerprint,
     source_digest: &str,
     summary: &CachedIndexSummary,
+    locator_payload: Option<&[u8]>,
 ) -> Result<CacheWriteStageTimings, String> {
     let encode_start = Instant::now();
     let bytes = encode_runtime_index(
@@ -1423,6 +1421,10 @@ fn write_runtime_cache_payload(
         source_digest,
         summary,
     )?;
+    let bytes = match locator_payload {
+        Some(locator_payload) => encode_cache_container(&bytes, locator_payload)?,
+        None => bytes,
+    };
     let encode = encode_start.elapsed();
     let atomic_write_start = Instant::now();
     write_atomic_bytes(cache_path, &bytes)?;
@@ -1430,6 +1432,193 @@ fn write_runtime_cache_payload(
         encode,
         atomic_write: atomic_write_start.elapsed(),
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CacheContainerHeader {
+    index_offset: u64,
+    index_length: u64,
+    locator_offset: u64,
+    locator_length: u64,
+}
+
+fn encode_cache_container(index_payload: &[u8], locator_payload: &[u8]) -> Result<Vec<u8>, String> {
+    let index_offset = CACHE_CONTAINER_HEADER_BYTES;
+    let index_length = u64::try_from(index_payload.len())
+        .map_err(|_| "Index cache payload is too large".to_string())?;
+    let locator_offset = index_offset
+        .checked_add(index_length)
+        .ok_or_else(|| "Index cache payload offset overflowed".to_string())?;
+    let locator_length = u64::try_from(locator_payload.len())
+        .map_err(|_| "Index cache locator payload is too large".to_string())?;
+    let total_length = locator_offset
+        .checked_add(locator_length)
+        .ok_or_else(|| "Index cache container length overflowed".to_string())?;
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(total_length)
+            .map_err(|_| "Index cache container is too large".to_string())?,
+    );
+    bytes.extend_from_slice(CACHE_CONTAINER_MAGIC);
+    bytes.extend_from_slice(&CACHE_CONTAINER_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&index_offset.to_le_bytes());
+    bytes.extend_from_slice(&index_length.to_le_bytes());
+    bytes.extend_from_slice(&locator_offset.to_le_bytes());
+    bytes.extend_from_slice(&locator_length.to_le_bytes());
+    bytes.extend_from_slice(index_payload);
+    bytes.extend_from_slice(locator_payload);
+    Ok(bytes)
+}
+
+fn read_cache_container_header(
+    file: &mut fs::File,
+    file_bytes: u64,
+) -> Result<Option<CacheContainerHeader>, String> {
+    if file_bytes < CACHE_CONTAINER_HEADER_BYTES {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("Failed to seek index cache container: {error}"))?;
+    let mut header = [0_u8; CACHE_CONTAINER_HEADER_BYTES as usize];
+    file.read_exact(&mut header)
+        .map_err(|error| format!("Failed to read index cache container header: {error}"))?;
+    parse_cache_container_header(&header, file_bytes)
+}
+
+fn parse_cache_container_header(
+    header: &[u8],
+    file_bytes: u64,
+) -> Result<Option<CacheContainerHeader>, String> {
+    if header.len() < CACHE_CONTAINER_HEADER_BYTES as usize
+        || header[..CACHE_CONTAINER_MAGIC.len()] != CACHE_CONTAINER_MAGIC[..]
+    {
+        return Ok(None);
+    }
+    let version = u32::from_le_bytes(header[8..12].try_into().unwrap());
+    if version != CACHE_CONTAINER_VERSION {
+        return Err(format!(
+            "Unsupported index cache container version {version}"
+        ));
+    }
+    let index_offset = u64::from_le_bytes(header[12..20].try_into().unwrap());
+    let index_length = u64::from_le_bytes(header[20..28].try_into().unwrap());
+    let locator_offset = u64::from_le_bytes(header[28..36].try_into().unwrap());
+    let locator_length = u64::from_le_bytes(header[36..44].try_into().unwrap());
+    let index_end = index_offset
+        .checked_add(index_length)
+        .ok_or_else(|| "Index cache index section overflows".to_string())?;
+    let locator_end = locator_offset
+        .checked_add(locator_length)
+        .ok_or_else(|| "Index cache locator section overflows".to_string())?;
+    if index_offset < CACHE_CONTAINER_HEADER_BYTES
+        || index_length < CACHE_MAGIC.len() as u64
+        || index_length > MAX_CACHE_SECTION_BYTES
+        || locator_length > MAX_CACHE_SECTION_BYTES
+        || index_end > file_bytes
+        || locator_offset != index_end
+        || locator_end > file_bytes
+    {
+        return Err("Index cache container section bounds are invalid".to_string());
+    }
+    Ok(Some(CacheContainerHeader {
+        index_offset,
+        index_length,
+        locator_offset,
+        locator_length,
+    }))
+}
+
+#[cfg(test)]
+fn index_cache_payload_from_bytes(bytes: &[u8]) -> Result<&[u8], String> {
+    let Some(header) = parse_cache_container_header(
+        bytes,
+        u64::try_from(bytes.len()).map_err(|_| "Index cache is too large".to_string())?,
+    )?
+    else {
+        return Ok(bytes);
+    };
+    let start = usize::try_from(header.index_offset)
+        .map_err(|_| "Index cache payload offset is too large".to_string())?;
+    let length = usize::try_from(header.index_length)
+        .map_err(|_| "Index cache payload length is too large".to_string())?;
+    let end = start
+        .checked_add(length)
+        .ok_or_else(|| "Index cache payload bounds overflowed".to_string())?;
+    bytes
+        .get(start..end)
+        .ok_or_else(|| "Index cache payload is out of bounds".to_string())
+}
+
+fn read_index_cache_payload(cache_path: &Path) -> Result<Vec<u8>, String> {
+    let mut file = fs::File::open(cache_path).map_err(|error| {
+        format!(
+            "Failed to open index cache {}: {error}",
+            cache_path.display()
+        )
+    })?;
+    let file_bytes = file
+        .metadata()
+        .map_err(|error| {
+            format!(
+                "Failed to stat index cache {}: {error}",
+                cache_path.display()
+            )
+        })?
+        .len();
+    let mut magic = [0_u8; CACHE_MAGIC.len()];
+    file.read_exact(&mut magic)
+        .map_err(|error| format!("Failed to read index cache magic: {error}"))?;
+    if magic == *CACHE_CONTAINER_MAGIC {
+        let header = read_cache_container_header(&mut file, file_bytes)?
+            .ok_or_else(|| "Invalid index cache container header".to_string())?;
+        file.seek(SeekFrom::Start(header.index_offset))
+            .map_err(|error| format!("Failed to seek index cache payload: {error}"))?;
+        let length = usize::try_from(header.index_length)
+            .map_err(|_| "Index cache payload is too large".to_string())?;
+        let mut payload = vec![0_u8; length];
+        file.read_exact(&mut payload)
+            .map_err(|error| format!("Failed to read index cache payload: {error}"))?;
+        return Ok(payload);
+    }
+    if (magic == *V10_CACHE_MAGIC || magic == *LEGACY_CACHE_MAGIC)
+        && file_bytes > MAX_LEGACY_CACHE_BYTES
+    {
+        return Ok(magic.to_vec());
+    }
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&magic);
+    file.read_to_end(&mut payload).map_err(|error| {
+        format!(
+            "Failed to read index cache {}: {error}",
+            cache_path.display()
+        )
+    })?;
+    Ok(payload)
+}
+
+/// Reads the optional binary locator section without decoding the semantic
+/// index. `None` means an older raw cache or a generic cache without locators.
+pub(crate) fn read_index_cache_locator_section(
+    cache_path: &Path,
+) -> Result<Option<Vec<u8>>, String> {
+    if !cache_path.is_file() {
+        return Ok(None);
+    }
+    let mut file = fs::File::open(cache_path).map_err(|error| error.to_string())?;
+    let file_bytes = file.metadata().map_err(|error| error.to_string())?.len();
+    let Some(header) = read_cache_container_header(&mut file, file_bytes)? else {
+        return Ok(None);
+    };
+    if header.locator_length == 0 {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(header.locator_offset))
+        .map_err(|error| error.to_string())?;
+    let length = usize::try_from(header.locator_length)
+        .map_err(|_| "Index cache locator payload is too large".to_string())?;
+    let mut payload = vec![0_u8; length];
+    file.read_exact(&mut payload)
+        .map_err(|error| error.to_string())?;
+    Ok(Some(payload))
 }
 
 pub(crate) fn cache_format_identity() -> (&'static str, u32, &'static str) {
@@ -1702,6 +1891,7 @@ fn encode_v10_cached_index(cached: &V10CachedGameDataIndex) -> Result<Vec<u8>, S
 
 #[cfg(test)]
 fn decode_cached_index(bytes: &[u8]) -> Result<CachedGameDataIndex, String> {
+    let bytes = index_cache_payload_from_bytes(bytes)?;
     let mut reader = BinaryReader::new(bytes);
     let magic = reader.read_exact(CACHE_MAGIC.len())?;
     if magic != &CACHE_MAGIC[..] {
@@ -3718,7 +3908,10 @@ mod tests {
         assert_eq!(decoded.index_shape, CACHE_INDEX_SHAPE);
         assert_eq!(decoded.files.len(), 1);
         decoded.validate().unwrap();
-        assert_eq!(encode_cached_index(&decoded).unwrap(), cache_bytes);
+        assert_eq!(
+            encode_cached_index(&decoded).unwrap(),
+            index_cache_payload_from_bytes(&cache_bytes).unwrap()
+        );
 
         cleanup(&root);
     }

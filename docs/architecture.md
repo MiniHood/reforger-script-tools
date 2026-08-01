@@ -89,8 +89,13 @@ selects one root per GUID, and cache directories not named by the current graph
 are removed before indexing, so an old packed or workspace copy cannot coexist
 with the selected instance. Each completed instance has exactly one flattened
 cache at `globalStorageUri/addon-indexes/<instance-key>/symbols.bin` with its
-matching `manifest.json` beside it. A compact `manifest-header.json` companion
-is used for warm validation and contains a digest of the locator manifest.
+matching `manifest.json` beside it. `symbols.bin` is a sectioned container: the
+semantic index is the required warm-start section and a compact binary locator
+table is optional and loaded only when a packed source document is requested.
+The locator table stores logical paths, interned pack paths, offsets, lengths,
+compression, and raw payload digests; virtual URIs are derived rather than
+stored once per script. A compact `manifest-header.json` companion is used for
+warm validation, while the full JSON manifest remains the repair/debug record.
 The cache root also maintains a compact `cache-catalogue.json`; dependency
 selection reads that catalogue directly and only scans cache roots to repair a
 missing or invalid catalogue.
@@ -355,6 +360,9 @@ to emulate compiler facts from files.
 - Rust is the one Enfusion language authority.
 - Open documents and external indexes are revisioned immutable snapshots; a
   request uses facts from the snapshot it captured.
+- Workspace file notifications are coalesced off the request path; one worker
+  owns workspace-wide aggregation and publishes each committed generation as
+  a single external-index event.
 - Workbench is authoritative for the live loaded-add-on graph. A persisted
   graph or cache-only projection is allowed only when the configured external
   index mode explicitly requests a fallback; it never becomes a live graph

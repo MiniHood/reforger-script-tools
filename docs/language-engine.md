@@ -54,6 +54,12 @@ indexing cannot change the meaning of an in-flight response. Do not introduce
 per-feature revision tables or mutable shared feature state that bypasses this
 model.
 
+Workspace-file notifications build one compiler-owned contribution on the
+incoming path and enqueue it for a coalescing workspace-generation worker.
+Multiple changes to the same batch are aggregated once, then published as one
+new immutable generation and external-index event. Request handling never
+rebuilds the workspace-wide index synchronously.
+
 The base-game layer is published from the current Workbench graph. On an
 offline warm start, the dependency scope uses each exact `(GUID, source-root)`
 instance key to locate its self-describing `symbols.bin` directly. The binary
@@ -69,11 +75,14 @@ sources and atomically replaces only changed instances. Unchanged validation
 inspects bounded PAC catalogues and hashes only selected compressed script
 payloads, not the full multi-gigabyte archives. The resulting strong revision
 identity detects same-size script changes. A changed artifact decodes only
-selected `.c` entries. The semantic cache and locator-rich manifest are written
-directly at the exact loaded-instance root as one current pair (`symbols.bin`
-and `manifest.json`), with a compact `manifest-header.json` companion that is
-digest-bound to the locator manifest for warm validation. Legacy cache roots
-without that companion fall back to the full manifest shape. Retired
+selected `.c` entries. The semantic cache and locator data are written directly
+at the exact loaded-instance root. `symbols.bin` contains a required
+semantic-index section and an optional binary locator section; the latter is
+read lazily when a packed source URI is first materialized. The locator section
+omits derived URIs, interns repeated pack paths, and stores payload digests in
+raw form. The full `manifest.json` remains available for repair/debug, while
+`manifest-header.json` is the compact warm-validation record. Legacy cache roots
+without the binary locator section fall back to the full manifest shape. Retired
 revision/pointer layouts are discarded and rebuilt rather than read as a
 compatibility path. Cache roots not named by the current Workbench graph are
 also removed before indexing. A loaded add-on whose graph source root contains

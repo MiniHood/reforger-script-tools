@@ -1,8 +1,8 @@
 # Warm manifest and locator overhead research
 
 **Date:** 2026-07-31  
-**Scope:** warm startup of the Rust external-index path; no production code was
-changed for this note.
+**Scope:** warm startup of the Rust external-index path. The measurements below
+were the design input for the sectioned binary cache implementation.
 
 ## Recommendation
 
@@ -19,9 +19,10 @@ Recommended order:
    be a repair/cold-path condition, not permission to parse the full locator
    manifest on warm startup.
 2. Keep the locator-rich JSON manifest only for repair, inspection, and a
-   compatibility fallback. Add a versioned `locators.bin` containing a sorted
-   table keyed by logical path, with a shared string table and binary digest
-   bytes. Derive the URI instead of storing one per script.
+   compatibility fallback. Store a versioned locator section beside the
+   semantic index inside the same `symbols.bin` container. Use a sorted table
+   keyed by logical path, an interned pack-path table, and binary digest bytes.
+   Derive the URI instead of storing one per script.
 3. Restore a locator table as an immutable sorted vector (or an on-disk
    indexed table), and binary-search it on `read_virtual_source`. Construct a
    `PakEntry` only for the requested source. Do not materialize a URI-keyed
@@ -202,23 +203,20 @@ The current table is small and has simple fixed-width records; custom binary is
 more transparent and avoids coupling `PakEntry` lifetime and archive paths to a
 third-party archived object graph.
 
-## Implementation-sized plan
+## Implemented decision and remaining work
 
-1. Add a benchmark that separately measures: header selection, full manifest
-   parse, locator materialization, first virtual-source lookup, and total warm
-   external-index readiness. Run it with the installed 5,776-script cache and
-   a synthetic many-cache catalogue.
-2. Ensure every newly written cache has a valid header. Treat a missing or
-   malformed header as `metadata-repair-needed`; do not parse `manifest.json`
-   during warm selection or warm validation. Keep full JSON fallback only for
-   explicit repair/compatibility and first source navigation.
-3. Replace `PackedSourceRevision.entries` with an immutable locator-table
-   abstraction. Initially implement it as a sorted `Vec` in memory to prove
-   that URI-map removal helps; then persist the same representation as
-   `locators.bin` if the first-read benchmark warrants it.
-4. Only after that compare `fs::read` with `memmap2`. The acceptance criterion
-   is first usable external-index readiness and first definition/hover source
-   read, not file size alone.
+The implementation now wraps the existing semantic payload and the optional
+locator table in one `RSTCNT17` container. Newly rebuilt add-on caches put the
+locator section in that file; warm cache hits do not encode or read it. The
+locator section uses an interned pack-path table, sorted logical paths, fixed
+width numeric fields, and raw 32-byte digests. `manifest-header.json` remains
+the compact validation record, while `manifest.json` remains the JSON repair
+and debug fallback. Raw pre-container semantic caches remain readable.
+
+Remaining measurement work is to benchmark first virtual-source lookup against
+the JSON fallback and to decide whether a sorted in-memory locator vector can
+replace the current URI-keyed map. Memory mapping remains deferred until those
+measurements show that copying the locator section is material.
 
 ## Bottom line
 
@@ -228,4 +226,3 @@ manifest path that should now be lazy. The best manifest improvement is to make
 the compact header real and mandatory. The best locator improvement is to
 replace eager URI-map reconstruction with a versioned, binary, logical-path
 table. Memory mapping is a later optimization, not the first move.
-

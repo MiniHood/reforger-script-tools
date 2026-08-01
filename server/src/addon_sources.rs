@@ -4,8 +4,8 @@ use crate::index_build::{
 };
 use crate::index_cache::{
     cache_format_identity, load_game_data_index_cache_with_control,
-    load_or_build_archive_index_with_reuse, write_atomic_bytes, GameDataIndexCacheResult,
-    SourceFingerprint,
+    load_or_build_archive_index_with_reuse_and_locator, read_index_cache_locator_section,
+    write_atomic_bytes, GameDataIndexCacheResult, SourceFingerprint,
 };
 use crate::index_cache::{IndexCacheStatus, RuntimeIndexSummary};
 use crate::model::{
@@ -30,6 +30,10 @@ pub const VIRTUAL_SOURCE_SCHEME: &str = "reforger-pak";
 const MAX_ADDON_INDEX_WORKERS: usize = 4;
 const ADDON_MANIFEST_HEADER_FILE: &str = "manifest-header.json";
 const ADDON_CACHE_CATALOGUE_FILE: &str = "cache-catalogue.json";
+const LOCATOR_TABLE_MAGIC: &[u8; 8] = b"RSTLOC01";
+const LOCATOR_TABLE_VERSION: u32 = 1;
+const MAX_LOCATOR_RECORDS: usize = 1_000_000;
+const MAX_LOCATOR_STRING_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddonScopeAuthority {
@@ -249,6 +253,181 @@ struct ScriptLocator {
     compressed_payload_sha256: String,
 }
 
+fn encode_locator_table(scripts: &[ScriptLocator]) -> Result<Vec<u8>, String> {
+    let mut ordered = scripts.iter().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| {
+        left.logical_path
+            .cmp(&right.logical_path)
+            .then_with(|| left.pack_relative_path.cmp(&right.pack_relative_path))
+            .then_with(|| left.offset.cmp(&right.offset))
+    });
+    let mut pack_paths = BTreeMap::<String, u32>::new();
+    for script in &ordered {
+        let next = u32::try_from(pack_paths.len())
+            .map_err(|_| "Too many packed source paths in locator table".to_string())?;
+        pack_paths
+            .entry(script.pack_relative_path.clone())
+            .or_insert(next);
+    }
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(LOCATOR_TABLE_MAGIC);
+    bytes.extend_from_slice(&LOCATOR_TABLE_VERSION.to_le_bytes());
+    bytes.extend_from_slice(
+        &u32::try_from(ordered.len())
+            .map_err(|_| "Too many source locators".to_string())?
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(
+        &u32::try_from(pack_paths.len())
+            .map_err(|_| "Too many packed source paths".to_string())?
+            .to_le_bytes(),
+    );
+    for path in pack_paths.keys() {
+        write_locator_string(&mut bytes, path)?;
+    }
+    for script in ordered {
+        write_locator_string(&mut bytes, &script.logical_path)?;
+        let pack_path_index = *pack_paths
+            .get(&script.pack_relative_path)
+            .ok_or_else(|| "Locator table pack path was not interned".to_string())?;
+        bytes.extend_from_slice(&pack_path_index.to_le_bytes());
+        bytes.extend_from_slice(&script.offset.to_le_bytes());
+        bytes.extend_from_slice(&script.compressed_length.to_le_bytes());
+        bytes.extend_from_slice(&script.original_length.to_le_bytes());
+        bytes.extend_from_slice(&script.compression.to_le_bytes());
+        bytes.extend_from_slice(&locator_digest_bytes(&script.compressed_payload_sha256)?);
+    }
+    Ok(bytes)
+}
+
+fn write_locator_string(bytes: &mut Vec<u8>, value: &str) -> Result<(), String> {
+    let value = value.as_bytes();
+    let length =
+        u32::try_from(value.len()).map_err(|_| "Locator table string is too large".to_string())?;
+    bytes.extend_from_slice(&length.to_le_bytes());
+    bytes.extend_from_slice(value);
+    Ok(())
+}
+
+fn locator_digest_bytes(value: &str) -> Result<[u8; 32], String> {
+    if value.is_empty() {
+        return Ok([0; 32]);
+    }
+    if value.len() != 64 {
+        return Err("Locator payload digest is not a 256-bit hexadecimal value".to_string());
+    }
+    let mut digest = [0_u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let high = hex_digit(pair[0])?;
+        let low = hex_digit(pair[1])?;
+        digest[index] = (high << 4) | low;
+    }
+    Ok(digest)
+}
+
+fn hex_digit(value: u8) -> Result<u8, String> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        b'A'..=b'F' => Ok(value - b'A' + 10),
+        _ => Err("Locator payload digest contains a non-hexadecimal digit".to_string()),
+    }
+}
+
+fn locator_digest_string(value: &[u8]) -> String {
+    if value.iter().all(|byte| *byte == 0) {
+        return String::new();
+    }
+    value.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn decode_locator_table(bytes: &[u8]) -> Result<Vec<ScriptLocator>, String> {
+    let mut cursor = bytes;
+    let magic = take_locator_bytes(&mut cursor, LOCATOR_TABLE_MAGIC.len())?;
+    if magic != LOCATOR_TABLE_MAGIC {
+        return Err("Index cache locator section magic mismatch".to_string());
+    }
+    let version = take_locator_u32(&mut cursor)?;
+    if version != LOCATOR_TABLE_VERSION {
+        return Err(format!("Unsupported index cache locator version {version}"));
+    }
+    let record_count = usize::try_from(take_locator_u32(&mut cursor)?)
+        .map_err(|_| "Locator record count is too large".to_string())?;
+    if record_count > MAX_LOCATOR_RECORDS {
+        return Err("Locator record count exceeds the cache limit".to_string());
+    }
+    let pack_path_count = usize::try_from(take_locator_u32(&mut cursor)?)
+        .map_err(|_| "Locator pack path count is too large".to_string())?;
+    if pack_path_count > MAX_LOCATOR_RECORDS {
+        return Err("Locator pack path count exceeds the cache limit".to_string());
+    }
+    let mut pack_paths = Vec::with_capacity(pack_path_count);
+    for _ in 0..pack_path_count {
+        pack_paths.push(take_locator_string(&mut cursor)?);
+    }
+    let mut scripts = Vec::with_capacity(record_count);
+    for _ in 0..record_count {
+        let logical_path = take_locator_string(&mut cursor)?;
+        let pack_path_index = usize::try_from(take_locator_u32(&mut cursor)?)
+            .map_err(|_| "Locator pack path index is too large".to_string())?;
+        let pack_relative_path = pack_paths
+            .get(pack_path_index)
+            .ok_or_else(|| "Locator pack path index is out of bounds".to_string())?
+            .clone();
+        let offset = take_locator_u64(&mut cursor)?;
+        let compressed_length = take_locator_u64(&mut cursor)?;
+        let original_length = take_locator_u64(&mut cursor)?;
+        let compression = take_locator_u32(&mut cursor)?;
+        let digest = locator_digest_string(take_locator_bytes(&mut cursor, 32)?);
+        scripts.push(ScriptLocator {
+            uri: String::new(),
+            logical_path,
+            pack_relative_path,
+            offset,
+            compressed_length,
+            original_length,
+            compression,
+            compressed_payload_sha256: digest,
+        });
+    }
+    if !cursor.is_empty() {
+        return Err("Index cache locator section contains trailing bytes".to_string());
+    }
+    Ok(scripts)
+}
+
+fn take_locator_bytes<'a>(cursor: &mut &'a [u8], length: usize) -> Result<&'a [u8], String> {
+    if cursor.len() < length {
+        return Err("Index cache locator section is truncated".to_string());
+    }
+    let (value, rest) = cursor.split_at(length);
+    *cursor = rest;
+    Ok(value)
+}
+
+fn take_locator_u32(cursor: &mut &[u8]) -> Result<u32, String> {
+    Ok(u32::from_le_bytes(
+        take_locator_bytes(cursor, 4)?.try_into().unwrap(),
+    ))
+}
+
+fn take_locator_u64(cursor: &mut &[u8]) -> Result<u64, String> {
+    Ok(u64::from_le_bytes(
+        take_locator_bytes(cursor, 8)?.try_into().unwrap(),
+    ))
+}
+
+fn take_locator_string(cursor: &mut &[u8]) -> Result<String, String> {
+    let length = usize::try_from(take_locator_u32(cursor)?)
+        .map_err(|_| "Locator string length is too large".to_string())?;
+    if length > MAX_LOCATOR_STRING_BYTES {
+        return Err("Locator string exceeds the cache limit".to_string());
+    }
+    let value = take_locator_bytes(cursor, length)?;
+    String::from_utf8(value.to_vec())
+        .map_err(|_| "Index cache locator section contains invalid UTF-8".to_string())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AddonIndexManifest {
@@ -358,7 +537,7 @@ struct InventoryPublication {
 #[derive(Debug)]
 struct PackedSourceRevision {
     artifacts: Vec<ArtifactStamp>,
-    entries: BTreeMap<String, PackedSourceEntry>,
+    entries: Vec<PackedSourceEntry>,
 }
 
 #[derive(Debug)]
@@ -1329,40 +1508,69 @@ fn register_cached_source_revision(
         return Err("Cached add-on source metadata does not match its header".to_string());
     }
 
-    let artifacts = manifest
+    register_cached_source_revision_from_locators(header, manifest.scripts)
+}
+
+fn register_cached_source_revision_from_locators(
+    header: &AddonIndexManifestHeader,
+    scripts: Vec<ScriptLocator>,
+) -> Result<(), String> {
+    if scripts.len() > header.script_count {
+        return Err(format!(
+            "Cached locator count {} exceeds manifest script count {}",
+            scripts.len(),
+            header.script_count
+        ));
+    }
+    let pack_paths = header
+        .pack_artifacts
+        .iter()
+        .map(|artifact| artifact.relative_path.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut logical_paths = BTreeSet::new();
+    for script in &scripts {
+        if script.logical_path.is_empty() || !logical_paths.insert(&script.logical_path) {
+            return Err(
+                "Cached locator table contains a duplicate or empty logical path".to_string(),
+            );
+        }
+        if !pack_paths.contains(script.pack_relative_path.as_str()) {
+            return Err(format!(
+                "Cached locator references an unknown pack artifact {}",
+                script.pack_relative_path
+            ));
+        }
+    }
+    let artifacts = header
         .pack_artifacts
         .iter()
         .map(|artifact| ArtifactStamp {
-            path: manifest.source_root.join(&artifact.relative_path),
+            path: header.source_root.join(&artifact.relative_path),
             bytes: artifact.bytes,
             modified_unix_ms: artifact.modified_unix_ms,
         })
         .collect();
-    let entries = manifest
-        .scripts
-        .iter()
+    let mut entries = scripts
+        .into_iter()
         .map(|script| {
-            let uri = virtual_source_uri(&manifest.guid, &manifest.revision, &script.logical_path)?;
-            Ok((
-                uri,
-                PackedSourceEntry {
-                    entry: PakEntry::from_locator(
-                        script.logical_path.clone(),
-                        script.offset,
-                        script.compressed_length,
-                        script.original_length,
-                        script.compression,
-                        manifest.source_root.join(&script.pack_relative_path),
-                    ),
-                    compressed_payload_sha256: script.compressed_payload_sha256.clone(),
-                },
-            ))
+            Ok(PackedSourceEntry {
+                entry: PakEntry::from_locator(
+                    script.logical_path,
+                    script.offset,
+                    script.compressed_length,
+                    script.original_length,
+                    script.compression,
+                    header.source_root.join(script.pack_relative_path),
+                ),
+                compressed_payload_sha256: script.compressed_payload_sha256,
+            })
         })
-        .collect::<Result<BTreeMap<_, _>, String>>()?;
+        .collect::<Result<Vec<_>, String>>()?;
+    entries.sort_by(|left, right| left.entry.logical_path().cmp(right.entry.logical_path()));
 
     register_source_revision(
-        &manifest.guid,
-        &manifest.revision,
+        &header.guid,
+        &header.revision,
         Arc::new(PackedSourceRevision { artifacts, entries }),
     );
     Ok(())
@@ -1651,12 +1859,13 @@ fn load_or_build_inspected_addon(
     };
     let source_revision = packed_source_revision(&inspection);
     let build_sources = source_revision.clone();
-    let mut result = load_or_build_archive_index_with_reuse(
+    let mut result = load_or_build_archive_index_with_reuse_and_locator(
         &cache,
         fingerprint,
         artifact_digest.clone(),
         manifest_reusable,
         rebuild_reason,
+        || encode_locator_table(&scripts).map(Some),
         || {
             build_inspected_base_game(
                 inspection,
@@ -1815,7 +2024,6 @@ pub fn read_virtual_source(uri: &str) -> Result<String, String> {
     // VS Code normalizes custom URI authorities (including the GUID's case).
     // The registry is keyed by the canonical identity emitted during indexing,
     // never by a client-provided serialization.
-    let canonical_uri = virtual_source_uri(&guid, revision, logical_path)?;
     let key = revision_key(&guid, revision);
     let sources = SOURCE_REVISIONS
         .get_or_init(Default::default)
@@ -1837,8 +2045,7 @@ pub fn read_virtual_source(uri: &str) -> Result<String, String> {
         .ok_or_else(|| format!("Add-on {guid} revision {revision} is not loaded"))?;
     sources.validate_artifacts()?;
     let source_entry = sources
-        .entries
-        .get(&canonical_uri)
+        .source_entry(logical_path)
         .ok_or_else(|| format!("Pack source does not exist: {logical_path}"))?;
     let entry = &source_entry.entry;
     let archive = PakArchive::inspect(entry.archive_path()).map_err(|error| error.to_string())?;
@@ -1857,6 +2064,13 @@ pub fn read_virtual_source(uri: &str) -> Result<String, String> {
 }
 
 impl PackedSourceRevision {
+    fn source_entry(&self, logical_path: &str) -> Option<&PackedSourceEntry> {
+        self.entries
+            .binary_search_by(|entry| entry.entry.logical_path().cmp(logical_path))
+            .ok()
+            .map(|index| &self.entries[index])
+    }
+
     fn validate_artifacts(&self) -> Result<(), String> {
         for expected in &self.artifacts {
             let metadata = fs::metadata(&expected.path)
@@ -2019,8 +2233,7 @@ fn build_inspected_base_game(
             let relative = PathBuf::from(&logical);
             let uri = virtual_source_uri(&inspection.guid, &revision, &logical)?;
             let expected = source_revision
-                .entries
-                .get(&uri)
+                .source_entry(&logical)
                 .ok_or_else(|| format!("Missing packed source identity for {logical}"))?;
             let mut bytes = Vec::with_capacity(entry.original_length() as usize);
             reader
@@ -2289,29 +2502,21 @@ fn packed_source_revision(inspection: &BaseGameInspection) -> Arc<PackedSourceRe
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let mut entries = BTreeMap::new();
+    let mut entries = Vec::new();
     for (_, selected) in &inspection.archives {
         for entry in selected {
             let pack_relative_path = normalized_relative(&inspection.root, entry.archive_path());
-            let uri = virtual_source_uri(
-                &inspection.guid,
-                &inspection.artifact_digest,
-                entry.logical_path(),
-            )
-            .expect("validated logical paths always produce a URI");
             let compressed_payload_sha256 = script_digests
                 .get(&(pack_relative_path, entry.logical_path().to_string()))
                 .cloned()
                 .unwrap_or_default();
-            entries.insert(
-                uri,
-                PackedSourceEntry {
-                    entry: entry.clone(),
-                    compressed_payload_sha256,
-                },
-            );
+            entries.push(PackedSourceEntry {
+                entry: entry.clone(),
+                compressed_payload_sha256,
+            });
         }
     }
+    entries.sort_by(|left, right| left.entry.logical_path().cmp(right.entry.logical_path()));
     let artifacts = inspection
         .archives
         .iter()
@@ -2390,7 +2595,14 @@ fn load_cached_source_revision(key: &str) -> Result<(), String> {
     if revision_key(&header.guid, &header.revision) != key {
         return Err("Cached add-on manifest identity does not match its source URI".to_string());
     }
-    register_cached_source_revision(&cache_root, &header)
+    match read_index_cache_locator_section(&cache_root.join("symbols.bin")) {
+        Ok(Some(bytes)) => match decode_locator_table(&bytes) {
+            Ok(scripts) => register_cached_source_revision_from_locators(&header, scripts),
+            Err(error) => Err(format!("Invalid cached binary locator section: {error}")),
+        },
+        Ok(None) => register_cached_source_revision(&cache_root, &header),
+        Err(error) => Err(format!("Invalid cached binary locator container: {error}")),
+    }
 }
 
 fn publish_inventory_addon_manifests(
@@ -3130,6 +3342,18 @@ mod tests {
         );
         assert_eq!(result.instances[0].guid, BASE_GAME_GUID);
         assert_eq!(result.summary.files, 1);
+        fs::remove_file(storage.join(format!(
+                "{}-{}/manifest.json",
+                BASE_GAME_GUID,
+                addon_instance_key(
+                    BASE_GAME_GUID,
+                    &fs::canonicalize(&base_game_root).unwrap(),
+                )
+                .split_once('-')
+                .map(|(_, digest)| digest)
+                .unwrap(),
+            )))
+        .unwrap();
         assert_eq!(
             read_virtual_source(&virtual_source).unwrap(),
             "class BaseGame {}"
@@ -3639,6 +3863,11 @@ mod tests {
         assert_eq!(loaded.cache_status, IndexCacheStatus::Loaded);
         assert!(addon_cache.join("manifest.json").is_file());
         assert!(addon_cache.join("symbols.bin").is_file());
+        let locator_payload =
+            crate::index_cache::read_index_cache_locator_section(&addon_cache.join("symbols.bin"))
+                .unwrap()
+                .expect("new add-on caches embed a binary locator section");
+        assert!(!locator_payload.is_empty());
         let all_cached =
             load_all_cached_addon_indexes(&storage, &[], &IndexBuildControl::default()).unwrap();
         assert_eq!(all_cached.loaded_instances, 1);
