@@ -16,6 +16,16 @@ const installChoice = 'Enable Workbench Integration';
 const installFailureMessage = 'Reforger Workbench integration could not be installed.';
 const restartMessage = 'Reforger Workbench integration was updated. Restart Workbench to activate it.';
 
+export function workbenchStartupPolicy(
+	enabled: boolean,
+	hasExplicitValue: boolean,
+): { enabled: boolean; promptWhenDisabled: boolean } {
+	return {
+		enabled,
+		promptWhenDisabled: !hasExplicitValue || enabled,
+	};
+}
+
 export interface WorkbenchIntegrationStatus {
 	installed: boolean;
 	installationAvailable: boolean;
@@ -37,9 +47,6 @@ export interface WorkbenchIntegrationRuntime {
 	processStatus(
 		endpoint: WorkbenchEndpoint,
 	): Promise<WorkbenchGatewayResult<WorkbenchProcessStatus>>;
-	launchDefault(
-		endpoint: WorkbenchEndpoint,
-	): Promise<WorkbenchGatewayResult<unknown>>;
 }
 
 export interface WorkbenchIntegrationUi {
@@ -243,7 +250,8 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 			return true;
 		}
 		if (!status.ok || !status.value.workbenchRunning) {
-			await this.ensureWorkbenchProcess(endpoint);
+			this.resolveReady?.(true);
+			return true;
 		}
 		this.finishIfReady();
 		return true;
@@ -284,29 +292,8 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 			this.ui.showStartOrRestart?.(true);
 			return;
 		}
-		const launched = await this.ui.runInstall(() => this.runtime.launchDefault(endpoint));
-		if (!launched.ok) {
-			this.ui.showInstallFailed('The default Arma Reforger Workbench project could not be started.');
-			this.resolveReady?.(false);
-			return;
-		}
 		this.requiresRestart = false;
-		this.finishIfReady();
-	}
-
-	private async ensureWorkbenchProcess(endpoint: WorkbenchEndpoint): Promise<void> {
-		if (this.disposed || !this.enabled) {
-			return;
-		}
-		const process = await this.runtime.processStatus(endpoint);
-		if (!this.enabled || !process.ok || process.value.isOpen) {
-			return;
-		}
-		const launched = await this.ui.runInstall(() => this.runtime.launchDefault(endpoint));
-		if (!launched.ok) {
-			this.ui.showInstallFailed('The default Arma Reforger Workbench project could not be started.');
-			this.resolveReady?.(false);
-		}
+		this.resolveReady?.(true);
 	}
 
 	private finishIfReady(): void {
@@ -342,9 +329,6 @@ export function createWorkbenchIntegration(
 		bootstrap: async workbenchEndpoint => decodeBootstrap(await invoke(workbenchEndpoint, 'bootstrap-integration', 120_000)),
 		maintain: async workbenchEndpoint => decodeBootstrap(await invoke(workbenchEndpoint, 'maintain-integration', 120_000)),
 		processStatus: async workbenchEndpoint => decodeProcessStatus(await invoke(workbenchEndpoint, 'process-status', 5_000)),
-		launchDefault: async workbenchEndpoint => invoke(workbenchEndpoint, 'launch-default', 120_000).then(result => result.ok
-			? { ok: true, value: result.value }
-			: result),
 	};
 	const ui: WorkbenchIntegrationUi = {
 		confirmInstall: async () => (await vscode.window.showInformationMessage(
@@ -370,16 +354,11 @@ export function createWorkbenchIntegration(
 		workbenchConfig.settings.enabled,
 		workbenchDefaults.enabled,
 	);
-	const approved = context.globalState.get<boolean>(approvalStateKey, false);
 	const enablementScope = configurationEnablementScope(configuration);
-	const migrateApprovedEnablement = approved && !enabled && !enablementScope.hasExplicitValue;
-	if (migrateApprovedEnablement) {
-		void configuration.update(
-			workbenchConfig.settings.enabled,
-			true,
-			vscode.ConfigurationTarget.Global,
-		);
-	}
+	const startup = workbenchStartupPolicy(
+		enabled,
+		enablementScope.hasExplicitValue,
+	);
 	return new WorkbenchIntegrationCoordinator(
 		{
 			isApproved: () => context.globalState.get<boolean>(approvalStateKey, false),
@@ -387,7 +366,7 @@ export function createWorkbenchIntegration(
 		},
 		runtime,
 		ui,
-		enabled || migrateApprovedEnablement,
+		startup.enabled,
 		async () => {
 			await configuration.update(
 				workbenchConfig.settings.enabled,
@@ -395,7 +374,7 @@ export function createWorkbenchIntegration(
 				configurationEnablementScope(configuration).target,
 			);
 		},
-		!enablementScope.hasExplicitValue || enabled,
+		startup.promptWhenDisabled,
 	);
 }
 

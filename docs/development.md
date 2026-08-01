@@ -249,12 +249,12 @@ The unified `reforgerScriptTools.workbench.enabled` setting defaults to
 `false`. When there is no prior approval, the extension asks whether it may
 enable Workbench integration and install the managed bridge. Approval updates
 the setting to `true`, writes `NetAPI_Enabled` as `REG_SZ "1"`, and either asks
-the user to restart an open Workbench or launches the default
-`ArmaReforger.gproj` project. Approval is retained as internal extension state;
+the user to restart an open Workbench or completes setup without launching a
+closed Workbench. Approval is retained as internal extension state;
 later enabled activations maintain or upgrade the bridge without prompting and
 never rewrite the registry value. An explicitly disabled setting remains off.
-Existing approved installations without an explicit enablement value are
-migrated to the unified setting.
+An approved installation without an explicit enablement value remains off; the
+stored approval never rewrites the setting.
 
 The `reforgerScriptTools.workbench.externalIndexMode` setting controls external
 index scope independently of NET API availability. Its default `loaded` mode

@@ -5,12 +5,20 @@ import {
 	WorkbenchIntegrationStatus,
 	WorkbenchIntegrationState,
 	WorkbenchIntegrationUi,
+	workbenchStartupPolicy,
 } from '../workbenchNetApi/integration/workbenchIntegration';
 import { WorkbenchEndpoint } from '../workbenchNetApi/gateway/workbenchGateway';
 
 const endpoint: WorkbenchEndpoint = { host: '127.0.0.1', port: 5775 };
 
 suite('Workbench Integration', () => {
+	test('startup leaves an unset Workbench setting disabled and eligible for first approval', () => {
+		assert.deepStrictEqual(workbenchStartupPolicy(false, false), {
+			enabled: false,
+			promptWhenDisabled: true,
+		});
+	});
+
 	test('disabled Workbench prompts for consent and enables the setting after approval', async () => {
 		let enabled = false;
 		let bootstraps = 0;
@@ -231,29 +239,45 @@ suite('Workbench Integration', () => {
 		assert.strictEqual(bootstraps, 0);
 	});
 
-	test('approved integration launches the default project when Workbench is closed', async () => {
-		let launches = 0;
+	test('approved integration stays ready without launching a closed Workbench', async () => {
 		const coordinator = new WorkbenchIntegrationCoordinator(
 			stateWith(true),
 			runtimeWith({
 				status: async () => statusResult({ maintenanceRequired: true, workbenchRunning: false }),
 				maintain: async () => bootstrapResult({ bridgeChanged: false }),
 				processStatus: async () => ({ ok: true, value: { isOpen: false } }),
-				launchDefault: async () => {
-					launches += 1;
-					return { ok: true, value: {} };
-				},
 			}),
 			uiWith({}),
 			true,
 		);
 
-		const ready = coordinator.start();
-		await waitUntil(() => launches === 1);
-		coordinator.onWorkbenchConnected(endpoint);
-		await ready;
+		assert.strictEqual(await coordinator.start(), true);
+	});
 
-		assert.strictEqual(launches, 1);
+	test('first approval installs without launching a closed Workbench', async () => {
+		let enabled = false;
+		const state = stateWith(false);
+		const coordinator = new WorkbenchIntegrationCoordinator(
+			state,
+			runtimeWith({
+				status: async () => statusResult({
+					installed: false,
+					installationAvailable: true,
+					workbenchRunning: false,
+				}),
+				bootstrap: async () => bootstrapResult({ bridgeChanged: true }),
+				processStatus: async () => ({ ok: true, value: { isOpen: false } }),
+			}),
+			uiWith({ confirmInstall: async () => true }),
+			false,
+			async () => {
+				enabled = true;
+			},
+		);
+
+		assert.strictEqual(await coordinator.start(), true);
+		assert.strictEqual(enabled, true);
+		assert.strictEqual(state.isApproved(), true);
 	});
 
 	test('approved current integration skips warm maintenance and process probing', async () => {
@@ -344,7 +368,6 @@ function runtimeWith(
 		bootstrap: async () => bootstrapResult(),
 		maintain: async () => bootstrapResult(),
 		processStatus: async () => ({ ok: true, value: { isOpen: true } }),
-		launchDefault: async () => ({ ok: true, value: {} }),
 		...overrides,
 	};
 }

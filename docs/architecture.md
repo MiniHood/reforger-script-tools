@@ -240,8 +240,9 @@ The extension's bootstrap operation writes Workbench's `NetAPI_Enabled` value
 as `REG_SZ "1"` only during first approval, then installs or updates the
 managed bridge without requiring an existing NET API connection. If Workbench
 is already running, the extension asks the user to restart it. If it is closed,
-the extension may launch only the discovered default `ArmaReforger.gproj`
-project.
+the extension completes setup without launching it; offline indexing remains
+available until the user opens Workbench. Stored approval never enables an
+unset or disabled Workbench setting.
 Unknown profile files are preserved, newer package versions are never
 downgraded, and failed activation is left installed for diagnosis rather than
 rolled back. Version precedence follows semantic-version ordering; an
