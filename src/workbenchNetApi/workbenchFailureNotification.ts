@@ -39,7 +39,7 @@ export function updateWorkbenchFailureNotification(
 			bridgeInactiveNotificationShown = true;
 			diagnostic('workbenchNetApiFailureNotificationRequested', { diagnosis });
 			void vscode.window.showErrorMessage(
-				'Workbench NET API bridge is not active. Workbench could not find a Reforger Script Tools NET API function.',
+				'Workbench NET API bridge inactive. Fix script compilation errors.',
 			)
 				.then(
 					selection => diagnostic('workbenchNetApiFailureNotificationResolved', {

@@ -860,7 +860,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			: presentation.text;
 		this.statusItem.text = baseText;
 		const detail = this.bridgeInactive
-			? 'Workbench reported that a Reforger Script Tools NET API function does not exist. The bridge is not active.'
+			? 'Workbench NET API bridge inactive. Fix script compilation errors.'
 			: phase === 'unavailable' && this.lastFailure?.category === 'save-failed'
 			? 'Compiler validation stopped because the active script could not be saved.'
 			: presentation.detail;
