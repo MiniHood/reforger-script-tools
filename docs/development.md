@@ -221,8 +221,27 @@ node tools/lsp-startup-trace.mjs
 The report correlates extension activation, Workbench loaded-add-on graph
 acquisition, language-server spawn and initialize response, external-index
 ready notification, first document opening, and first semantic-token response.
-The log is bounded and excludes source text, paths, and LSP payloads. Disable
-the setting after the capture.
+The regular log is bounded and excludes source text, paths, and LSP payloads.
+Disable the setting after the capture.
+
+### Search UI snapshots
+
+To capture the current search state while investigating a search-result or
+paging problem:
+
+1. Enable `reforgerScriptTools.diagnostics.enabled`.
+2. Reload the VS Code window so diagnostics are initialized.
+3. Open the Reforger Search UI and press `Ctrl+F3`.
+
+The extension appends a `searchUi.snapshot` record to
+`logs/extension-diagnostics.jsonl` under VS Code global storage. The record
+contains the query, source and result-type filters, request status, page and
+page-size state, total and per-source counts, warnings/errors, viewport data,
+and bounded metadata for the visible results. Result metadata includes source
+targets, selection line ranges, preview type, and excerpt sizes, but not the
+source or preview text itself. The UI confirms when the snapshot is written;
+if diagnostics were not enabled before activation, it asks you to enable the
+setting and reload first.
 
 ## Ticket Completion
 

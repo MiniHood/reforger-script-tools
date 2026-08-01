@@ -50,6 +50,7 @@ export interface SearchResponse {
 	results: SearchHit[];
 	warnings: string[];
 	total: number;
+	totalBySource: Partial<Record<SearchSource, number>>;
 	page: number;
 	pageSize: number;
 }
@@ -122,7 +123,7 @@ export class McpSearchClient {
 			? sources.filter(source => source !== 'wiki')
 			: sources;
 		if (searchableSources.length === 0) {
-			return { results: [], warnings: [], total: 0, page: 1, pageSize: normalizedPageSize };
+			return { results: [], warnings: [], total: 0, totalBySource: {}, page: 1, pageSize: normalizedPageSize };
 		}
 		const responses = await Promise.all(searchableSources.map(async source => {
 			try {
@@ -140,6 +141,12 @@ export class McpSearchClient {
 			throw new Error(warnings.join(' '));
 		}
 		const total = responses.reduce((sum, response) => sum + (response.value?.total ?? 0), 0);
+		const totalBySource: Partial<Record<SearchSource, number>> = {};
+		for (const response of responses) {
+			if (response.value) {
+				totalBySource[response.source] = response.value.total;
+			}
+		}
 		const totalPages = Math.max(1, Math.ceil(total / normalizedPageSize));
 		const normalizedPage = Math.min(requestedPage, totalPages);
 		const pageStart = (normalizedPage - 1) * normalizedPageSize;
@@ -155,7 +162,7 @@ export class McpSearchClient {
 			}
 			sourceOffset += sourceTotal;
 		}
-		return { results, warnings, total, page: normalizedPage, pageSize: normalizedPageSize };
+		return { results, warnings, total, totalBySource, page: normalizedPage, pageSize: normalizedPageSize };
 	}
 
 	public async read(hit: SearchHit): Promise<SearchDocument> {

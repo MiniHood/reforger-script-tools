@@ -127,6 +127,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchClientSource, /cursor/);
 		assert.match(searchClientSource, /nextCursor/);
 		assert.match(searchClientSource, /total: number/);
+		assert.match(searchClientSource, /totalBySource: Partial<Record<SearchSource, number>>/);
 		assert.match(searchUiSource, /const pageSizeOptions = \[25, 50, 100\];/);
 		assert.match(searchUiSource, /data-page-input/);
 		assert.match(searchUiSource, /data-page-prev/);
@@ -158,5 +159,10 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /type: 'debugSnapshot'/);
 		assert.match(searchUiSource, /message\.type === 'debugSnapshot'/);
 		assert.match(searchUiSource, /searchUi\.snapshot/);
+		assert.match(searchUiSource, /totalBySource: state\.totalBySource/);
+		assert.match(searchUiSource, /selectionStartLine: result\.selectionStartLine/);
+		assert.match(searchUiSource, /excerptLength: typeof result\.excerpt === 'string'/);
+		assert.match(searchUiSource, /function snapshotResults\(value: unknown\)/);
+		assert.match(searchUiSource, /resultsTruncated: Array\.isArray\(snapshot\.results\) && snapshot\.results\.length > 100/);
 	});
 });

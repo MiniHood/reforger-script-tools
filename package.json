@@ -151,7 +151,7 @@
         "reforgerScriptTools.diagnostics.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Write detailed local extension and language-server support logs after the VS Code window is reloaded. Enable only while investigating a problem; logs exclude source text and LSP payloads."
+          "description": "Write detailed local extension and language-server support logs after the VS Code window is reloaded. Enable only while investigating a problem; logs exclude source text and LSP payloads. In the Search UI, Ctrl+F3 records a bounded snapshot of the current query, filters, paging, warnings, and result metadata."
         },
         "reforgerScriptTools.experimentalAutoFormatting": {
           "type": "boolean",

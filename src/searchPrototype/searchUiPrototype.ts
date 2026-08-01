@@ -150,6 +150,8 @@ function logSearchSnapshot(value: unknown): void {
 	}
 	const snapshot = isRecord(value) ? value : {};
 	const viewport = isRecord(snapshot.viewport) ? snapshot.viewport : {};
+	const warnings = snapshotWarnings(snapshot.warnings);
+	const results = snapshotResults(snapshot.results);
 	diagnostic('searchUi.snapshot', {
 		query: textField(snapshot.query),
 		source: textField(snapshot.source),
@@ -159,17 +161,21 @@ function logSearchSnapshot(value: unknown): void {
 		page: numberField(snapshot.page),
 		pageSize: numberField(snapshot.pageSize),
 		total: numberField(snapshot.total),
+		totalBySource: jsonField(snapshotTotalsBySource(snapshot.totalBySource)),
 		totalPages: numberField(snapshot.totalPages),
 		resultCount: numberField(snapshot.resultCount),
 		visibleResultCount: numberField(snapshot.visibleResultCount),
 		selectedId: textField(snapshot.selectedId),
 		warningCount: Array.isArray(snapshot.warnings) ? snapshot.warnings.length : 0,
-		warnings: jsonField(snapshot.warnings),
+		warningsTruncated: Array.isArray(snapshot.warnings) && snapshot.warnings.length > 20,
+		warnings: jsonField(warnings),
 		error: textField(snapshot.error),
 		viewportWidth: numberField(viewport.width),
 		viewportHeight: numberField(viewport.height),
 		devicePixelRatio: numberField(viewport.devicePixelRatio),
-		results: jsonField(snapshot.results),
+		resultMetadataCount: results.length,
+		resultsTruncated: Array.isArray(snapshot.results) && snapshot.results.length > 100,
+		results: jsonField(results),
 	});
 	void vscode.window.showInformationMessage('Search snapshot logged to extension diagnostics.');
 }
@@ -193,7 +199,7 @@ async function runSearch(
 	});
 	if (!normalizedQuery) {
 		active.latestResults.clear();
-		active.panel.webview.postMessage({ type: 'results', requestId, results: [], warnings: [], total: 0, page, pageSize });
+		active.panel.webview.postMessage({ type: 'results', requestId, results: [], warnings: [], total: 0, totalBySource: {}, page, pageSize });
 		return;
 	}
 
@@ -217,6 +223,7 @@ async function runSearch(
 			results: result.results,
 			warnings: result.warnings,
 			total: result.total,
+			totalBySource: result.totalBySource,
 			page: result.page,
 			pageSize: result.pageSize,
 		});
@@ -455,7 +462,7 @@ window.__reforgerSearchVscode.postMessage({ type: 'webviewReady', width: window.
 </script>
 <script nonce="${nonce}">
 const vscode = window.__reforgerSearchVscode;
-const state = { query: '', source: 'all', type: 'all', results: [], warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0 };
+const state = { query: '', source: 'all', type: 'all', results: [], warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, totalBySource: {} };
 const sources = [
   { value: 'all', label: 'All sources' },
   { value: 'workspace', label: 'Workspace' },
@@ -531,6 +538,7 @@ const captureSearchSnapshot = () => vscode.postMessage({ type: 'debugSnapshot', 
   page: state.page,
   pageSize: state.pageSize,
   total: state.total,
+  totalBySource: state.totalBySource,
   totalPages: totalPages(),
   resultCount: state.results.length,
   visibleResultCount: visibleResults().length,
@@ -546,8 +554,13 @@ const captureSearchSnapshot = () => vscode.postMessage({ type: 'debugSnapshot', 
     detail: result.detail,
     path: result.path,
     matchKind: result.matchKind,
-    hasSourceUrl: Boolean(result.sourceUrl),
-    hasSourceUri: Boolean(result.sourceUri),
+    sourceUrl: result.sourceUrl,
+    sourceUri: result.sourceUri,
+    selectionStartLine: result.selectionStartLine,
+    selectionEndLine: result.selectionEndLine,
+    excerptLength: typeof result.excerpt === 'string' ? result.excerpt.length : 0,
+    excerptLineCount: typeof result.excerpt === 'string' ? result.excerpt.split('\\n').length : 0,
+    previewType: result.kind === 'documentation' ? 'markdown' : 'code',
   })),
 } });
 const openResult = element => {
@@ -587,7 +600,7 @@ let searchTimer;
 function scheduleSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(() => search(true), 260); }
 function requestPage(value) { const requested = Number.parseInt(value, 10); if (!Number.isFinite(requested)) return; state.page = Math.min(totalPages(), Math.max(1, requested)); search(false); }
 function search(resetPagination) { if (resetPagination) { state.page = 1; } state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; vscode.postMessage({ type: 'search', query: state.query, source: state.source, resultType: state.type, page: state.page, pageSize: state.pageSize }); }
-window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.total = 0; render(); } });
+window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.total = 0; state.totalBySource = {}; render(); } });
 render();
 </script>
 </body>
@@ -615,12 +628,58 @@ function numberField(value: unknown): number | undefined {
 	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+function snapshotWarnings(value: unknown): string[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value.slice(0, 20)
+		.map(item => textField(item))
+		.filter((item): item is string => item !== undefined);
+}
+
+function snapshotTotalsBySource(value: unknown): Partial<Record<SearchSource, number>> {
+	if (!isRecord(value)) {
+		return {};
+	}
+	const totals: Partial<Record<SearchSource, number>> = {};
+	for (const source of ['workspace', 'gameData', 'wiki'] as const) {
+		const total = numberField(value[source]);
+		if (total !== undefined) {
+			totals[source] = total;
+		}
+	}
+	return totals;
+}
+
+function snapshotResults(value: unknown): Array<Record<string, unknown>> {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value.slice(0, 100).filter(isRecord).map(result => ({
+		id: textField(result.id),
+		source: textField(result.source),
+		kind: textField(result.kind),
+		title: textField(result.title),
+		detail: textField(result.detail),
+		path: textField(result.path),
+		matchKind: textField(result.matchKind),
+		sourceUrl: textField(result.sourceUrl),
+		sourceUri: textField(result.sourceUri),
+		selectionStartLine: numberField(result.selectionStartLine),
+		selectionEndLine: numberField(result.selectionEndLine),
+		excerptLength: numberField(result.excerptLength),
+		excerptLineCount: numberField(result.excerptLineCount),
+		previewType: textField(result.previewType),
+	}));
+}
+
 function jsonField(value: unknown): string | undefined {
 	if (value === undefined) {
 		return undefined;
 	}
 	try {
-		return JSON.stringify(value).slice(0, 50_000);
+		const serialized = JSON.stringify(value);
+		return serialized.length > 20_000 ? `${serialized.slice(0, 20_000)}...[truncated]` : serialized;
 	} catch {
 		return '[unserializable]';
 	}
