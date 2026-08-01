@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { diagnostic } from '../diagnostics/diagnostics';
 import { resolveBaseGameIndexCache } from '../gameData/baseGameIndexCache';
 import { searchCommands, searchContext } from '../extensionConfig/search';
 import { discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
@@ -26,6 +27,7 @@ interface ActiveSearch {
 }
 
 export function registerSearchUi(context: vscode.ExtensionContext): void {
+	diagnostic('searchUi.registered');
 	void vscode.commands.executeCommand('setContext', searchContext.key, true);
 	context.subscriptions.push(
 		vscode.workspace.registerTextDocumentContentProvider(searchScheme, {
@@ -89,6 +91,23 @@ async function handleMessage(
 	if (!isRecord(message) || typeof message.type !== 'string' || active.disposed) {
 		return;
 	}
+	if (message.type === 'webviewReady') {
+		diagnostic('searchUi.webviewReady', {
+			width: numberField(message.width),
+			height: numberField(message.height),
+			devicePixelRatio: numberField(message.devicePixelRatio),
+		});
+		return;
+	}
+	if (message.type === 'webviewError') {
+		diagnostic('searchUi.webviewError', {
+			message: textField(message.message),
+			source: textField(message.source),
+			line: numberField(message.line),
+			column: numberField(message.column),
+		});
+		return;
+	}
 	if (message.type === 'search' && typeof message.query === 'string') {
 		await runSearch(context, active, message.query, message.source);
 		return;
@@ -113,6 +132,12 @@ async function runSearch(
 ): Promise<void> {
 	const normalizedQuery = query.trim();
 	const requestId = ++active.requestSequence;
+	const startedAt = Date.now();
+	diagnostic('searchUi.searchStarted', {
+		requestId,
+		queryLength: normalizedQuery.length,
+		source: typeof sourceValue === 'string' ? sourceValue : 'all',
+	});
 	if (!normalizedQuery) {
 		active.latestResults.clear();
 		active.panel.webview.postMessage({ type: 'results', requestId, results: [], warnings: [] });
@@ -127,6 +152,12 @@ async function runSearch(
 			return;
 		}
 		active.latestResults = new Map(result.results.map(hit => [hit.id, hit]));
+		diagnostic('searchUi.searchCompleted', {
+			requestId,
+			resultCount: result.results.length,
+			warningCount: result.warnings.length,
+			elapsedMs: Date.now() - startedAt,
+		});
 		active.panel.webview.postMessage({
 			type: 'results',
 			requestId,
@@ -135,6 +166,11 @@ async function runSearch(
 		});
 	} catch (error) {
 		if (!active.disposed && requestId === active.requestSequence) {
+			diagnostic('searchUi.searchFailed', {
+				requestId,
+				elapsedMs: Date.now() - startedAt,
+				message: error instanceof Error ? error.message : String(error),
+			});
 			active.panel.webview.postMessage({
 				type: 'error',
 				requestId,
@@ -177,6 +213,7 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 	}
 	try {
 		const client = await getClientFromActive(active);
+		diagnostic('searchUi.resultOpenStarted', { source: hit.source, kind: hit.kind });
 		const sourcePath = await client.resolveSourcePath(hit);
 		let opened: vscode.TextDocument;
 		let boundedDocument: SearchDocument | undefined;
@@ -207,7 +244,16 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 		if (hit.source === 'wiki') {
 			await vscode.commands.executeCommand('markdown.showPreview', documentWithLanguage.uri);
 		}
+		diagnostic('searchUi.resultOpenCompleted', {
+			source: hit.source,
+			physicalDocument: Boolean(sourcePath),
+			markdownPreview: hit.source === 'wiki',
+		});
 	} catch (error) {
+		diagnostic('searchUi.resultOpenFailed', {
+			source: hit.source,
+			message: error instanceof Error ? error.message : String(error),
+		});
 		await vscode.window.showErrorMessage(
 			`Could not open ${hit.title}: ${error instanceof Error ? error.message : String(error)}`,
 		);
@@ -316,7 +362,14 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 <body>
 <main id="app"></main>
 <script nonce="${nonce}">
-const vscode = acquireVsCodeApi();
+window.__reforgerSearchVscode = acquireVsCodeApi();
+const reportWebviewError = (message, source, line, column) => window.__reforgerSearchVscode.postMessage({ type: 'webviewError', message: String(message ?? 'Unknown webview error'), source, line, column });
+window.addEventListener('error', event => reportWebviewError(event.message, event.filename, event.lineno, event.colno));
+window.addEventListener('unhandledrejection', event => reportWebviewError(event.reason?.message ?? event.reason, 'unhandledrejection'));
+window.__reforgerSearchVscode.postMessage({ type: 'webviewReady', width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio });
+</script>
+<script nonce="${nonce}">
+const vscode = window.__reforgerSearchVscode;
 const state = { query: '', source: 'all', type: 'all', results: [], warnings: [], status: 'idle', error: '', requestId: 0, selected: '' };
 const sources = [
   { value: 'all', label: 'All sources' },
@@ -333,7 +386,7 @@ const typeButtons = () => resultTypes.map(type => '<button class="' + (state.typ
 const inlineMarkdown = value => value
   .replace(/\\\\([*_])/g, '$1')
   .replace(/\`([^\`]+)\`/g, '<code>$1</code>')
-  .replace(/\\\\[([^\\\\]]+)\\\\]\\(([^)\\s]+)\\)/g, (match, text, url) => url.startsWith('https://') ? '<a href="' + url + '" target="_blank" rel="noreferrer">' + text + '</a>' : '<span class="md-link">' + text + '</span>')
+  .replace(/\\[([^]]+)\\]\\(([^)\\s]+)\\)/g, (match, text, url) => url.startsWith('https://') ? '<a href="' + url + '" target="_blank" rel="noreferrer">' + text + '</a>' : '<span class="md-link">' + text + '</span>')
   .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')
   .replace(/__([^_]+)__/g, '<strong>$1</strong>')
   .replace(/\\*([^*]+)\\*/g, '<em>$1</em>')
@@ -408,4 +461,12 @@ function createNonce(): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function textField(value: unknown): string | undefined {
+	return typeof value === 'string' ? value.slice(0, 500) : undefined;
+}
+
+function numberField(value: unknown): number | undefined {
+	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
