@@ -8,6 +8,8 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+#[cfg(not(test))]
+use std::collections::BTreeSet;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -7590,6 +7592,49 @@ pub(crate) fn registered_project_files(profile: &Path) -> Result<Vec<PathBuf>, S
         projects.extend(source.lines().filter_map(project_list_file_path));
     }
     Ok(projects)
+}
+
+/// Returns the installed game's top-level add-on projects through the same
+/// unambiguous Steam installation discovery used by Workbench path handling.
+/// An unavailable or ambiguous installation is intentionally represented as
+/// an empty result; offline user add-ons can still be resolved from the
+/// project-list registry.
+pub(crate) fn installed_game_addon_project_files() -> Result<Vec<PathBuf>, String> {
+    #[cfg(test)]
+    {
+        Ok(Vec::new())
+    }
+    #[cfg(not(test))]
+    {
+        let Some(game) = (match discover_steam_app("1874880") {
+            SteamAppDiscovery::Found(path) => Some(path),
+            SteamAppDiscovery::RegistrationUnavailable
+            | SteamAppDiscovery::ManifestUnavailable
+            | SteamAppDiscovery::InvalidInstallation
+            | SteamAppDiscovery::AmbiguousInstallations => None,
+        }) else {
+            return Ok(Vec::new());
+        };
+        let addons = game.join("addons");
+        let mut projects = BTreeSet::new();
+        for entry in fs::read_dir(&addons).map_err(|error| error.to_string())?.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            for project in fs::read_dir(&path).map_err(|error| error.to_string())?.flatten() {
+                let project = project.path();
+                if project.is_file()
+                    && project
+                        .extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("gproj"))
+                {
+                    projects.insert(fs::canonicalize(project).map_err(|error| error.to_string())?);
+                }
+            }
+        }
+        Ok(projects.into_iter().collect())
+    }
 }
 
 fn project_list_file_path(line: &str) -> Option<PathBuf> {

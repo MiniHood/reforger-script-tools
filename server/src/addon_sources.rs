@@ -13,7 +13,7 @@ use crate::model::{
     SOURCE_PRIORITY_GAME_DATA,
 };
 use crate::pack::{PakArchive, PakEntry, PakSelection};
-use crate::workbench::registered_project_files;
+use crate::workbench::{installed_game_addon_project_files, registered_project_files};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -1103,12 +1103,63 @@ pub fn load_cached_dependency_addon_indexes(
 ) -> Result<LoadedAddonIndexResult, String> {
     let dependency_guids =
         read_project_dependency_scope_guids(project_files, storage_root, control)?;
-    load_cached_indexes_from_storage(
+    let workspace_guids = project_files
+        .iter()
+        .filter_map(|project_file| read_dependency_project_candidate(project_file).ok())
+        .map(|candidate| candidate.addon.guid)
+        .collect::<BTreeSet<_>>();
+    let mut result = load_cached_indexes_from_storage(
         storage_root,
         workspace_roots,
         control,
         false,
         Some(&dependency_guids),
+    )?;
+    let loaded_guids = result
+        .instances
+        .iter()
+        .map(|instance| instance.guid.to_ascii_uppercase())
+        .collect::<BTreeSet<_>>();
+    result.missing_instances += dependency_guids
+        .iter()
+        .filter(|guid| !workspace_guids.contains(*guid) && !loaded_guids.contains(*guid))
+        .count();
+    Ok(result)
+}
+
+/// Loads the offline project dependency scope from its caches, building only
+/// when that scope has no usable published snapshot yet. The Workbench graph
+/// is deliberately not involved here: the opened project, Workbench's
+/// project-list registry, and unambiguous installed-game path are the offline
+/// source description. A later Workbench reconciliation may replace this
+/// provisional scope.
+pub fn load_or_build_dependency_addon_indexes(
+    project_files: &[PathBuf],
+    workbench_profile: Option<&Path>,
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+) -> Result<LoadedAddonIndexResult, String> {
+    let cached = load_cached_dependency_addon_indexes(
+        project_files,
+        storage_root,
+        workspace_roots,
+        control,
+    )?;
+    if cached.loaded_instances > 0 && cached.missing_instances == 0 {
+        return Ok(cached);
+    }
+
+    let graph_start = Instant::now();
+    let graph = read_project_dependency_graph(project_files, workbench_profile, control)?;
+    let graph_read = graph_start.elapsed();
+    load_or_build_addon_indexes(
+        graph,
+        graph_read,
+        storage_root,
+        workspace_roots,
+        control,
+        AddonScopeAuthority::ProjectDependencies,
     )
 }
 
@@ -2782,6 +2833,99 @@ struct DependencyProjectCandidate {
     project_file: PathBuf,
 }
 
+fn read_project_dependency_graph(
+    project_files: &[PathBuf],
+    workbench_profile: Option<&Path>,
+    control: &IndexBuildControl,
+) -> Result<LoadedAddonGraph, String> {
+    if project_files.is_empty() {
+        return Err("No opened project descriptor was provided".to_string());
+    }
+
+    let mut discovered = BTreeSet::new();
+    for project_file in project_files {
+        discovered.insert(fs::canonicalize(project_file).map_err(|error| {
+            format!(
+                "Failed to resolve dependency project {}: {error}",
+                project_file.display()
+            )
+        })?);
+    }
+    if let Some(profile) = workbench_profile {
+        for project_file in registered_project_files(profile)? {
+            if project_file.is_file() {
+                discovered.insert(fs::canonicalize(&project_file).map_err(|error| {
+                    format!(
+                        "Failed to resolve Workbench project-list entry {}: {error}",
+                        project_file.display()
+                    )
+                })?);
+            }
+        }
+    }
+    for project_file in installed_game_addon_project_files()? {
+        discovered.insert(project_file);
+    }
+
+    let mut candidates = BTreeMap::<String, Vec<DependencyProjectCandidate>>::new();
+    for project_file in discovered {
+        control.check()?;
+        if let Ok(candidate) = read_dependency_project_candidate(&project_file) {
+            candidates
+                .entry(candidate.addon.guid.clone())
+                .or_default()
+                .push(candidate);
+        }
+    }
+    for candidates in candidates.values_mut() {
+        candidates.sort_by(|left, right| {
+            dependency_source_preference(&left.addon.source_root)
+                .cmp(&dependency_source_preference(&right.addon.source_root))
+                .then_with(|| left.project_file.cmp(&right.project_file))
+        });
+    }
+
+    let mut queue = project_files
+        .iter()
+        .map(|project_file| fs::canonicalize(project_file).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, String>>()?;
+    if let Some(base_game) = candidates
+        .get(BASE_GAME_GUID)
+        .and_then(|candidates| candidates.first())
+    {
+        queue.push(base_game.project_file.clone());
+    }
+
+    let mut addons = BTreeMap::<String, LoadedAddonSource>::new();
+    let mut visited_projects = BTreeSet::new();
+    while let Some(project_file) = queue.pop() {
+        control.check()?;
+        if !visited_projects.insert(project_file.clone()) {
+            continue;
+        }
+        let candidate = read_dependency_project_candidate(&project_file)?;
+        addons
+            .entry(candidate.addon.guid.clone())
+            .or_insert_with(|| candidate.addon.clone());
+        for dependency_guid in read_project_dependency_guids(&[project_file])? {
+            let Some(dependency) = candidates
+                .get(&dependency_guid)
+                .and_then(|candidates| candidates.first())
+            else {
+                continue;
+            };
+            addons
+                .entry(dependency.addon.guid.clone())
+                .or_insert_with(|| dependency.addon.clone());
+            queue.push(dependency.project_file.clone());
+        }
+    }
+
+    Ok(LoadedAddonGraph {
+        addons: addons.into_values().collect(),
+    })
+}
+
 /// Collects the GUID closure without opening archives. This powers the
 /// optimistic cache hydration pass; the subsequent build pass performs the
 /// stronger source-usability and ambiguity checks.
@@ -3254,6 +3398,128 @@ mod tests {
         .unwrap();
         assert_eq!(selected.loaded_instances, 1);
         assert_eq!(selected.summary.files, 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn offline_dependency_startup_builds_missing_cache_from_workbench_project_list() {
+        let root = test_root("offline_dependency_build_on_miss");
+        let profile = root.join("profile");
+        let workspace = root.join("workspace");
+        let packed = root.join("packed");
+        let unpacked = root.join("unpacked");
+        let transitive = root.join("transitive");
+        fs::create_dir_all(&profile).unwrap();
+        fs::create_dir_all(workspace.join("Scripts")).unwrap();
+        fs::create_dir_all(packed.join("Scripts")).unwrap();
+        fs::create_dir_all(unpacked.join("Scripts")).unwrap();
+        fs::create_dir_all(transitive.join("Scripts")).unwrap();
+        fs::write(
+            workspace.join("project.gproj"),
+            "GameProject {\n GUID \"AAAAAAAAAAAAAAAA\"\n Dependencies { \"1111111111111111\" }\n }",
+        )
+        .unwrap();
+        fs::write(
+            workspace.join("Scripts/Workspace.c"),
+            "class Workspace {}\n",
+        )
+        .unwrap();
+        fs::write(
+            packed.join("addon.gproj"),
+            "GameProject {\n GUID \"1111111111111111\"\n Dependencies { \"2222222222222222\" }\n }\n",
+        )
+        .unwrap();
+        fs::write(
+            unpacked.join("addon.gproj"),
+            "GameProject {\n GUID \"1111111111111111\"\n Dependencies { \"2222222222222222\" }\n }\n",
+        )
+        .unwrap();
+        write_fixture_pak(
+            &packed.join("data.pak"),
+            &[("Packed.c", b"class Packed {}")],
+        );
+        fs::write(unpacked.join("Scripts/Unpacked.c"), "class Unpacked {}\n").unwrap();
+        fs::write(
+            transitive.join("addon.gproj"),
+            "GameProject {\n GUID \"2222222222222222\"\n }\n",
+        )
+        .unwrap();
+        fs::write(
+            transitive.join("Scripts/Transitive.c"),
+            "class Transitive {}\n",
+        )
+        .unwrap();
+        fs::write(
+            profile.join(".projectList_app1874910_user.conf"),
+            format!(
+                "FilePath \"{}\"\nFilePath \"{}\"\nFilePath \"{}\"\nFilePath \"{}\"\n",
+                workspace.join("project.gproj").display(),
+                packed.join("addon.gproj").display(),
+                unpacked.join("addon.gproj").display(),
+                transitive.join("addon.gproj").display(),
+            ),
+        )
+        .unwrap();
+
+        let storage = root.join("indexes");
+        let first = load_or_build_dependency_addon_indexes(
+            &[workspace.join("project.gproj")],
+            Some(&profile),
+            &storage,
+            &[workspace.join("Scripts")],
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+
+        assert_eq!(first.rebuilt_instances, 2);
+        assert_eq!(first.loaded_instances, 0);
+        assert_eq!(first.summary.files, 2);
+        assert!(first.index.top_level_symbols_for_name("Packed").is_empty());
+        assert!(!first
+            .index
+            .top_level_symbols_for_name("Unpacked")
+            .is_empty());
+        assert!(!first
+            .index
+            .top_level_symbols_for_name("Transitive")
+            .is_empty());
+
+        let second = load_or_build_dependency_addon_indexes(
+            &[workspace.join("project.gproj")],
+            Some(&profile),
+            &storage,
+            &[workspace.join("Scripts")],
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+        assert_eq!(second.rebuilt_instances, 0);
+        assert_eq!(second.loaded_instances, 2);
+        assert_eq!(second.summary.files, 2);
+
+        let packed_cache = fs::read_dir(&storage)
+            .unwrap()
+            .flatten()
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("1111111111111111-")
+            })
+            .unwrap()
+            .path()
+            .join("symbols.bin");
+        fs::remove_file(packed_cache).unwrap();
+        let repaired = load_or_build_dependency_addon_indexes(
+            &[workspace.join("project.gproj")],
+            Some(&profile),
+            &storage,
+            &[workspace.join("Scripts")],
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+        assert_eq!(repaired.rebuilt_instances, 1);
+        assert_eq!(repaired.loaded_instances, 1);
+
         let _ = fs::remove_dir_all(root);
     }
 

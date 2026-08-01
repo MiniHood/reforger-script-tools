@@ -98,24 +98,25 @@ recovery and maintenance; the normal dependency warm path does not inspect
 every cache directory.
 
 The extension's explicit `loaded` startup path provides a provisional dependency
-scope derived from the opened project's `.gproj` dependency GUIDs. Rust also
-uses the authoritative source roots recorded by cached add-on manifests to
-locate each cached add-on's root `.gproj`, then follows the transitive
-descriptor closure (including installed dependencies such as `core` referenced
-by `ArmaReforger.gproj`). It always includes the base-game GUID, resolves
-matching cache instances by GUID, and prefers an unpacked source-root cache over
-a packed-only duplicate. It hydrates compatible cached indexes only; it does
-not scan arbitrary filesystem locations or inspect/build source before
-Workbench is available. The offline cache is the first usable source, and a
-later Workbench graph immediately promotes a matching scope while scheduling
-source validation in the background; only missing or changed source roots
-replace the warm generation. The result is explicitly labelled
+scope derived from the opened project's `.gproj` dependency GUIDs. Rust uses
+the Workbench project-list registry (`.projectList_app1874910_*`) as the offline
+source catalogue, follows the transitive dependency closure, and uses the same
+Workbench-owned game-install discovery for installed base projects. It always
+includes the base-game GUID, resolves one source candidate per GUID, and
+prefers an unpacked source root over a packed-only duplicate. The offline cycle
+first loads compatible cached indexes by exact `(GUID, source-root)` identity.
+If the scope has no usable cache entries, it builds the selected dependency
+sources before publishing the first semantic layer; this is the cold/offline
+fallback rather than a second warm path. A valid warm scope does not scan or
+inspect source roots. The result is explicitly labelled
 `project-dependencies-provisional`, is not a live Workbench graph, and is
-replaced by the next authoritative graph publication. If the graph has the
-same canonical `(GUID, source-root)` sequence as the warm scope, the existing
-immutable layer remains published and graph scope authority is promoted
-without decoding or composing a replacement snapshot. Source validation runs
-after that promotion and retains the warm snapshot if validation fails.
+replaced by the next authoritative graph publication. That second cycle
+compares the live loaded add-on instances, performs a delta load/build for
+different or missing roots, and validates changed sources before replacing the
+warm generation. If the graph has the same canonical `(GUID, source-root)`
+sequence as the warm scope, the existing immutable layer remains published and
+graph scope authority is promoted without decoding or composing a replacement
+snapshot. Source validation retains the warm snapshot if validation fails.
 
 The binary payload persists canonical public symbol facts, source metadata, and
 source line starts; dense symbol IDs and lookup maps are structural or derived
@@ -127,10 +128,12 @@ second cache object graph. Warm hydration decodes directly into runtime records
 and builds lookup maps once, so neither path materializes an intermediate copy
 of every symbol.
 
-An empty add-on cache store is a cold build. Instances without a compatible
-current cache pair are omitted from optimistic delivery and joined by the
-validation build. After authoritative inspection has measured each loaded
-instance's script count, at most four workers rebuild the largest sets first.
+An empty add-on cache store is an offline cold build. Instances without a
+compatible current cache pair are built from the selected project-list sources
+before the first offline layer is published; the later Workbench reconciliation
+can then replace only instances whose live source identity differs. After
+authoritative inspection has measured each loaded instance's script count, at
+most four workers rebuild the largest sets first.
 Within a sufficiently large add-on, source parsing and semantic modelling use
 that add-on's bounded share of the same logical-CPU budget; small add-ons keep
 the lower-overhead sequential path. The outer worker count and each inner
