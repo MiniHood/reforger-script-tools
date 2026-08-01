@@ -58,6 +58,13 @@ pub struct LoadedAddonIndexResult {
     pub workspace_excluded_instances: usize,
     pub timings: LoadedAddonIndexTimings,
     pub instances: Vec<LoadedAddonIndexInstance>,
+    pub scope_instances: Vec<LoadedAddonInstanceIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedAddonInstanceIdentity {
+    pub guid: String,
+    pub source_root: PathBuf,
 }
 
 /// Bounded performance facts for one add-on scope refresh.
@@ -134,6 +141,18 @@ struct CompletedCachedAddonLoad {
     sequence: usize,
     addon: LoadedAddonSource,
     result: Result<Option<GameDataIndexCacheResult>, String>,
+}
+
+struct CompletedCachedManifestLoad {
+    sequence: usize,
+    manifest: AddonIndexManifestHeader,
+    result: Result<Option<GameDataIndexCacheResult>, String>,
+}
+
+struct CachedManifestDescriptor {
+    sequence: usize,
+    manifest: AddonIndexManifestHeader,
+    cache_path: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -349,6 +368,7 @@ struct ArtifactStamp {
 
 static SOURCE_REVISIONS: OnceLock<Mutex<BTreeMap<String, Arc<PackedSourceRevision>>>> =
     OnceLock::new();
+static SOURCE_REVISION_ROOTS: OnceLock<Mutex<BTreeMap<String, PathBuf>>> = OnceLock::new();
 
 /// Builds the installed base-game index directly from selected PAC entries.
 /// User add-ons remain inventory-only until load ordering is implemented.
@@ -583,6 +603,7 @@ fn load_or_build_addon_indexes(
     completed.sort_by_key(|task| task.sequence);
     let mut indexes = Vec::with_capacity(completed.len());
     let mut instances = Vec::with_capacity(completed.len());
+    let mut scope_instances = Vec::with_capacity(completed.len());
     for completed in completed {
         let addon = completed.addon;
         let result = completed.result?;
@@ -604,8 +625,8 @@ fn load_or_build_addon_indexes(
             _ => unreachable!("loaded add-on indexing always has an add-on fingerprint"),
         };
         instances.push(LoadedAddonIndexInstance {
-            guid: addon.guid,
-            display_id: addon.id,
+            guid: addon.guid.clone(),
+            display_id: addon.id.clone(),
             pack_count,
             script_count,
             cache_status: result.cache_status.as_str().to_string(),
@@ -614,6 +635,7 @@ fn load_or_build_addon_indexes(
             timings: result.timings,
             cache_file_bytes: result.cache_file_bytes,
         });
+        scope_instances.push(addon_scope_identity(&addon));
         indexes.push(result.index);
     }
     let (index, layer_timings) = SymbolIndex::layered_with_timings(indexes);
@@ -639,6 +661,7 @@ fn load_or_build_addon_indexes(
             total: total_start.elapsed(),
         },
         instances,
+        scope_instances,
     })
 }
 
@@ -710,14 +733,33 @@ pub fn load_cached_loaded_addon_indexes(
             };
             let result = control.check().and_then(|()| {
                 let cached =
-                    load_game_data_index_cache_with_control(&descriptor.cache_path, &control)?;
-                Ok(cached.filter(|cached| {
+                    match load_game_data_index_cache_with_control(&descriptor.cache_path, &control)
+                    {
+                        Ok(cached) => cached,
+                        Err(error) if control.is_cancelled() => return Err(error),
+                        Err(_) => None,
+                    };
+                let Some(cached) = cached.filter(|cached| {
                     matches!(
                         &cached.fingerprint,
                         SourceFingerprint::Addon { guid, .. }
                             if guid.eq_ignore_ascii_case(&descriptor.addon.guid)
                     )
-                }))
+                }) else {
+                    return Ok(None);
+                };
+                if let (
+                    Some(cache_root),
+                    SourceFingerprint::Addon {
+                        guid,
+                        artifact_digest,
+                        ..
+                    },
+                ) = (descriptor.cache_path.parent(), &cached.fingerprint)
+                {
+                    register_cached_source_revision_root(guid, artifact_digest, cache_root);
+                }
+                Ok(Some(cached))
             });
             let _ = cache_sender.send(CompletedCachedAddonLoad {
                 sequence: descriptor.sequence,
@@ -747,6 +789,7 @@ pub fn load_cached_loaded_addon_indexes(
     let mut missing_instances = 0;
     let mut indexes = Vec::with_capacity(completed.len());
     let mut instances = Vec::with_capacity(completed.len());
+    let mut scope_instances = Vec::with_capacity(completed.len());
     for completed in completed {
         let addon = completed.addon;
         let Some(result) = completed.result? else {
@@ -768,8 +811,8 @@ pub fn load_cached_loaded_addon_indexes(
             _ => unreachable!("loaded add-on cache always has an add-on fingerprint"),
         };
         instances.push(LoadedAddonIndexInstance {
-            guid: addon.guid,
-            display_id: addon.id,
+            guid: addon.guid.clone(),
+            display_id: addon.id.clone(),
             pack_count,
             script_count,
             cache_status: "optimistic-loaded".to_string(),
@@ -778,6 +821,7 @@ pub fn load_cached_loaded_addon_indexes(
             timings: result.timings,
             cache_file_bytes: result.cache_file_bytes,
         });
+        scope_instances.push(addon_scope_identity(&addon));
         indexes.push(result.index);
     }
     let (index, layer_timings) = SymbolIndex::layered_with_timings(indexes);
@@ -803,6 +847,7 @@ pub fn load_cached_loaded_addon_indexes(
             total: total_start.elapsed(),
         },
         instances,
+        scope_instances,
     })
 }
 
@@ -937,15 +982,89 @@ fn load_cached_indexes_from_storage(
     });
 
     let cache_load_start = Instant::now();
+    let descriptors = descriptors
+        .into_iter()
+        .enumerate()
+        .map(
+            |(sequence, (manifest, cache_path))| CachedManifestDescriptor {
+                sequence,
+                manifest,
+                cache_path,
+            },
+        )
+        .collect::<Vec<_>>();
+    let descriptor_count = descriptors.len();
+    let descriptors = Arc::new(Mutex::new(descriptors));
+    let (cache_sender, cache_receiver) = mpsc::channel();
+    let cache_worker_count = addon_index_worker_count(storage_root, descriptor_count)?;
+    let mut cache_workers = Vec::with_capacity(cache_worker_count);
+    for _ in 0..cache_worker_count {
+        let descriptors = descriptors.clone();
+        let cache_sender = cache_sender.clone();
+        let control = control.clone();
+        cache_workers.push(thread::spawn(move || loop {
+            let Some(descriptor) = descriptors.lock().unwrap().pop() else {
+                return;
+            };
+            let result = control.check().and_then(|()| {
+                let cached =
+                    match load_game_data_index_cache_with_control(&descriptor.cache_path, &control)
+                    {
+                        Ok(cached) => cached,
+                        Err(error) if control.is_cancelled() => return Err(error),
+                        Err(_) => None,
+                    };
+                let Some(cached) = cached.filter(|cached| {
+                    matches!(
+                        &cached.fingerprint,
+                        SourceFingerprint::Addon { guid, .. }
+                            if guid.eq_ignore_ascii_case(&descriptor.manifest.guid)
+                    )
+                }) else {
+                    return Ok(None);
+                };
+                if let Some(cache_root) = descriptor.cache_path.parent() {
+                    register_cached_source_revision_root(
+                        &descriptor.manifest.guid,
+                        &descriptor.manifest.revision,
+                        cache_root,
+                    );
+                }
+                Ok(Some(cached))
+            });
+            let _ = cache_sender.send(CompletedCachedManifestLoad {
+                sequence: descriptor.sequence,
+                manifest: descriptor.manifest,
+                result,
+            });
+        }));
+    }
+    drop(cache_sender);
+    let mut completed = Vec::with_capacity(descriptor_count);
+    for _ in 0..descriptor_count {
+        completed.push(
+            cache_receiver
+                .recv()
+                .map_err(|error| format!("Add-on cache load worker ended unexpectedly: {error}"))?,
+        );
+    }
+    for worker in cache_workers {
+        worker
+            .join()
+            .map_err(|_| "Add-on cache load worker panicked".to_string())?;
+    }
+    completed.sort_by_key(|completed| completed.sequence);
     let mut summary = RuntimeIndexSummary::default();
     let mut loaded_instances = 0;
     let mut missing_instances = 0;
     let workspace_excluded_instances = 0;
-    let mut indexes = Vec::with_capacity(descriptors.len());
-    let mut instances = Vec::with_capacity(descriptors.len());
-    for (manifest, cache_path) in descriptors {
+    let mut indexes = Vec::with_capacity(completed.len());
+    let mut instances = Vec::with_capacity(completed.len());
+    let mut scope_instances = Vec::with_capacity(completed.len());
+    for completed in completed {
         control.check()?;
-        let Some(result) = load_game_data_index_cache_with_control(&cache_path, control)? else {
+        let manifest = completed.manifest;
+        let Some(result) = completed.result? else {
             missing_instances += 1;
             continue;
         };
@@ -957,14 +1076,6 @@ fn load_cached_indexes_from_storage(
             } => (*pack_count, *catalogue_entry_count),
             _ => continue,
         };
-        // The semantic cache contains the source metadata needed for hover,
-        // definition, and the custom reforger-pak document provider, but the
-        // packed-source registry is process-local. Rehydrate that lightweight
-        // locator registry when an offline cache is loaded so navigation does
-        // not depend on a later Workbench source inspection.
-        if let Some(cache_root) = cache_path.parent() {
-            let _ = register_cached_source_revision(cache_root, &manifest);
-        }
         loaded_instances += 1;
         summary.files += result.summary.files;
         summary.bytes += result.summary.bytes;
@@ -972,8 +1083,8 @@ fn load_cached_indexes_from_storage(
         summary.parse_diagnostics += result.summary.parse_diagnostics;
         summary.lossy_files += result.summary.lossy_files;
         instances.push(LoadedAddonIndexInstance {
-            guid: manifest.guid,
-            display_id: manifest.display_id,
+            guid: manifest.guid.clone(),
+            display_id: manifest.display_id.clone(),
             pack_count,
             script_count,
             cache_status: "cached-only".to_string(),
@@ -982,6 +1093,7 @@ fn load_cached_indexes_from_storage(
             timings: result.timings,
             cache_file_bytes: result.cache_file_bytes,
         });
+        scope_instances.push(manifest_scope_identity(&manifest));
         indexes.push(result.index);
     }
     let (index, layer_timings) = SymbolIndex::layered_with_timings(indexes);
@@ -1011,7 +1123,48 @@ fn load_cached_indexes_from_storage(
             total: total_start.elapsed(),
         },
         instances,
+        scope_instances,
     })
+}
+
+pub fn loaded_workbench_graph_matches_scope(
+    inventory_path: &Path,
+    workspace_roots: &[PathBuf],
+    scope_instances: &[LoadedAddonInstanceIdentity],
+) -> Result<bool, String> {
+    let graph = read_loaded_addon_graph(inventory_path)?;
+    let workspace_roots = workspace_roots
+        .iter()
+        .filter_map(|root| fs::canonicalize(root).ok())
+        .collect::<Vec<_>>();
+    let graph_scope = graph
+        .addons
+        .into_iter()
+        .filter(|addon| {
+            !workspace_roots
+                .iter()
+                .any(|root| root.starts_with(&addon.source_root))
+        })
+        .map(|addon| LoadedAddonInstanceIdentity {
+            guid: addon.guid,
+            source_root: addon.source_root,
+        })
+        .collect::<Vec<_>>();
+    Ok(graph_scope == scope_instances)
+}
+
+fn addon_scope_identity(addon: &LoadedAddonSource) -> LoadedAddonInstanceIdentity {
+    LoadedAddonInstanceIdentity {
+        guid: addon.guid.clone(),
+        source_root: addon.source_root.clone(),
+    }
+}
+
+fn manifest_scope_identity(manifest: &AddonIndexManifestHeader) -> LoadedAddonInstanceIdentity {
+    LoadedAddonInstanceIdentity {
+        guid: manifest.guid.clone(),
+        source_root: manifest.source_root.clone(),
+    }
 }
 
 fn register_cached_source_revision(
@@ -1100,6 +1253,7 @@ fn empty_cached_index_result(
             ..Default::default()
         },
         instances: Vec::new(),
+        scope_instances: Vec::new(),
     }
 }
 
@@ -1499,7 +1653,18 @@ pub fn read_virtual_source(uri: &str) -> Result<String, String> {
         .lock()
         .map_err(|_| "Packed source revisions are unavailable".to_string())?
         .get(&key)
-        .cloned()
+        .cloned();
+    if sources.is_none() {
+        load_cached_source_revision(&key)?;
+    }
+    let sources = sources
+        .or_else(|| {
+            SOURCE_REVISIONS
+                .get_or_init(Default::default)
+                .lock()
+                .ok()
+                .and_then(|revisions| revisions.get(&key).cloned())
+        })
         .ok_or_else(|| format!("Add-on {guid} revision {revision} is not loaded"))?;
     sources.validate_artifacts()?;
     let source_entry = sources
@@ -2018,6 +2183,45 @@ fn register_source_revision(guid: &str, revision: &str, sources: Arc<PackedSourc
     if let Ok(mut revisions) = SOURCE_REVISIONS.get_or_init(Default::default).lock() {
         revisions.insert(revision_key(guid, revision), sources);
     }
+}
+
+fn register_cached_source_revision_root(guid: &str, revision: &str, cache_root: &Path) {
+    if let Ok(mut roots) = SOURCE_REVISION_ROOTS.get_or_init(Default::default).lock() {
+        roots.insert(revision_key(guid, revision), cache_root.to_path_buf());
+    }
+}
+
+fn load_cached_source_revision(key: &str) -> Result<(), String> {
+    let cache_root = SOURCE_REVISION_ROOTS
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| "Packed source revision roots are unavailable".to_string())?
+        .get(key)
+        .cloned()
+        .ok_or_else(|| "Packed source revision is not registered".to_string())?;
+    let header_path = cache_root.join(ADDON_MANIFEST_HEADER_FILE);
+    let header = match fs::read(&header_path) {
+        Ok(bytes) => serde_json::from_slice::<AddonIndexManifestHeader>(&bytes)
+            .map_err(|error| format!("Invalid cached add-on manifest header: {error}"))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let manifest = serde_json::from_slice::<AddonIndexManifest>(
+                &fs::read(cache_root.join("manifest.json")).map_err(|read_error| {
+                    format!("Failed to read cached add-on manifest: {read_error}")
+                })?,
+            )
+            .map_err(|error| format!("Invalid cached add-on manifest: {error}"))?;
+            manifest.header()
+        }
+        Err(error) => {
+            return Err(format!(
+                "Failed to read cached add-on manifest header: {error}"
+            ))
+        }
+    };
+    if revision_key(&header.guid, &header.revision) != key {
+        return Err("Cached add-on manifest identity does not match its source URI".to_string());
+    }
+    register_cached_source_revision(&cache_root, &header)
 }
 
 fn publish_inventory_addon_manifests(
@@ -2890,6 +3094,88 @@ mod tests {
             addon_instance_key(&loaded.addons[0].guid, &loaded.addons[0].source_root),
             addon_instance_key(&loaded.addons[1].guid, &loaded.addons[1].source_root),
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unchanged_workbench_graph_matches_the_warm_instance_scope() {
+        let root = test_root("warm_scope_match");
+        let first_root = root.join("addons").join("first");
+        let second_root = root.join("addons").join("second");
+        fs::create_dir_all(&first_root).unwrap();
+        fs::create_dir_all(&second_root).unwrap();
+        let graph = root.join("graph.json");
+        fs::write(
+            &graph,
+            format!(
+                r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"1111111111111111","id":"First","title":"First","sourceRoot":{}}},{{"guid":"2222222222222222","id":"Second","title":"Second","sourceRoot":{}}}]}}"#,
+                serde_json::to_string(&first_root).unwrap(),
+                serde_json::to_string(&second_root).unwrap(),
+            ),
+        )
+        .unwrap();
+
+        let warm_scope = vec![
+            LoadedAddonInstanceIdentity {
+                guid: "1111111111111111".to_string(),
+                source_root: fs::canonicalize(&first_root).unwrap(),
+            },
+            LoadedAddonInstanceIdentity {
+                guid: "2222222222222222".to_string(),
+                source_root: fs::canonicalize(&second_root).unwrap(),
+            },
+        ];
+
+        assert!(loaded_workbench_graph_matches_scope(&graph, &[], &warm_scope).unwrap());
+        let reversed_scope = warm_scope.iter().cloned().rev().collect::<Vec<_>>();
+        assert!(!loaded_workbench_graph_matches_scope(&graph, &[], &reversed_scope).unwrap());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn one_corrupt_warm_cache_does_not_discard_other_cached_instances() {
+        let root = test_root("corrupt_warm_cache");
+        let first_root = root.join("addons").join("first");
+        let second_root = root.join("addons").join("second");
+        fs::create_dir_all(&first_root).unwrap();
+        fs::create_dir_all(&second_root).unwrap();
+        write_fixture_pak(
+            &first_root.join("data.pak"),
+            &[("First.c", b"class First {}")],
+        );
+        write_fixture_pak(
+            &second_root.join("data.pak"),
+            &[("Second.c", b"class Second {}")],
+        );
+        let graph = root.join("graph.json");
+        fs::write(
+            &graph,
+            format!(
+                r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"1111111111111111","id":"First","title":"First","sourceRoot":{}}},{{"guid":"2222222222222222","id":"Second","title":"Second","sourceRoot":{}}}]}}"#,
+                serde_json::to_string(&first_root).unwrap(),
+                serde_json::to_string(&second_root).unwrap(),
+            ),
+        )
+        .unwrap();
+        let storage = root.join("indexes");
+        load_or_build_loaded_addon_indexes(&graph, &storage, &[], &IndexBuildControl::default())
+            .unwrap();
+        let corrupt_cache = fs::read_dir(&storage)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path()
+            .join("symbols.bin");
+        fs::write(corrupt_cache, b"corrupt").unwrap();
+
+        let result =
+            load_all_cached_addon_indexes(&storage, &[], &IndexBuildControl::default()).unwrap();
+        assert_eq!(result.loaded_instances, 1);
+        assert_eq!(result.missing_instances, 1);
+        assert_eq!(result.summary.files, 1);
+
         let _ = fs::remove_dir_all(root);
     }
 

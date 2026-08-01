@@ -59,10 +59,11 @@ offline warm start, the dependency scope uses each exact `(GUID, source-root)`
 instance key to locate its self-describing `symbols.bin` directly. The binary
 header establishes format compatibility and embedded add-on identity without a
 separate manifest read. The hydrated layer is reference-counted at construction
-and published without cloning its symbol graph. Cache hydration also restores
-the locator-rich packed-source registry from `manifest.json`, so hover and
-definition navigation can open a `reforger-pak:` source before Workbench
-connects; reading a source still validates its PAC artifacts at navigation time.
+and published without cloning its symbol graph. Cache hydration registers the
+cache's source identity without reading the locator-rich `manifest.json`;
+hover and definition navigation lazily materialize that registry on the first
+`reforger-pak:` source read, which still validates its PAC artifacts at
+navigation time.
 The later authoritative Workbench graph validates the exact packed and loose
 sources and atomically replaces only changed instances. Unchanged validation
 inspects bounded PAC catalogues and hashes only selected compressed script
@@ -95,7 +96,11 @@ Workbench is available. The offline cache is the first usable source, and a
 later Workbench graph is the authoritative reconciliation that validates and
 builds missing or changed source roots. The result is explicitly labelled
 `project-dependencies-provisional`, is not a live Workbench graph, and is
-replaced by the next authoritative graph publication.
+replaced by the next authoritative graph publication. If the graph has the
+same canonical `(GUID, source-root)` sequence as the warm scope, the existing
+immutable layer remains published and graph scope authority is promoted
+without decoding or composing a replacement snapshot. Source validation stays
+deferred until a later source-refresh opportunity.
 
 The binary payload persists canonical public symbol facts, source metadata, and
 source line starts; dense symbol IDs and lookup maps are structural or derived

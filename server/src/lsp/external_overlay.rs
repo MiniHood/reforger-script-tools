@@ -6,8 +6,9 @@ use super::{
 };
 use crate::addon_sources::{
     load_all_cached_addon_indexes, load_cached_dependency_addon_indexes,
-    load_cached_loaded_addon_indexes,
-    load_or_build_loaded_addon_indexes, AddonScopeAuthority, LoadedAddonIndexResult,
+    load_cached_loaded_addon_indexes, load_or_build_loaded_addon_indexes,
+    loaded_workbench_graph_matches_scope, AddonScopeAuthority, LoadedAddonIndexResult,
+    LoadedAddonInstanceIdentity,
 };
 use crate::index::SymbolIndex;
 use crate::index_cache::RuntimeIndexSummary;
@@ -61,6 +62,7 @@ struct ExternalIndexState {
     workspace_summary: RuntimeIndexSummary,
     game_data_summary: Option<RuntimeIndexSummary>,
     game_data_scope_authority: Option<AddonScopeAuthority>,
+    game_data_scope_instances: Vec<LoadedAddonInstanceIdentity>,
     cache_status: Option<String>,
     cache_detail: Option<String>,
     fingerprint: Option<String>,
@@ -211,6 +213,7 @@ impl ExternalIndexHandle {
                 workspace_summary: RuntimeIndexSummary::default(),
                 game_data_summary: None,
                 game_data_scope_authority: None,
+                game_data_scope_instances: Vec::new(),
                 cache_status: None,
                 cache_detail: None,
                 fingerprint: None,
@@ -261,7 +264,7 @@ impl ExternalIndexHandle {
         if matches!(self.mode, ExternalIndexMode::All | ExternalIndexMode::None) {
             return Ok(());
         }
-        let (storage, workspace_roots, graph_generation) = {
+        let (storage, workspace_roots, warm_scope, graph_generation) = {
             let mut state = self.state.lock().unwrap();
             let storage = state
                 .addon_index_storage
@@ -272,6 +275,7 @@ impl ExternalIndexHandle {
             (
                 storage,
                 state.workspace_roots.clone(),
+                state.game_data_scope_instances.clone(),
                 state.graph_generation,
             )
         };
@@ -282,17 +286,49 @@ impl ExternalIndexHandle {
         }
         let state = self.state.clone();
         let control = self.control.clone();
-        let mode = self.mode;
         thread::spawn(move || {
             let started = Instant::now();
-            let cached = match mode {
-                _ => load_cached_loaded_addon_indexes(
+            let warm_scope_reused = !warm_scope.is_empty()
+                && loaded_workbench_graph_matches_scope(
                     &inventory_path,
-                    &storage,
                     &workspace_roots,
-                    &control,
-                ),
-            };
+                    &warm_scope,
+                )
+                .unwrap_or(false);
+            if warm_scope_reused {
+                if let Ok(mut state) = state.lock() {
+                    if state.graph_generation == graph_generation {
+                        state.status = ExternalIndexStatus::Ready;
+                        state.game_data_scope_authority =
+                            Some(AddonScopeAuthority::WorkbenchLoaded);
+                        state.cache_status = Some("loaded".to_string());
+                        state.cache_detail = Some(format!(
+                            "scopeAuthority={} loadedInstances={} sourceValidation=deferred warmSnapshot=reused",
+                            AddonScopeAuthority::WorkbenchLoaded.as_str(),
+                            warm_scope.len(),
+                        ));
+                        state.error = None;
+                    }
+                }
+                logger.diagnostic_lazy("externalIndex.warmSnapshotReused", || {
+                    json!({
+                        "phase": "workbench-reconciliation",
+                        "elapsedMs": started.elapsed().as_millis(),
+                        "instances": warm_scope.len(),
+                        "sourceValidation": "pending"
+                    })
+                });
+                if let Some(sender) = &event_sender {
+                    let _ = sender.send(ServerEvent::ExternalIndexChanged);
+                }
+                return;
+            }
+            let cached = load_cached_loaded_addon_indexes(
+                &inventory_path,
+                &storage,
+                &workspace_roots,
+                &control,
+            );
             if let Ok(cached) = cached {
                 let mut state = state.lock().unwrap();
                 if state.graph_generation == graph_generation && cached.loaded_instances > 0 {
@@ -325,14 +361,12 @@ impl ExternalIndexHandle {
             if let Some(sender) = &event_sender {
                 let _ = sender.send(ServerEvent::ExternalIndexChanged);
             }
-            let result = match mode {
-                _ => load_or_build_loaded_addon_indexes(
-                    &inventory_path,
-                    &storage,
-                    &workspace_roots,
-                    &control,
-                ),
-            };
+            let result = load_or_build_loaded_addon_indexes(
+                &inventory_path,
+                &storage,
+                &workspace_roots,
+                &control,
+            );
             let mut state = state.lock().unwrap();
             if state.graph_generation != graph_generation {
                 return;
@@ -553,6 +587,7 @@ fn publish_loaded_addon_result(
     state.game_data_index = Some(result.index.clone());
     state.game_data_summary = Some(result.summary.clone());
     state.game_data_scope_authority = Some(result.scope_authority);
+    state.game_data_scope_instances = result.scope_instances.clone();
     state.cache_status = Some(
         if validation_pending {
             "optimistic-loaded"
@@ -633,6 +668,7 @@ pub(crate) fn start_external_index(
             workspace_summary: RuntimeIndexSummary::default(),
             game_data_summary: None,
             game_data_scope_authority: None,
+            game_data_scope_instances: Vec::new(),
             cache_status: None,
             cache_detail: None,
             fingerprint: None,
@@ -772,6 +808,7 @@ fn empty_loaded_addon_index_result() -> LoadedAddonIndexResult {
         workspace_excluded_instances: 0,
         timings: Default::default(),
         instances: Vec::new(),
+        scope_instances: Vec::new(),
     }
 }
 
@@ -807,16 +844,17 @@ fn run_external_index_thread(
             ExternalIndexMode::All => {
                 load_all_cached_addon_indexes(storage, &workspace_roots, &control)
             }
-            ExternalIndexMode::Loaded => match addon_source_inventory.as_ref() {
-                Some(inventory_path) => load_cached_loaded_addon_indexes(
+            ExternalIndexMode::Loaded
+                if let Some(inventory_path) = addon_source_inventory.as_ref() =>
+            {
+                load_cached_loaded_addon_indexes(
                     inventory_path,
                     storage,
                     &workspace_roots,
                     &control,
-                ),
-                None => Ok(empty_loaded_addon_index_result()),
-            },
-            ExternalIndexMode::None => Ok(empty_loaded_addon_index_result()),
+                )
+            }
+            _ => Ok(empty_loaded_addon_index_result()),
         };
         match cached {
             Ok(result) if result.loaded_instances > 0 => {
