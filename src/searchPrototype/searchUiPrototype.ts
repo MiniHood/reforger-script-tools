@@ -432,8 +432,8 @@ const totalPages = () => Math.max(1, Math.ceil(state.total / state.pageSize));
 const pageControls = () => {
   const navigationDisabled = !state.query.trim() || state.status === 'loading';
   const pageTotal = totalPages();
-  const sizes = pageSizeOptions.map(size => '<option value="' + size + '"' + (state.pageSize === size ? ' selected' : '') + '>' + size + ' Results</option>').join('');
-  return '<div class="page-controls" aria-label="Search result pages"><select data-page-size aria-label="Total results per page">' + sizes + '</select><span class="muted">-</span><span class="muted">Page</span><input data-page-input type="number" min="1" max="' + pageTotal + '" value="' + state.page + '" aria-label="Current result page"' + (navigationDisabled ? ' disabled' : '') + '><span class="muted">/ ' + pageTotal + '</span><span class="muted">-</span><span class="page-arrows"><button type="button" data-page-prev' + (navigationDisabled || state.page <= 1 ? ' disabled' : '') + ' aria-label="Previous page">‹</button><button type="button" data-page-next' + (navigationDisabled || state.page >= pageTotal ? ' disabled' : '') + ' aria-label="Next page">›</button></span></div>';
+  const sizes = pageSizeOptions.map(size => '<option value="' + size + '"' + (state.pageSize === size ? ' selected' : '') + '>' + size + ' results</option>').join('');
+  return '<div class="page-controls" aria-label="Search result pages"><select data-page-size aria-label="Total results per page">' + sizes + '</select><span class="muted">Page</span><input data-page-input type="number" min="1" max="' + pageTotal + '" value="' + state.page + '" aria-label="Current result page"' + (navigationDisabled ? ' disabled' : '') + '><span class="muted">of ' + pageTotal + '</span><span class="page-arrows"><button type="button" data-page-prev' + (navigationDisabled || state.page <= 1 ? ' disabled' : '') + ' aria-label="Previous page">‹</button><button type="button" data-page-next' + (navigationDisabled || state.page >= pageTotal ? ' disabled' : '') + ' aria-label="Next page">›</button></span></div>';
 };
 const inlineMarkdown = value => value
   .replace(/\\\\([*_])/g, '$1')
