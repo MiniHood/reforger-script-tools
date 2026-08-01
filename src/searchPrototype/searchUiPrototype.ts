@@ -393,7 +393,9 @@ const typeButtons = () => resultTypes.map(type => '<button class="' + (state.typ
 const inlineMarkdown = value => value
   .replace(/\\\\([*_])/g, '$1')
   .replace(/\`([^\`]+)\`/g, '<code>$1</code>')
-  .replace(/\\[([^\\]]+)\\]\\([^)]*\\)/g, '$1')
+  .replace(/!\\[([^\\]]*)\\]\\((?:[^()\\n]|\\([^()\\n]*\\))*\\)/g, '')
+  .replace(/\\[\\]\\((?:[^()\\n]|\\([^()\\n]*\\))*\\)/g, '')
+  .replace(/\\[([^\\]]+)\\]\\((?:[^()\\n]|\\([^()\\n]*\\))*\\)/g, '$1')
   .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')
   .replace(/__([^_]+)__/g, '<strong>$1</strong>')
   .replace(/\\*([^*]+)\\*/g, '<em>$1</em>')
