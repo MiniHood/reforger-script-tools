@@ -94,6 +94,16 @@ test("classifies the parameterless save operation", () => {
   assert.equal(classifyTool("workbench_save"), "save");
 });
 
+test("requires history readback and inverse cleanup evidence", () => {
+  const plan = buildWorkbenchEndpointPlan(["workbench_undo", "workbench_redo"]);
+  const undo = plan.find((entry) => entry.tool === "workbench_undo");
+  const redo = plan.find((entry) => entry.tool === "workbench_redo");
+  assert.deepEqual(undo.cases[0].readbackTools, ["workbench_inspect_entity"]);
+  assert.deepEqual(undo.cases[0].cleanupTools, ["workbench_redo"]);
+  assert.deepEqual(redo.cases[0].readbackTools, ["workbench_inspect_entity"]);
+  assert.deepEqual(redo.cases[0].cleanupTools, ["workbench_undo"]);
+});
+
 test("records public MCP scenario observations and verifies returned state", async () => {
   const calls = [];
   const client = {
