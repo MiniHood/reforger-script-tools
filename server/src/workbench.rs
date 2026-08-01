@@ -10852,6 +10852,31 @@ mod tests {
     }
 
     #[test]
+    fn history_results_report_rejected_actions_without_claiming_a_change() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request, json!({"APIFunc":"RST_WorkbenchUndo"}));
+            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"operation":"undo","status":"history-unavailable","historyAvailable":false,"changed":false})
+        });
+        let root = test_root("history-unavailable");
+        fs::create_dir_all(&root).unwrap();
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+        let result = controller.undo().unwrap();
+        assert_eq!(result.status, "history-unavailable");
+        assert!(!result.history_available);
+        assert!(!result.changed);
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn entity_transform_and_parenting_use_exact_id_requests() {
         let (port, peer) = start_peer(|request| {
             assert_eq!(
