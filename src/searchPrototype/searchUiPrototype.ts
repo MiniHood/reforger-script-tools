@@ -217,7 +217,9 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 		const sourcePath = await client.resolveSourcePath(hit);
 		let opened: vscode.TextDocument;
 		let boundedDocument: SearchDocument | undefined;
-		if (sourcePath) {
+		if (hit.sourceUri) {
+			opened = await vscode.workspace.openTextDocument(vscode.Uri.parse(hit.sourceUri, true));
+		} else if (sourcePath) {
 			opened = await vscode.workspace.openTextDocument(vscode.Uri.file(sourcePath));
 		} else {
 			boundedDocument = await client.read(hit);

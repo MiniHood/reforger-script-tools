@@ -161,6 +161,13 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
         "sourceCategory": {
           "type": "string"
         },
+        "sourceUri": {
+          "description": "Optional editor-client source identity. Treat as opaque; do not construct or use it as an MCP source-read input.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "symbolRef": {
           "type": "string"
         }

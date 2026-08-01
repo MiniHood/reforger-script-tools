@@ -23,6 +23,7 @@ suite('Reforger search UI MCP mapping', () => {
 					relativePath: 'Game/GameMode/SCR_BaseGameMode.c',
 					startLine: 18,
 				},
+				sourceUri: 'reforger-pak://58D0FB3206B6F859/current/Game/GameMode/SCR_BaseGameMode.c',
 			}],
 		});
 
@@ -37,6 +38,7 @@ suite('Reforger search UI MCP mapping', () => {
 			matchKind: 'symbol',
 			selectionStartLine: 18,
 			selectionEndLine: 18,
+			sourceUri: 'reforger-pak://58D0FB3206B6F859/current/Game/GameMode/SCR_BaseGameMode.c',
 			readInput: {
 				catalogueRevision: 'gd1:revision',
 				relativePath: 'Game/GameMode/SCR_BaseGameMode.c',

@@ -106,6 +106,9 @@ pub struct GameDataSearchHit {
     pub documentation_summary: Option<String>,
     pub source_category: String,
     pub relative_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Optional editor-client source identity. Treat as opaque; do not construct or use it as an MCP source-read input.")]
+    pub source_uri: Option<String>,
     pub declaration_range: SourceLineRange,
     pub selection_range: SourceLineRange,
     pub match_kind: String,
@@ -614,6 +617,11 @@ fn project_hit(
         .unwrap_or_else(|| compact_signature(symbol, &candidate.qualified_name));
     let source_path = candidate.path;
     let relative_path = bounded_search_text(source_path.clone());
+    let source_uri = file
+        .metadata
+        .virtual_source
+        .as_ref()
+        .map(|source| source.uri.clone());
     GameDataSearchHit {
         inspect_input: InspectInput {
             symbol_ref: symbol_ref.clone(),
@@ -632,6 +640,7 @@ fn project_hit(
         documentation_summary: documentation_summary(symbol),
         source_category: file.metadata.category.as_str().to_string(),
         relative_path,
+        source_uri,
         declaration_range,
         selection_range,
         match_kind: candidate.match_kind.to_string(),

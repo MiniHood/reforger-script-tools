@@ -143,6 +143,13 @@ Search semantic declarations in the configured user add-on workspace index. Resu
         "sourceCategory": {
           "type": "string"
         },
+        "sourceUri": {
+          "description": "Optional editor-client source identity. Treat as opaque; do not construct or use it as an MCP source-read input.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "symbolRef": {
           "type": "string"
         }

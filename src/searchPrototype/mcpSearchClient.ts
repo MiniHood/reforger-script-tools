@@ -14,6 +14,7 @@ export interface SearchHit {
 	excerpt: string;
 	matchKind?: string;
 	sourceUrl?: string;
+	sourceUri?: string;
 	selectionStartLine?: number;
 	selectionEndLine?: number;
 	readInput: Record<string, unknown>;
@@ -319,6 +320,7 @@ function normalizeSymbolHit(source: SearchSource, hit: RecordValue, index: numbe
 		path: `${relativePath}:${line}`,
 		excerpt,
 		matchKind: asString(hit.matchKind, 'symbol'),
+		...(typeof hit.sourceUri === 'string' ? { sourceUri: hit.sourceUri } : {}),
 		selectionStartLine: asNumber(asRecord(hit.selectionRange).startLine, line),
 		selectionEndLine: asNumber(asRecord(hit.selectionRange).endLine, line),
 		readInput,
