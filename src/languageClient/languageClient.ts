@@ -92,6 +92,7 @@ const workspaceWatcherDebounceMs = 250;
 let startupTimingSessionStartMs = Date.now();
 let firstDocumentOpenTimingLogged = false;
 let firstSemanticTokenTimingLogged = false;
+let workbenchScriptsFailureNotificationShown = false;
 
 interface ExternalIndexProgressParams {
   phase: string;
@@ -326,6 +327,7 @@ export async function deactivateLanguageClient(): Promise<void> {
   languageClientStartGeneration += 1;
   disposeClientDisposables();
   disposeDevelopmentServerWatchBridge();
+  workbenchScriptsFailureNotificationShown = false;
   const activeClient = client;
   client = undefined;
   if (activeClient) {
@@ -643,6 +645,21 @@ async function resolveWorkbenchLoadedAddonInventory(
   });
   const result = await gateway.getLoadedAddonGraph();
   if (!result.ok) {
+    if (result.failure.category === "workbench-error") {
+      const diagnosis = await gateway.diagnoseNetApiFailure(
+        "RST_WorkbenchLoadedAddonGraph",
+      );
+      if (diagnosis === "scripts-failing") {
+        if (!workbenchScriptsFailureNotificationShown) {
+          workbenchScriptsFailureNotificationShown = true;
+          void vscode.window.showWarningMessage("Workbench scripts are failing.");
+        }
+      } else {
+        workbenchScriptsFailureNotificationShown = false;
+      }
+    } else {
+      workbenchScriptsFailureNotificationShown = false;
+    }
     outputChannel.appendLine(
       `Workbench-loaded add-on graph unavailable (${result.failure.category}): ${result.failure.recoveryHint}`,
     );
@@ -655,6 +672,7 @@ async function resolveWorkbenchLoadedAddonInventory(
     );
     return undefined;
   }
+  workbenchScriptsFailureNotificationShown = false;
   let inventory;
   try {
     inventory = await writeLoadedAddonSourceInventory(context, result.value);

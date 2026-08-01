@@ -1,8 +1,30 @@
 import * as assert from "node:assert";
-import { WorkbenchGateway } from "../workbenchNetApi/gateway/workbenchGateway";
+import {
+  WorkbenchGateway,
+  workbenchLogReportsMissingHandler,
+} from "../workbenchNetApi/gateway/workbenchGateway";
 import { encodeNetApiString, startNetApiPeer } from "./netApiPeer";
 
 suite("Workbench Gateway", () => {
+  test("matches missing NET API log evidence for the requested handler", () => {
+    const lines = [
+      "01:22:48.623 NETWORK   (E): Failed to call not existing Net API function 'RST_WorkbenchLoadedAddonGraph'",
+      "01:23:05.325 NETWORK   (E): Failed to call not existing Net API function 'RST_WorkbenchOtherOperation'",
+    ];
+
+    assert.strictEqual(
+      workbenchLogReportsMissingHandler(
+        lines,
+        "RST_WorkbenchLoadedAddonGraph",
+      ),
+      true,
+    );
+    assert.strictEqual(
+      workbenchLogReportsMissingHandler(lines, "RST_WorkbenchMissingOperation"),
+      false,
+    );
+  });
+
   test("gets compiler readiness through the documented NET API framing", async () => {
     const peer = await startNetApiPeer((request) => {
       assert.strictEqual(request.protocolVersion, 1);

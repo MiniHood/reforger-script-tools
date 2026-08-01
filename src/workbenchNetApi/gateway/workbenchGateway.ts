@@ -63,6 +63,16 @@ export interface WorkbenchStatus {
   scriptsCompiled: boolean;
 }
 
+export interface WorkbenchLogRead {
+  source: string;
+  path?: string;
+  lines: string[];
+  markers: Array<{ kind: string; lineIndex: number }>;
+  truncated: boolean;
+}
+
+export type WorkbenchNetApiFailureDiagnosis = "scripts-failing";
+
 export type WorkbenchValidationProfile = "WORKBENCH";
 
 export interface WorkbenchDiagnosticLocation {
@@ -146,6 +156,7 @@ export type WorkbenchPrivateApiCommand =
   | "status"
   | "validate"
   | "loaded-addon-graph"
+  | "read-logs"
   | "integration-status"
   | "bootstrap-integration"
   | "maintain-integration"
@@ -316,6 +327,60 @@ export class WorkbenchGateway {
     return graph;
   }
 
+  public async getProcessStatus(): Promise<
+    WorkbenchGatewayResult<WorkbenchProcessStatus>
+  > {
+    const result = await invokeWorkbenchPrivateApi(
+      this.options.serverPath ?? defaultDevelopmentServerPath(),
+      this.options.endpoint,
+      "process-status",
+      defaultGetStatusDeadlineMs,
+    );
+    if (!result.ok) {
+      return result;
+    }
+    return decodeProcessStatus(result.value);
+  }
+
+  public async readWorkbenchLogs(): Promise<
+    WorkbenchGatewayResult<WorkbenchLogRead>
+  > {
+    const result = await invokeWorkbenchPrivateApi(
+      this.options.serverPath ?? defaultDevelopmentServerPath(),
+      this.options.endpoint,
+      "read-logs",
+      defaultGetStatusDeadlineMs,
+    );
+    if (!result.ok) {
+      return result;
+    }
+    return decodeWorkbenchLogs(result.value);
+  }
+
+  public async diagnoseNetApiFailure(
+    handler: string,
+  ): Promise<WorkbenchNetApiFailureDiagnosis | undefined> {
+    const status = await this.getStatus();
+    if (status.ok) {
+      if (!status.value.isRunning) {
+        return undefined;
+      }
+    } else {
+      const process = await this.getProcessStatus();
+      if (!process.ok || !process.value.isOpen) {
+        return undefined;
+      }
+    }
+    const logs = await this.readWorkbenchLogs();
+    if (
+      logs.ok &&
+      workbenchLogReportsMissingHandler(logs.value.lines, handler)
+    ) {
+      return "scripts-failing";
+    }
+    return undefined;
+  }
+
   private invokeStatus(
     deadlineMs: number,
   ): Promise<WorkbenchPrivateApiResult<unknown>> {
@@ -405,6 +470,67 @@ function decodeStatus(value: unknown): WorkbenchGatewayResult<WorkbenchStatus> {
       scriptsCompiled: value.scriptsCompiled,
     },
   };
+}
+
+function decodeProcessStatus(
+  value: unknown,
+): WorkbenchGatewayResult<WorkbenchProcessStatus> {
+  if (
+    !isRecord(value) ||
+    typeof value.isOpen !== "boolean" ||
+    (value.processId !== undefined && typeof value.processId !== "number") ||
+    (value.projectPath !== undefined && typeof value.projectPath !== "string")
+  ) {
+    return failure("protocol", "Restart Workbench and retry the request.");
+  }
+  return {
+    ok: true,
+    value: {
+      isOpen: value.isOpen,
+      ...(value.processId === undefined ? {} : { processId: value.processId }),
+      ...(value.projectPath === undefined ? {} : { projectPath: value.projectPath }),
+    },
+  };
+}
+
+function decodeWorkbenchLogs(value: unknown): WorkbenchGatewayResult<WorkbenchLogRead> {
+  if (
+    !isRecord(value) ||
+    typeof value.source !== "string" ||
+    (value.path !== undefined && value.path !== null && typeof value.path !== "string") ||
+    !Array.isArray(value.lines) ||
+    !value.lines.every(line => typeof line === "string") ||
+    !Array.isArray(value.markers) ||
+    !value.markers.every(marker =>
+      isRecord(marker) &&
+      typeof marker.kind === "string" &&
+      Number.isInteger(marker.lineIndex),
+    ) ||
+    typeof value.truncated !== "boolean"
+  ) {
+    return failure("protocol", "Restart Workbench and retry the request.");
+  }
+  return {
+    ok: true,
+    value: {
+      source: value.source,
+      ...(typeof value.path === "string" ? { path: value.path } : {}),
+      lines: value.lines,
+      markers: value.markers.map(marker => ({
+        kind: marker.kind,
+        lineIndex: marker.lineIndex,
+      })),
+      truncated: value.truncated,
+    },
+  };
+}
+
+export function workbenchLogReportsMissingHandler(
+  lines: readonly string[],
+  handler: string,
+): boolean {
+  const marker = `Failed to call not existing Net API function '${handler}'`;
+  return lines.some(line => line.includes(marker));
 }
 
 function decodeValidation(

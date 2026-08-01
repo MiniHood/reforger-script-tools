@@ -75,13 +75,13 @@ name-based alternative.
 
 The extension's Workbench status controller uses the native status response as
 a client-initiated heartbeat; Workbench does not push launch or disconnect
-events. A failed status request is checked against the observed Workbench
-process before presenting a notification, so the only current absence message
-is `Workbench not detected.`. A running Workbench with
-`scriptsCompiled: false` is kept as a connected state and presents the separate
-`Workbench scripts are failing.` warning. Repeated probes do not repeat the
-same notification, and no message is invented for an API failure while the
-process is still present.
+events. Status polling alone does not present a script-failure warning. When a
+custom NET API operation fails, the gateway first checks the Workbench status
+and native process state. If Workbench is not running, the failure is ignored.
+If it is running, the gateway reads the latest Workbench log and matches the
+generic missing-handler marker for the operation that failed. Only that log
+evidence presents `Workbench scripts are failing.`; an API failure without
+that evidence does not invent a message.
 
 The diagnostic logs label the two measurable ownership phases as `offline` and
 `workbench-reconciliation`. The event names and nested timings still separate
