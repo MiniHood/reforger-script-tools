@@ -287,8 +287,9 @@ offline cache hydration, dependency indexing, PAC inspection, and index
 publication. It closes when the offline index reaches a terminal state; it
 does not remain open while waiting for an optional Workbench graph. A later
 Workbench connection reconciles the authoritative scope independently.
-Explicit user-requested refreshes show progress while actively indexing;
-automatic inactive-bridge recovery retries stay silent. Diagnostic records
+Explicit user-requested refreshes show progress in VS Code's bottom status area
+while actively indexing; automatic inactive-bridge recovery retries stay
+silent. Diagnostic records
 expose the same two ownership categories (`offline` and
 `workbench-reconciliation`) as diagnostic `phase` values so warm-start
 measurements can compare cache usability with the later authoritative refresh.

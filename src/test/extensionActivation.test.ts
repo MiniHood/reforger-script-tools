@@ -17,6 +17,7 @@ import {
 	beginLanguageClientStartupTimingSession,
 	externalIndexProgressMessage,
 	externalIndexProgressIsTerminal,
+	gameDataProgressOptions,
 	monitorExternalIndexProgress,
 	ifSpaceCommitContractFromCommandArguments,
 	languageClientStartupElapsedMs,
@@ -54,6 +55,14 @@ import {
 } from '../languageClient/semanticTokenBoundaryGuardBridge';
 
 suite('extension activation', () => {
+	test('presents informational game-data refresh progress in the status area', () => {
+		assert.deepStrictEqual(gameDataProgressOptions(), {
+			location: vscode.ProgressLocation.Window,
+			title: 'Reforger game data',
+			cancellable: false,
+		});
+	});
+
 	test('keeps automatic Workbench graph reconciliation out of notification progress', async () => {
 		let progressPresented = false;
 		let refreshRan = false;

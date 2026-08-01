@@ -288,11 +288,7 @@ export async function runWithGameDataProgress(
   options: GameDataRefreshOptions | undefined,
   task: () => Promise<void>,
   present: GameDataProgressPresenter = callback => vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.Notification,
-      title: "Reforger game data",
-      cancellable: false,
-    },
+    gameDataProgressOptions(),
     callback,
   ),
 ): Promise<void> {
@@ -311,6 +307,14 @@ export async function runWithGameDataProgress(
       }
     }
   });
+}
+
+export function gameDataProgressOptions(): vscode.ProgressOptions {
+  return {
+    location: vscode.ProgressLocation.Window,
+    title: "Reforger game data",
+    cancellable: false,
+  };
 }
 
 export function runAfterWorkbenchStartupGate<T>(
