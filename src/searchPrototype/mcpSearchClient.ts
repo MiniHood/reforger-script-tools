@@ -468,6 +468,9 @@ export function normalizeSearchPage(source: SearchSource, value: unknown): Searc
 }
 
 export function formatSearchKind(kind: string): string {
+	if (kind === 'method' || kind === 'constructor' || kind === 'destructor') {
+		return 'function';
+	}
 	return kind.replace(/([a-z])([A-Z])/g, '$1 $2');
 }
 

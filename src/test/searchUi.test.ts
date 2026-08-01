@@ -22,6 +22,9 @@ suite('Reforger search UI MCP mapping', () => {
 	test('formats compound symbol kinds for result details', () => {
 		assert.strictEqual(formatSearchKind('enumMember'), 'enum Member');
 		assert.strictEqual(formatSearchKind('globalField'), 'global Field');
+		assert.strictEqual(formatSearchKind('method'), 'function');
+		assert.strictEqual(formatSearchKind('constructor'), 'function');
+		assert.strictEqual(formatSearchKind('destructor'), 'function');
 	});
 
 	test('defines useful symbol kind filters without a documentation duplicate', () => {
