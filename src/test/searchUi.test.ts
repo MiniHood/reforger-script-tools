@@ -26,7 +26,6 @@ suite('Reforger search UI MCP mapping', () => {
 			'Functions',
 			'Fields',
 			'Enums',
-			'Other declarations',
 		]);
 		assert.deepStrictEqual(searchKindFilters.find(filter => filter.value === 'function')?.kinds, [
 			'function',

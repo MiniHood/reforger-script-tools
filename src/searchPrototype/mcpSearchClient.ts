@@ -28,7 +28,6 @@ export const searchKindFilters: readonly SearchKindFilter[] = [
 	{ value: 'function', label: 'Functions', kinds: ['function', 'method', 'constructor', 'destructor'] },
 	{ value: 'field', label: 'Fields', kinds: ['field', 'globalField'] },
 	{ value: 'enum', label: 'Enums', kinds: ['enum', 'enumMember'] },
-	{ value: 'other', label: 'Other declarations', kinds: ['typedef', 'preprocessorMacro'] },
 ];
 
 export interface SearchHit {
