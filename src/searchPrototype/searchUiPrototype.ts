@@ -363,7 +363,7 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .source-rail button.active { background: var(--selected); color: var(--selected-text); }
 .source-header { display: flex; justify-content: space-between; align-items: end; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
 .page-controls { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 14px; }
-.page-status { display: inline-flex; align-items: center; gap: 6px; }
+.page-status { display: inline-flex; flex: 0 0 150px; align-items: center; gap: 6px; white-space: nowrap; }
 .page-arrows { display: inline-flex; gap: 2px; }
 .page-controls button, .page-controls input, .page-controls select { min-height: 28px; }
 .page-controls button { min-width: 28px; padding: 3px 7px; }
