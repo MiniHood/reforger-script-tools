@@ -30,6 +30,15 @@ loads every compatible cached add-on index, and `none` leaves only workspace
 scripts. These explicit modes do not scan for add-ons or guess installation
 paths.
 
+The application-scoped bracket-coloring mode is also materialized at language-
+client startup as an explicit Enforce-language editor override. `semantic` and
+`punctuation` disable VS Code's native bracket-pair foreground and matching
+presentation; `vscode` enables both. The bridge checks the explicit language
+value rather than the merged configuration default, because a fresh profile
+can report the contributed default while the renderer still retains native
+bracket-pair presentation. Rust remains the owner of delimiter classification
+in the two custom modes.
+
 When `loaded` starts without a Workbench graph and an opened workspace folder
 contains one unambiguous `.gproj`, the provisional path resolves that project's
 transitive descriptor dependency closure by GUID. It uses the bounded

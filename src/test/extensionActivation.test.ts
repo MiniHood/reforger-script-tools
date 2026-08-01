@@ -732,6 +732,58 @@ suite('extension activation', () => {
 		}
 	});
 
+	test('materializes semantic bracket presentation for a fresh VS Code profile', async () => {
+		const scope = { languageId: 'enforce' };
+		const configuration = vscode.workspace.getConfiguration('editor', scope);
+		try {
+			await configuration.update(
+				'bracketPairColorization.enabled',
+				undefined,
+				vscode.ConfigurationTarget.Global,
+				true,
+			);
+			await configuration.update(
+				'matchBrackets',
+				undefined,
+				vscode.ConfigurationTarget.Global,
+				true,
+			);
+
+			assert.strictEqual(
+				configuration.inspect<boolean>('bracketPairColorization.enabled')?.globalLanguageValue,
+				undefined,
+			);
+			assert.strictEqual(
+				configuration.inspect<string>('matchBrackets')?.globalLanguageValue,
+				undefined,
+			);
+
+			await applyBracketColoringEditorMode('semantic');
+
+			assert.strictEqual(
+				configuration.inspect<boolean>('bracketPairColorization.enabled')?.globalLanguageValue,
+				false,
+			);
+			assert.strictEqual(
+				configuration.inspect<string>('matchBrackets')?.globalLanguageValue,
+				'never',
+			);
+		} finally {
+			await configuration.update(
+				'bracketPairColorization.enabled',
+				undefined,
+				vscode.ConfigurationTarget.Global,
+				true,
+			);
+			await configuration.update(
+				'matchBrackets',
+				undefined,
+				vscode.ConfigurationTarget.Global,
+				true,
+			);
+		}
+	});
+
 	test('passes each bracket mode to Rust and reserves active matching for custom modes', () => {
 		assert.deepStrictEqual(
 			bracketColoringServerArguments('semantic'),

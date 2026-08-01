@@ -13,7 +13,7 @@ export async function applyBracketColoringEditorMode(
 	const configuration = vscode.workspace.getConfiguration('editor', {
 		languageId: languageClientLanguage.id,
 	});
-	if (configuration.get('bracketPairColorization.enabled') !== native) {
+	if (configuration.inspect<boolean>('bracketPairColorization.enabled')?.globalLanguageValue !== native) {
 		await configuration.update(
 			'bracketPairColorization.enabled',
 			native,
@@ -22,7 +22,7 @@ export async function applyBracketColoringEditorMode(
 		);
 	}
 	const matchBrackets = native ? 'always' : 'never';
-	if (configuration.get('matchBrackets') !== matchBrackets) {
+	if (configuration.inspect<string>('matchBrackets')?.globalLanguageValue !== matchBrackets) {
 		await configuration.update(
 			'matchBrackets',
 			matchBrackets,
