@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import * as path from "node:path";
+import { diagnostic } from "../../diagnostics/diagnostics";
 
 const defaultGetStatusDeadlineMs = 1_500;
 const defaultValidateScriptsDeadlineMs = 120_000;
@@ -17,6 +18,7 @@ export interface WorkbenchGatewayOptions {
   serverPath?: Promise<string | undefined>;
   deadlines?: Partial<WorkbenchGatewayDeadlines>;
   record?: (record: WorkbenchGatewayDiagnosticRecord) => void;
+  onNetApiFailure?: (diagnosis: WorkbenchNetApiFailureDiagnosis) => void;
 }
 
 export interface WorkbenchGatewayDeadlines {
@@ -167,6 +169,7 @@ export type WorkbenchPrivateApiCommand =
 export class WorkbenchGateway {
   private readonly options: WorkbenchGatewayOptions;
   private currentAvailability: WorkbenchAvailability;
+  private failureDiagnosisInProgress = false;
 
   public constructor(options: WorkbenchGatewayOptions) {
     this.options = {
@@ -199,6 +202,7 @@ export class WorkbenchGateway {
       this.currentAvailability = this.options.enabled
         ? { kind: "unavailable", failure: result.failure }
         : { kind: "disabled" };
+      await this.inspectFailedNetApiCall("getStatus", result.failure, result);
       this.record(
         "getStatus",
         result.failure.category,
@@ -213,6 +217,7 @@ export class WorkbenchGateway {
         kind: "unavailable",
         failure: status.failure,
       };
+      await this.inspectFailedNetApiCall("getStatus", status.failure, status);
       this.record(
         "getStatus",
         status.failure.category,
@@ -246,6 +251,7 @@ export class WorkbenchGateway {
     );
     if (!result.ok) {
       this.noteFailure(result.failure);
+      await this.inspectFailedNetApiCall("validateScripts", result.failure);
       this.record(
         "validateScripts",
         result.failure.category,
@@ -257,6 +263,7 @@ export class WorkbenchGateway {
     const validation = decodeValidation(profile, result.value);
     if (!validation.ok) {
       this.noteFailure(validation.failure);
+      await this.inspectFailedNetApiCall("validateScripts", validation.failure);
       this.record(
         "validateScripts",
         validation.failure.category,
@@ -303,6 +310,10 @@ export class WorkbenchGateway {
     );
     if (!result.ok) {
       this.noteFailure(result.failure);
+      await this.inspectFailedNetApiCall(
+        "getLoadedAddonGraph",
+        result.failure,
+      );
       this.record(
         "getLoadedAddonGraph",
         result.failure.category,
@@ -314,6 +325,7 @@ export class WorkbenchGateway {
     const graph = decodeLoadedAddonGraph(result.value);
     if (!graph.ok) {
       this.noteFailure(graph.failure);
+      await this.inspectFailedNetApiCall("getLoadedAddonGraph", graph.failure);
       this.record(
         "getLoadedAddonGraph",
         graph.failure.category,
@@ -361,25 +373,99 @@ export class WorkbenchGateway {
     handler?: string,
     statusResult?: WorkbenchGatewayResult<WorkbenchStatus>,
   ): Promise<WorkbenchNetApiFailureDiagnosis | undefined> {
+    diagnostic("workbenchNetApiDiagnosisStarted", {
+      handler: handler ?? "any",
+      statusProvided: statusResult !== undefined,
+    });
     const status = statusResult ?? await this.getStatus();
     if (status.ok) {
       if (!status.value.isRunning) {
+        diagnostic("workbenchNetApiDiagnosisWorkbenchNotRunning");
         return undefined;
       }
+      diagnostic("workbenchNetApiDiagnosisStatus", {
+        isRunning: true,
+        scriptsCompiled: status.value.scriptsCompiled,
+      });
     } else {
+      diagnostic("workbenchNetApiDiagnosisStatusFailure", {
+        category: status.failure.category,
+      });
       const process = await this.getProcessStatus();
-      if (!process.ok || !process.value.isOpen) {
+      if (!process.ok) {
+        diagnostic("workbenchNetApiDiagnosisProcessFailure", {
+          category: process.failure.category,
+        });
+        return undefined;
+      }
+      diagnostic("workbenchNetApiDiagnosisProcessStatus", {
+        isOpen: process.value.isOpen,
+      });
+      if (!process.value.isOpen) {
+        diagnostic("workbenchNetApiDiagnosisWorkbenchNotRunning");
         return undefined;
       }
     }
     const logs = await this.readWorkbenchLogs();
-    if (
-      logs.ok &&
-      workbenchLogReportsMissingHandler(logs.value.lines, handler)
-    ) {
-      return "scripts-failing";
+    if (!logs.ok) {
+      diagnostic("workbenchNetApiDiagnosisLogFailure", {
+        category: logs.failure.category,
+      });
+      return undefined;
     }
-    return undefined;
+    const matched = workbenchLogReportsMissingHandler(logs.value.lines, handler);
+    diagnostic("workbenchNetApiDiagnosisLogsRead", {
+      source: logs.value.source,
+      lineCount: logs.value.lines.length,
+      markerCount: logs.value.markers.length,
+      truncated: logs.value.truncated,
+      missingHandlerMatched: matched,
+    });
+    return matched ? "scripts-failing" : undefined;
+  }
+
+  private async inspectFailedNetApiCall(
+    capability: string,
+    failure: WorkbenchGatewayFailure,
+    statusResult?: WorkbenchGatewayResult<WorkbenchStatus>,
+  ): Promise<void> {
+    diagnostic("workbenchNetApiFailureInspectionStarted", {
+      capability,
+      category: failure.category,
+      statusProvided: statusResult !== undefined,
+    });
+    if (this.failureDiagnosisInProgress) {
+      diagnostic("workbenchNetApiFailureInspectionSkipped", {
+        capability,
+        reason: "diagnosis-in-progress",
+      });
+      return;
+    }
+    this.failureDiagnosisInProgress = true;
+    try {
+      const diagnosis = await this.diagnoseNetApiFailure(undefined, statusResult);
+      diagnostic("workbenchNetApiFailureInspectionCompleted", {
+        capability,
+        diagnosis: diagnosis ?? "none",
+      });
+      if (!diagnosis) {
+        return;
+      }
+      try {
+        this.options.onNetApiFailure?.(diagnosis);
+        diagnostic("workbenchNetApiFailureNotificationDispatched", {
+          capability,
+          diagnosis,
+        });
+      } catch {
+        diagnostic("workbenchNetApiFailureNotificationFailed", {
+          capability,
+          diagnosis,
+        });
+      }
+    } finally {
+      this.failureDiagnosisInProgress = false;
+    }
   }
 
   private invokeStatus(
@@ -644,12 +730,26 @@ export async function invokeWorkbenchPrivateApi(
   action: WorkbenchPrivateApiCommand,
   deadlineMs: number,
 ): Promise<WorkbenchPrivateApiResult<unknown>> {
+  diagnostic("workbenchNetApiPrivateCallStarted", {
+    action,
+    endpointPort: endpoint.port,
+    deadlineMs,
+  });
   const endpointFailure = validateEndpoint(endpoint);
   if (endpointFailure) {
+    diagnostic("workbenchNetApiPrivateCallRejected", {
+      action,
+      category: endpointFailure.category,
+    });
     return { ok: false, failure: endpointFailure };
   }
   const executable = await serverPath;
   if (!executable) {
+    diagnostic("workbenchNetApiPrivateCallRejected", {
+      action,
+      category: "unavailable",
+      reason: "server-executable-unavailable",
+    });
     return failure("unavailable", "Restart the extension and retry.");
   }
   return new Promise((resolve) => {
@@ -685,6 +785,18 @@ export async function invokeWorkbenchPrivateApi(
           Date.now(),
         );
         if (error) {
+          diagnostic("workbenchNetApiPrivateCallCompleted", {
+            action,
+            outcome: "process-error",
+            category:
+              error.killed || error.code === "ETIMEDOUT"
+                ? "timeout"
+                : "unavailable",
+            killed: error.killed === true,
+            errorCode: typeof error.code === "string" ? error.code : undefined,
+            stdoutBytes: Buffer.byteLength(stdout, "utf8"),
+            callbackMs: processTiming.callbackMs,
+          });
           resolve({
             ...failure(
               error.killed || error.code === "ETIMEDOUT"
@@ -708,9 +820,22 @@ export async function invokeWorkbenchPrivateApi(
             ...decodePrivateApiTiming(result.timing),
           };
           if (result.ok) {
+            diagnostic("workbenchNetApiPrivateCallCompleted", {
+              action,
+              outcome: "success",
+              stdoutBytes: Buffer.byteLength(stdout, "utf8"),
+              callbackMs: timing.callbackMs,
+            });
             resolve({ ok: true, value: result.value, timing });
             return;
           }
+          diagnostic("workbenchNetApiPrivateCallCompleted", {
+            action,
+            outcome: "gateway-failure",
+            category: result.failure?.category ?? "protocol",
+            stdoutBytes: Buffer.byteLength(stdout, "utf8"),
+            callbackMs: timing.callbackMs,
+          });
           resolve({
             ...failure(
               result.failure?.category ?? "protocol",
@@ -719,6 +844,13 @@ export async function invokeWorkbenchPrivateApi(
             timing,
           });
         } catch {
+          diagnostic("workbenchNetApiPrivateCallCompleted", {
+            action,
+            outcome: "invalid-json",
+            category: "protocol",
+            stdoutBytes: Buffer.byteLength(stdout, "utf8"),
+            callbackMs: processTiming.callbackMs,
+          });
           resolve({
             ...failure("protocol", "Restart Workbench and retry the request."),
             timing: processTiming,

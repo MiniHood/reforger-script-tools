@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { diagnostic } from '../diagnostics/diagnostics';
 import type { WorkbenchNetApiFailureDiagnosis } from './gateway/workbenchGateway';
 
 let scriptsFailureNotificationShown = false;
@@ -9,7 +10,17 @@ export function updateWorkbenchFailureNotification(
 	if (diagnosis === 'scripts-failing') {
 		if (!scriptsFailureNotificationShown) {
 			scriptsFailureNotificationShown = true;
-			void vscode.window.showWarningMessage('Workbench scripts are failing.');
+			diagnostic('workbenchNetApiFailureNotificationRequested', { diagnosis });
+			void vscode.window.showWarningMessage('Workbench scripts are failing.')
+				.then(
+					selection => diagnostic('workbenchNetApiFailureNotificationResolved', {
+						diagnosis,
+						selected: selection !== undefined,
+					}),
+					() => diagnostic('workbenchNetApiFailureNotificationRejected', { diagnosis }),
+				);
+		} else {
+			diagnostic('workbenchNetApiFailureNotificationSuppressed', { diagnosis });
 		}
 		return;
 	}

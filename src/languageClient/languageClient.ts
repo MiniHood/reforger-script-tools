@@ -44,6 +44,7 @@ import {
 import { WorkbenchGateway } from "../workbenchNetApi/gateway/workbenchGateway";
 import {
   resetWorkbenchFailureNotification,
+  updateWorkbenchFailureNotification,
 } from "../workbenchNetApi/workbenchFailureNotification";
 import { registerHtmlHoverBridge } from "./hoverBridge";
 import {
@@ -644,6 +645,7 @@ async function resolveWorkbenchLoadedAddonInventory(
         timing: record.timing ? JSON.stringify(record.timing) : undefined,
       });
     },
+    onNetApiFailure: diagnosis => updateWorkbenchFailureNotification(diagnosis),
   });
   const result = await gateway.getLoadedAddonGraph();
   if (!result.ok) {

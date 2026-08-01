@@ -82,6 +82,21 @@ suite("Workbench Gateway", () => {
     );
   });
 
+  test("dispatches a diagnosed bridge failure through the Gateway callback", async () => {
+    const diagnoses: string[] = [];
+    const gateway = new WorkbenchGateway({
+      enabled: true,
+      endpoint: { host: "192.0.2.1", port: 5775 },
+      onNetApiFailure: diagnosis => diagnoses.push(diagnosis),
+    });
+    gateway.diagnoseNetApiFailure = async () => "scripts-failing";
+
+    const result = await gateway.getStatus();
+
+    assert.strictEqual(result.ok, false);
+    assert.deepStrictEqual(diagnoses, ["scripts-failing"]);
+  });
+
   test("gets compiler readiness through the documented NET API framing", async () => {
     const peer = await startNetApiPeer((request) => {
       assert.strictEqual(request.protocolVersion, 1);
@@ -417,6 +432,7 @@ suite("Workbench Gateway", () => {
         endpoint: { host: "127.0.0.1", port: peer.port },
         deadlines: { getStatusMs: 35 },
       });
+      gateway.diagnoseNetApiFailure = async () => undefined;
       const result = await gateway.getStatus();
 
       assert.strictEqual(result.ok, false);

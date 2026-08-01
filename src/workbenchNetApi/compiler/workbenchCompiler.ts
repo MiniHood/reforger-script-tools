@@ -182,7 +182,11 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		private readonly integration?: WorkbenchIntegrationCoordinator,
 		private readonly onWorkbenchConnected?: () => void,
 	) {
-		this.gateway = createGateway(this.configuration, this.serverPath);
+		this.gateway = createGateway(
+			this.configuration,
+			this.serverPath,
+			diagnosis => this.updateScriptsFailureNotification(diagnosis),
+		);
 	}
 
 	public start(extensionMode: vscode.ExtensionMode): void {
@@ -254,7 +258,11 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		}
 		this.configurationGeneration += 1;
 		this.configuration = readConfiguration();
-		this.gateway = createGateway(this.configuration, this.serverPath);
+		this.gateway = createGateway(
+			this.configuration,
+			this.serverPath,
+			diagnosis => this.updateScriptsFailureNotification(diagnosis),
+		);
 		this.integration?.onWorkbenchConfigurationChanged(
 			this.configuration.enabled,
 			isWorkbenchEnablementExplicitlyDisabled(),
@@ -730,16 +738,10 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		if (!result.ok) {
 			this.integration?.onWorkbenchDisconnected();
 			this.lastStatus = undefined;
-			const diagnosis = await this.gateway.diagnoseNetApiFailure(undefined, result);
-			this.updateScriptsFailureNotification(diagnosis);
 			this.noteFailure(result.failure);
 			this.scheduleProbe(unavailableRetryMs, generation);
 			return;
 		}
-		const diagnosis = result.value.isRunning
-			? await this.gateway.diagnoseNetApiFailure(undefined, result)
-			: undefined;
-		this.updateScriptsFailureNotification(diagnosis);
 		const becameConnected = workbenchConnectionStarted(this.lastStatus, result.value);
 		this.lastFailure = undefined;
 		this.lastStatus = result.value;
@@ -932,6 +934,7 @@ function isWorkbenchEnablementExplicitlyDisabled(): boolean {
 function createGateway(
 	configuration: WorkbenchConfiguration,
 	serverPath: Promise<string | undefined>,
+	onNetApiFailure: (diagnosis: 'scripts-failing') => void,
 ): WorkbenchGateway {
 	return new WorkbenchGateway({
 		enabled: configuration.enabled,
@@ -948,6 +951,7 @@ function createGateway(
 				timing: record.timing ? JSON.stringify(record.timing) : undefined,
 			});
 		},
+		onNetApiFailure,
 	});
 }
 

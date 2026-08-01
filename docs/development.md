@@ -325,6 +325,21 @@ outcomes. The compiler tests run in the Extension Development Host with
 `src/test/workspace` opened as the single addon workspace. Use a focused
 iteration command such as:
 
+For a live NET API failure investigation, enable
+`reforgerScriptTools.diagnostics.enabled`, reload VS Code, reproduce one
+failure, and inspect the extension diagnostic JSONL file in the extension's
+global-storage `logs` directory. The trace records the sanitized action and
+deadline, child-process outcome, failure category, failure-inspection start and
+completion, Workbench process state, log source/result, missing-handler match,
+and notification dispatch. It never records NET API payloads, source text, or
+raw Workbench log lines. The important event sequence is
+`workbenchNetApiPrivateCallStarted`, `workbenchNetApiPrivateCallCompleted`,
+`workbenchNetApiFailureInspectionStarted`,
+`workbenchNetApiDiagnosisLogsRead`,
+`workbenchNetApiFailureInspectionCompleted`, and
+`workbenchNetApiFailureNotificationDispatched`; the first missing event
+identifies the boundary where the report disappears.
+
 ```powershell
 npm run compile-tests
 node esbuild.js
