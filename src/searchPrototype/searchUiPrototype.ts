@@ -272,8 +272,8 @@ h1 { font-size: 24px; margin: 6px 0 8px; }
 h2 { font-size: 16px; margin-bottom: 6px; }
 h3 { font-size: 13px; margin: 0 0 4px; }
 .intro { max-width: 780px; color: var(--muted); line-height: 1.5; margin-bottom: 20px; }
-.toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; }
-.toolbar input { flex: 1; min-width: 160px; border: 1px solid var(--border); background: var(--alt); padding: 9px 11px; outline: none; }
+.toolbar { display: flex; gap: 8px; align-items: center; max-width: 680px; margin-bottom: 14px; }
+.toolbar input { flex: 1 1 620px; width: 620px; max-width: 100%; min-width: 160px; border: 1px solid var(--border); background: var(--alt); padding: 9px 11px; outline: none; }
 .toolbar input:focus { border-color: var(--accent); }
 .layout { display: grid; grid-template-columns: 170px 1fr; gap: 18px; }
 .source-rail { height: fit-content; border: 1px solid var(--border); padding: 10px; background: var(--panel); }
