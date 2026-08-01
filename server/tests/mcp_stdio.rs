@@ -84,6 +84,22 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         initialize.pointer("/result/serverInfo/name"),
         Some(&json!("reforger-script-tools"))
     );
+    let instructions = initialize
+        .pointer("/result/instructions")
+        .and_then(Value::as_str)
+        .expect("server instructions");
+    for guidance in [
+        "exact declarations",
+        "workspace symbols",
+        "implementation examples",
+        "Official Wiki",
+        "copy inspection and read handoffs unchanged",
+    ] {
+        assert!(
+            instructions.contains(guidance),
+            "missing routing guidance: {guidance}"
+        );
+    }
 
     client.send(json!({
         "jsonrpc": "2.0",
@@ -96,8 +112,14 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tools/list result");
-    assert_eq!(listed.len(), 73);
-    assert_eq!(listed[0].get("name"), Some(&json!("game_data_status")));
+    let tool = |name: &str| {
+        listed
+            .iter()
+            .find(|tool| tool.get("name") == Some(&json!(name)))
+            .unwrap_or_else(|| panic!("missing tool {name}"))
+    };
+    assert_eq!(listed.len(), 81);
+    let game_data_status = tool("game_data_status");
     assert!(listed
         .iter()
         .any(|tool| tool.get("name") == Some(&json!("workbench_convert_shape_points"))));
@@ -108,66 +130,60 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .iter()
         .any(|tool| tool.get("name") == Some(&json!("workbench_resample_polyline"))));
     assert_eq!(
-        listed[0].pointer("/annotations/readOnlyHint"),
+        game_data_status.pointer("/annotations/readOnlyHint"),
         Some(&json!(true))
     );
     assert_eq!(
-        listed[0].pointer("/annotations/openWorldHint"),
+        game_data_status.pointer("/annotations/openWorldHint"),
         Some(&json!(false))
     );
     assert_eq!(
-        listed[0].pointer("/inputSchema/additionalProperties"),
+        game_data_status.pointer("/inputSchema/additionalProperties"),
         Some(&json!(false))
     );
-    assert!(listed[0].get("outputSchema").is_some());
+    assert!(game_data_status.get("outputSchema").is_some());
+    let game_data_symbols = tool("search_game_data_symbols");
     assert_eq!(
-        listed[1].get("name"),
+        game_data_symbols.get("name"),
         Some(&json!("search_game_data_symbols"))
     );
     assert_eq!(
-        listed[1].pointer("/annotations/readOnlyHint"),
+        game_data_symbols.pointer("/annotations/readOnlyHint"),
         Some(&json!(true))
     );
     assert_eq!(
-        listed[1].pointer("/annotations/openWorldHint"),
+        game_data_symbols.pointer("/annotations/openWorldHint"),
         Some(&json!(false))
     );
     assert_eq!(
-        listed[1].pointer("/inputSchema/additionalProperties"),
+        game_data_symbols.pointer("/inputSchema/additionalProperties"),
         Some(&json!(false))
     );
     assert_eq!(
-        listed[1].pointer("/inputSchema/required/0"),
+        game_data_symbols.pointer("/inputSchema/required/0"),
         Some(&json!("query"))
     );
+    for name in [
+        "search_game_data_examples",
+        "inspect_game_data_symbol",
+        "list_game_data_symbol_members",
+        "query_game_data_symbol_relationships",
+        "read_game_data_source",
+    ] {
+        tool(name);
+    }
+    tool("read_workspace_source");
+    let official_wiki_status = tool("official_wiki_status");
     assert_eq!(
-        listed[2].get("name"),
-        Some(&json!("search_game_data_examples"))
-    );
-    assert_eq!(
-        listed[3].get("name"),
-        Some(&json!("inspect_game_data_symbol"))
-    );
-    assert_eq!(
-        listed[4].get("name"),
-        Some(&json!("list_game_data_symbol_members"))
-    );
-    assert_eq!(
-        listed[5].get("name"),
-        Some(&json!("query_game_data_symbol_relationships"))
-    );
-    assert_eq!(listed[6].get("name"), Some(&json!("read_game_data_source")));
-    assert_eq!(listed[7].get("name"), Some(&json!("official_wiki_status")));
-    assert_eq!(
-        listed[7].pointer("/annotations/readOnlyHint"),
+        official_wiki_status.pointer("/annotations/readOnlyHint"),
         Some(&json!(true))
     );
     assert_eq!(
-        listed[7].pointer("/inputSchema/additionalProperties"),
+        official_wiki_status.pointer("/inputSchema/additionalProperties"),
         Some(&json!(false))
     );
-    assert_eq!(listed[8].get("name"), Some(&json!("search_official_wiki")));
-    assert_eq!(listed[9].get("name"), Some(&json!("read_official_wiki")));
+    tool("search_official_wiki");
+    tool("read_official_wiki");
     for name in [
         "workbench_status",
         "workbench_validate_scripts",
@@ -215,7 +231,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .iter()
         .any(|tool| tool.get("name") == Some(&json!("workbench_save_world"))));
     assert_eq!(
-        listed[12].pointer("/annotations/destructiveHint"),
+        tool("workbench_delete_entity").pointer("/annotations/destructiveHint"),
         Some(&json!(true))
     );
 
@@ -590,27 +606,22 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tool catalogue");
-    assert_eq!(listed.len(), 73);
-    assert_eq!(
-        listed[2].get("name"),
-        Some(&json!("search_game_data_examples"))
-    );
-    assert_eq!(
-        listed[4].get("name"),
-        Some(&json!("list_game_data_symbol_members"))
-    );
-    assert_eq!(
-        listed[5].get("name"),
-        Some(&json!("query_game_data_symbol_relationships"))
-    );
-    assert!(listed[2]["description"]
-        .as_str()
-        .is_some_and(|description| {
-            description.contains("replication")
-                && description.contains("entity-lifecycle")
-                && description.contains("widget-creation")
-        }));
-    let inspection_schema = &listed[3]["outputSchema"]["properties"];
+    let tool = |name: &str| {
+        listed
+            .iter()
+            .find(|tool| tool.get("name") == Some(&json!(name)))
+            .unwrap_or_else(|| panic!("missing tool {name}"))
+    };
+    assert_eq!(listed.len(), 81);
+    let examples = tool("search_game_data_examples");
+    tool("list_game_data_symbol_members");
+    tool("query_game_data_symbol_relationships");
+    assert!(examples["description"].as_str().is_some_and(|description| {
+        description.contains("replication")
+            && description.contains("entity-lifecycle")
+            && description.contains("widget-creation")
+    }));
+    let inspection_schema = &tool("inspect_game_data_symbol")["outputSchema"]["properties"];
     for field in [
         "baseType",
         "type",
@@ -1226,6 +1237,53 @@ fn unavailable_status_and_malformed_calls_are_sanitized_and_process_isolated() {
 }
 
 #[test]
+fn workspace_search_returns_a_revision_bound_source_handoff() {
+    let fixture = TempFixture::new("workspace_search");
+    let scripts = fixture.path().join("Scripts");
+    fs::create_dir_all(&scripts).expect("create workspace scripts");
+    fs::write(
+        scripts.join("Example.c"),
+        "class Example { void Run() {} }\n",
+    )
+    .expect("write workspace script");
+    let mut client = McpClient::spawn(&[
+        "mcp",
+        "--workspace-scripts",
+        scripts.to_str().expect("utf-8 workspace scripts"),
+    ]);
+    client.initialize(1);
+    client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_workspace_symbols","arguments":{"query":"Run"}}}));
+    let page = client
+        .response(2)
+        .pointer("/result/structuredContent")
+        .cloned()
+        .expect("workspace search page");
+    assert_eq!(page.pointer("/results/0/name"), Some(&json!("Run")));
+    assert_eq!(
+        page.pointer("/results/0/sourceCategory"),
+        Some(&json!("workspace"))
+    );
+    let read_input = page
+        .pointer("/results/0/readSourceInput")
+        .cloned()
+        .expect("workspace source handoff");
+    client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_workspace_source","arguments":read_input}}));
+    assert_eq!(
+        client
+            .response(3)
+            .pointer("/result/structuredContent/content"),
+        Some(&json!("class Example { void Run() {} }\n"))
+    );
+    client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"search_workspace_symbols","arguments":{"query":"Run","owner":"Example"}}}));
+    assert_eq!(
+        client.response(4).pointer("/error/code"),
+        Some(&json!(-32602))
+    );
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
 fn search_official_wiki_projects_validated_sections_and_keeps_the_session_healthy() {
     let fixture = TempFixture::new("official_wiki_search");
     let wiki_root = fixture.path().join("official-wiki");
@@ -1250,6 +1308,20 @@ fn search_official_wiki_projects_validated_sections_and_keeps_the_session_health
     assert_eq!(page.get("returned"), Some(&json!(1)));
     assert_eq!(page.get("total"), Some(&json!(2)));
     assert_eq!(page.pointer("/results/0/heading"), Some(&json!("Needle")));
+    let matched_line = page
+        .pointer("/results/0/matchedLine")
+        .and_then(Value::as_u64)
+        .expect("matched line evidence");
+    let excerpt_start = page
+        .pointer("/results/0/excerptStartLine")
+        .and_then(Value::as_u64)
+        .expect("excerpt start line evidence");
+    let excerpt_end = page
+        .pointer("/results/0/excerptEndLine")
+        .and_then(Value::as_u64)
+        .expect("excerpt end line evidence");
+    assert!(excerpt_start <= matched_line && matched_line <= excerpt_end);
+    assert!(page.pointer("/results/0/excerpt").is_some());
     assert_eq!(
         page.pointer("/results/0/readInput/relativePath"),
         Some(&json!("Guides/Guide.md"))

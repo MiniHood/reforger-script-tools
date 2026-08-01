@@ -3,7 +3,7 @@
 
 [Back to the MCP API router](../../mcp-api.md)
 
-Search parser-published curated, bounded generated and handwritten Reforger Game Data examples by topic and optional subtopic. The current catalogue supports resource-loading/spawn-prefab, replication/rpc-authority, entity-lifecycle/event-mask, ui/widget-creation. This operation is unavailable until the parser-owned cache publishes source evidence; MCP never tokenizes or reads Game Data source files itself.
+Search parser-published curated, bounded generated and handwritten Reforger Game Data examples by topic and optional subtopic. The current catalogue supports resource-loading (subtopics: spawn-prefab), replication (subtopics: rpc-authority), entity-lifecycle (subtopics: event-mask), ui (subtopics: widget-creation). This operation is unavailable until the parser-owned cache publishes source evidence; MCP never tokenizes or reads Game Data source files itself.
 
 ### Annotations
 

@@ -87,3 +87,6 @@ implementation slice is progress, not a completed ticket.
   examples for future evaluation; it does not define Reforger MCP architecture.
 - [Official Wiki Corpus report](research/official-wiki-corpus-report.md): validated
   packaged-corpus coverage, MCP retrieval evidence, and AI-use limits.
+- [MCP search path-forward research](research/mcp-search-path-forward-research.md):
+  proposed phases for workspace semantic search, text evidence, Wiki match
+  quality, and AI routing.

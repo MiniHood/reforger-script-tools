@@ -223,4 +223,4 @@ List direct members of one revision-bound workspace symbol with semantic-kind fi
 
 ### Stable failures
 
-Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+Workspace tools return structured tool errors with a stable code and retry guidance. They never expose physical workspace paths or Workbench log references.

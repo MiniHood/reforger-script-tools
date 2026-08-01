@@ -124,6 +124,14 @@ Search validated packaged Official Wiki Markdown directly for deterministic, sec
         "excerpt": {
           "type": "string"
         },
+        "excerptEndLine": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "excerptStartLine": {
+          "minimum": 0,
+          "type": "integer"
+        },
         "heading": {
           "type": "string"
         },
@@ -135,6 +143,13 @@ Search validated packaged Official Wiki Markdown directly for deterministic, sec
             "type": "string"
           },
           "type": "array"
+        },
+        "matchedLine": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "readInput": {
           "$ref": "#/$defs/OfficialWikiReadInput"
@@ -160,6 +175,8 @@ Search validated packaged Official Wiki Markdown directly for deterministic, sec
         "startLine",
         "endLine",
         "excerpt",
+        "excerptStartLine",
+        "excerptEndLine",
         "sourceUrl",
         "matchedFields",
         "matchKind",
@@ -220,7 +237,7 @@ Search validated packaged Official Wiki Markdown directly for deterministic, sec
 
 - `query` is required, normalized whitespace, and limited to 256 characters. `pathPrefix` is an optional safe logical subtree filter.
 - `limit` defaults to 20 and clamps visibly to 1 through 100; cursors are opaque, revision-bound, and limited to 2 KiB.
-- Every normalized query term must match in one heading section plus the page title/path. At most one hit is returned per matching section.
+- Every normalized query term must match within the same page's logical path, title, or one heading section (heading or body). At most one hit is returned per matching section.
 - Fixed ranking favors exact title/phrase, path, heading, then body matches; logical path and start line break ties. No numeric relevance score is returned.
 - Results are direct UTF-8 Markdown projections, exclude `wiki-index.md`, verify validation hashes, and remain below 256 KiB. A changed page returns `official_wiki_changed`.
 - Excerpts have at most 12 complete lines and 4 KiB; `readInput` can be copied to `read_official_wiki` when that tool is available.
@@ -235,7 +252,7 @@ Search validated packaged Official Wiki Markdown directly for deterministic, sec
 ### Example call
 
 ```json
-{"name":"search_official_wiki","arguments":{"query":"Game Master","pathPrefix":"Guides/","limit":20}}
+{"name":"search_official_wiki","arguments":{"query":"Game Master","pathPrefix":"Modding/","limit":20}}
 ```
 
 ### Result handoff

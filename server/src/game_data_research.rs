@@ -218,6 +218,27 @@ pub fn example_search_description() -> String {
     )
 }
 
+#[cfg(test)]
+mod description_tests {
+    use super::example_search_description;
+
+    #[test]
+    fn example_description_lists_root_topics_and_subtopics() {
+        let description = example_search_description();
+        for topic in [
+            "resource-loading (subtopics: spawn-prefab)",
+            "replication (subtopics: rpc-authority)",
+            "entity-lifecycle (subtopics: event-mask)",
+            "ui (subtopics: widget-creation)",
+        ] {
+            assert!(
+                description.contains(topic),
+                "missing topic guidance {topic}"
+            );
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameDataExampleSearchRequest {
     pub topic: String,
@@ -1329,10 +1350,20 @@ fn example_topic(
 fn supported_example_topics() -> String {
     EXAMPLE_TOPICS
         .iter()
-        .filter_map(|definition| {
-            definition
-                .subtopic
-                .map(|subtopic| format!("{}/{}", definition.topic, subtopic))
+        .filter(|definition| definition.subtopic.is_none())
+        .map(|definition| {
+            let subtopics = EXAMPLE_TOPICS
+                .iter()
+                .filter(|candidate| {
+                    candidate.topic == definition.topic && candidate.subtopic.is_some()
+                })
+                .filter_map(|candidate| candidate.subtopic)
+                .collect::<Vec<_>>();
+            if subtopics.is_empty() {
+                definition.topic.to_string()
+            } else {
+                format!("{} (subtopics: {})", definition.topic, subtopics.join(", "))
+            }
         })
         .collect::<Vec<_>>()
         .join(", ")

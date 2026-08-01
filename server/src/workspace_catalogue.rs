@@ -1,5 +1,6 @@
 use crate::game_data_inspection::{
-    inspect, GameDataInspectionError, GameDataInspectionOutput,
+    inspect, read_source, GameDataInspectionError, GameDataInspectionOutput,
+    GameDataSourceReadRequest,
 };
 use crate::game_data_research::{
     list_members, query_relationships, GameDataMemberPage, GameDataMemberRequest,
@@ -10,7 +11,9 @@ use crate::game_data_search::{
     SourceLineStarts,
 };
 use crate::index::{SourceFileId, SymbolIndex};
-use crate::index_build::{build_index_with_control, IndexBuildConfig, IndexBuildControl, IndexSourceRoot};
+use crate::index_build::{
+    build_index_with_control, IndexBuildConfig, IndexBuildControl, IndexSourceRoot,
+};
 use crate::model::{SourceKind, SOURCE_PRIORITY_WORKSPACE};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -90,6 +93,22 @@ impl WorkspaceCatalogue {
         .map_err(WorkspaceCatalogueError::Inspection)
     }
 
+    pub fn read_source(
+        &self,
+        control: &IndexBuildControl,
+        request: GameDataSourceReadRequest,
+    ) -> Result<serde_json::Value, WorkspaceCatalogueError> {
+        let snapshot = self.snapshot(control)?;
+        read_source(
+            &snapshot.index,
+            control,
+            &snapshot.revision,
+            &snapshot.sources,
+            request,
+        )
+        .map_err(WorkspaceCatalogueError::Inspection)
+    }
+
     pub fn list_members(
         &self,
         control: &IndexBuildControl,
@@ -160,11 +179,11 @@ impl WorkspaceCatalogue {
             control
                 .check()
                 .map_err(WorkspaceCatalogueError::Initialization)?;
-            let path = file
-                .metadata
-                .absolute_path
-                .as_ref()
-                .ok_or_else(|| WorkspaceCatalogueError::Initialization("workspace index file has no physical path".to_string()))?;
+            let path = file.metadata.absolute_path.as_ref().ok_or_else(|| {
+                WorkspaceCatalogueError::Initialization(
+                    "workspace index file has no physical path".to_string(),
+                )
+            })?;
             let bytes = fs::read(path).map_err(|error| {
                 WorkspaceCatalogueError::Initialization(format!(
                     "failed to read indexed workspace file {}: {error}",
@@ -174,7 +193,10 @@ impl WorkspaceCatalogue {
             hasher.update(path.to_string_lossy().as_bytes());
             hasher.update(&bytes);
             let source = String::from_utf8_lossy(&bytes).into_owned();
-            starts.insert(file.id, SourceLineStarts::from_cached_starts(cached_starts.clone()));
+            starts.insert(
+                file.id,
+                SourceLineStarts::from_cached_starts(cached_starts.clone()),
+            );
             sources.insert(file.id, Arc::<str>::from(source));
         }
         let snapshot = Arc::new(WorkspaceSnapshot {
@@ -204,11 +226,7 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir_all(&root).unwrap();
-        fs::write(
-            root.join("Example.c"),
-            "class Example { void Run() {} }\n",
-        )
-        .unwrap();
+        fs::write(root.join("Example.c"), "class Example { void Run() {} }\n").unwrap();
         let catalogue = WorkspaceCatalogue::new(WorkspaceCatalogueConfig {
             roots: vec![root.clone()],
         });

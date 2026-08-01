@@ -153,7 +153,7 @@ Read bounded, validated verbatim Markdown from the packaged Official Wiki Corpus
 ### Example call
 
 ```json
-{"name":"read_official_wiki","arguments":{"corpusRevision":"ow1:...","relativePath":"Guides/Game_Master.md","startLine":1,"lineCount":200}}
+{"name":"read_official_wiki","arguments":{"corpusRevision":"ow1:...","relativePath":"Modding/Game Master/Tutorials/Game Master Composition Configuration Tutorial.md","startLine":1,"lineCount":200}}
 ```
 
 ### Result handoff

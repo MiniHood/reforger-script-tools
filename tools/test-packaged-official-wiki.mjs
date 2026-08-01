@@ -10,7 +10,6 @@ const vsix = join(sandbox, 'reforger-script-tools.vsix');
 const installed = join(sandbox, 'installed client é space');
 const clientWorkingDirectory = join(sandbox, 'independent cwd Ω');
 const gameDataScripts = join(sandbox, 'Game Data é space', 'scripts');
-const gameDataCache = join(sandbox, 'Game Data é space', 'cache', 'index.bin');
 
 try {
   run('npx', ['--no-install', 'vsce', 'package', '--no-dependencies', '--out', vsix]);
@@ -40,7 +39,7 @@ try {
   const installTool = listed.find(tool => tool.name === 'workbench_install_bridge');
   const stopTool = listed.find(tool => tool.name === 'workbench_stop');
   const restartTool = listed.find(tool => tool.name === 'workbench_restart');
-  if (listed.length !== 19
+  if (listed.length !== 81
     || evidenceTools.some(tool => tool.annotations?.readOnlyHint !== true || tool.annotations?.openWorldHint !== false)
     || installTool?.annotations?.destructiveHint !== true
     || stopTool?.annotations?.destructiveHint !== true
@@ -64,43 +63,39 @@ try {
     throw new Error(`Installed wiki read did not complete the search handoff: ${wikiReadSession.stdout}`);
   }
   const gameDataReadySession = runMcp(executable, [
-    '--game-data-scripts', gameDataScripts,
-    '--index-cache', gameDataCache,
+    '--workspace-scripts', gameDataScripts,
   ], clientWorkingDirectory, [
-    toolCallRequest(2, 'game_data_status', {}),
+    toolCallRequest(2, 'search_workspace_symbols', { query: 'PackagedFixture' }),
   ]);
-  if (response(gameDataReadySession, 2).result.structuredContent?.available !== true) {
-    throw new Error(`Installed Game Data catalogue did not become ready: ${gameDataReadySession.stdout}`);
+  if (response(gameDataReadySession, 2).result.structuredContent?.results?.[0]?.name !== 'PackagedFixture') {
+    throw new Error(`Installed workspace catalogue did not become ready: ${gameDataReadySession.stdout}`);
   }
   const gameDataSession = runMcp(executable, [
-    '--game-data-scripts', gameDataScripts,
-    '--index-cache', gameDataCache,
+    '--workspace-scripts', gameDataScripts,
   ], clientWorkingDirectory, [
-    toolCallRequest(2, 'search_game_data_symbols', { query: 'PackagedFixture' }),
+    toolCallRequest(2, 'search_workspace_symbols', { query: 'PackagedFixture' }),
   ]);
   const gameDataSearch = response(gameDataSession, 2).result.structuredContent;
-  assertUnderFiveSeconds('ready Game Data search', gameDataSession);
+  assertUnderFiveSeconds('ready workspace search', gameDataSession);
   const gameDataHit = gameDataSearch?.results?.[0];
   if (gameDataHit?.name !== 'PackagedFixture') {
-    throw new Error(`Installed Game Data search did not complete: ${gameDataSession.stdout}`);
+    throw new Error(`Installed workspace search did not complete: ${gameDataSession.stdout}`);
   }
   const gameDataInspectSession = runMcp(executable, [
-    '--game-data-scripts', gameDataScripts,
-    '--index-cache', gameDataCache,
+    '--workspace-scripts', gameDataScripts,
   ], clientWorkingDirectory, [
-    toolCallRequest(2, 'inspect_game_data_symbol', gameDataHit.inspectInput),
+    toolCallRequest(2, 'inspect_workspace_symbol', gameDataHit.inspectInput),
   ]);
   if (response(gameDataInspectSession, 2).result.structuredContent?.name !== 'PackagedFixture') {
-    throw new Error(`Installed Game Data inspection did not complete the search handoff: ${gameDataInspectSession.stdout}`);
+    throw new Error(`Installed workspace inspection did not complete the search handoff: ${gameDataInspectSession.stdout}`);
   }
   const gameDataReadSession = runMcp(executable, [
-    '--game-data-scripts', gameDataScripts,
-    '--index-cache', gameDataCache,
+    '--workspace-scripts', gameDataScripts,
   ], clientWorkingDirectory, [
-    toolCallRequest(2, 'read_game_data_source', gameDataHit.readSourceInput),
+    toolCallRequest(2, 'read_workspace_source', gameDataHit.readSourceInput),
   ]);
   if (!response(gameDataReadSession, 2).result.structuredContent?.content.includes('class PackagedFixture')) {
-    throw new Error(`Installed Game Data source read did not complete the search handoff: ${gameDataReadSession.stdout}`);
+    throw new Error(`Installed workspace source read did not complete the search handoff: ${gameDataReadSession.stdout}`);
   }
   const physicalPaths = [sandbox, installed, clientWorkingDirectory, gameDataScripts]
     .map(path => path.replaceAll('\\', '/'));
@@ -110,7 +105,7 @@ try {
       throw new Error(`Installed MCP output leaked a physical path: ${session.stdout}`);
     }
   }
-  console.log(`Verified ${Object.keys(sourcePages).length} byte-identical packaged Markdown files, 19 installed tools, and independent Game Data and Official Wiki workflows.`);
+  console.log(`Verified ${Object.keys(sourcePages).length} byte-identical packaged Markdown files, 81 installed tools, and independent workspace and Official Wiki workflows.`);
 } finally {
   rmSync(sandbox, { recursive: true, force: true });
 }

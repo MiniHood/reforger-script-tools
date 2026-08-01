@@ -113,6 +113,9 @@ pub struct OfficialWikiSearchHit {
     pub start_line: usize,
     pub end_line: usize,
     pub excerpt: String,
+    pub matched_line: Option<usize>,
+    pub excerpt_start_line: usize,
+    pub excerpt_end_line: usize,
     pub source_url: String,
     pub matched_fields: Vec<String>,
     pub match_kind: OfficialWikiMatchKind,
@@ -761,10 +764,10 @@ fn search_page(
     sections
         .into_iter()
         .filter_map(|(start, end, heading)| {
-            let body = lines
-                .get(start.saturating_sub(1)..end)
-                .unwrap_or_default()
-                .join("\n");
+            let section_start = start.saturating_sub(1).min(lines.len());
+            let section_end = end.min(lines.len()).max(section_start);
+            let section = lines.get(section_start..section_end).unwrap_or_default();
+            let body = section.join("\n");
             let path = page.logical_path.to_ascii_lowercase();
             let title = page.title.to_ascii_lowercase();
             let heading_lower = heading.to_ascii_lowercase();
@@ -801,12 +804,26 @@ fn search_page(
             } else {
                 (4, OfficialWikiMatchKind::Body)
             };
+            let matched_line = section
+                .iter()
+                .enumerate()
+                .skip(usize::from(matches!(&kind, OfficialWikiMatchKind::Body)))
+                .find_map(|(offset, line)| {
+                    let line = line.to_ascii_lowercase();
+                    terms
+                        .iter()
+                        .any(|term| line.contains(term))
+                        .then_some(section_start + offset + 1)
+                });
             let line_count = end
                 .saturating_sub(start)
                 .saturating_add(1)
                 .min(MAX_EXCERPT_LINES);
-            let excerpt =
-                bounded_excerpt(lines.get(start.saturating_sub(1)..end).unwrap_or_default());
+            let (excerpt, excerpt_start_line, excerpt_end_line) = bounded_excerpt_for_section(
+                section,
+                section_start + 1,
+                matched_line.map(|line| line.saturating_sub(1).saturating_sub(section_start)),
+            );
             Some((
                 rank,
                 OfficialWikiSearchHit {
@@ -816,6 +833,9 @@ fn search_page(
                     start_line: start,
                     end_line: end.max(start),
                     excerpt,
+                    matched_line,
+                    excerpt_start_line,
+                    excerpt_end_line,
                     source_url: page.source_url.clone(),
                     matched_fields: fields,
                     match_kind: kind,
@@ -857,6 +877,29 @@ fn bounded_excerpt(lines: &[&str]) -> String {
         excerpt.push_str(line);
     }
     excerpt
+}
+
+fn bounded_excerpt_for_section(
+    lines: &[&str],
+    section_start_line: usize,
+    focus_offset: Option<usize>,
+) -> (String, usize, usize) {
+    if lines.is_empty() {
+        return (String::new(), section_start_line, section_start_line);
+    }
+    let focus_offset = focus_offset.unwrap_or(0).min(lines.len() - 1);
+    let mut start = focus_offset.saturating_sub(MAX_EXCERPT_LINES / 2);
+    let end = (start + MAX_EXCERPT_LINES).min(lines.len());
+    if end - start < MAX_EXCERPT_LINES {
+        start = end.saturating_sub(MAX_EXCERPT_LINES);
+    }
+    let excerpt = bounded_excerpt(&lines[start..end]);
+    let excerpt_lines = excerpt.lines().count().max(1);
+    (
+        excerpt,
+        section_start_line + start,
+        section_start_line + (start + excerpt_lines - 1).min(end - 1),
+    )
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1034,6 +1077,44 @@ mod tests {
         assert_eq!(second.returned, 2);
         assert_eq!(second.results[0].heading, "Second");
         assert_eq!(second.results[1].relative_path, "Guides/Beta.md");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn body_matches_report_the_matching_line_and_excerpt_range() {
+        let root = std::env::temp_dir().join(format!(
+            "official-wiki-match-evidence-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut content = String::from(
+            "# [Long guide](https://community.bistudio.com/wiki/Arma_Reforger:Long)\n\n## Details\n",
+        );
+        for index in 0..16 {
+            content.push_str(&format!("filler line {index}\n"));
+        }
+        content.push_str("the target evidence is here\n");
+        fs::write(root.join("Long.md"), content).unwrap();
+
+        let corpus = OfficialWikiCorpus::new(root.clone());
+        let page = corpus
+            .search(OfficialWikiSearchRequest {
+                query: "details evidence".to_string(),
+                path_prefix: None,
+                limit: None,
+                cursor: None,
+            })
+            .unwrap();
+
+        let hit = &page.results[0];
+        let matched_line = hit.matched_line.expect("body match line");
+        assert!(hit.excerpt.contains("target evidence"));
+        assert!(hit.excerpt_start_line <= matched_line);
+        assert!(matched_line <= hit.excerpt_end_line);
+        assert!(hit.excerpt_start_line > hit.start_line);
+        assert!(hit.excerpt_end_line <= hit.end_line);
+
         let _ = fs::remove_dir_all(root);
     }
 
