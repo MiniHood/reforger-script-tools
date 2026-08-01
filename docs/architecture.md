@@ -82,8 +82,11 @@ If it is running, the gateway reads the latest Workbench log and matches the
 generic missing-handler marker. A status heartbeat may match any missing
 handler because the failed status call can be a symptom of a broader script
 load failure; a named custom operation may additionally require its own
-handler marker. Only that log evidence presents `Workbench scripts are
-failing.`; an API failure without that evidence does not invent a message.
+handler marker. Only that log evidence marks the persistent Workbench status as
+`Workbench API inactive` and presents the matching notification; an API
+failure without that evidence does not invent a message. A successful loaded-
+addon graph call clears the state because it proves that bridge handler is
+active again.
 
 The diagnostic logs label the two measurable ownership phases as `offline` and
 `workbench-reconciliation`. The event names and nested timings still separate

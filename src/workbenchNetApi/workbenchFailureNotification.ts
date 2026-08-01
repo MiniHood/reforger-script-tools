@@ -2,16 +2,45 @@ import * as vscode from 'vscode';
 import { diagnostic } from '../diagnostics/diagnostics';
 import type { WorkbenchNetApiFailureDiagnosis } from './gateway/workbenchGateway';
 
-let scriptsFailureNotificationShown = false;
+type WorkbenchFailureListener = (
+	diagnosis: WorkbenchNetApiFailureDiagnosis | undefined,
+) => void;
+
+let bridgeInactiveNotificationShown = false;
+let currentDiagnosis: WorkbenchNetApiFailureDiagnosis | undefined;
+const listeners = new Set<WorkbenchFailureListener>();
+
+export function onDidChangeWorkbenchFailure(
+	listener: WorkbenchFailureListener,
+): vscode.Disposable {
+	listeners.add(listener);
+	listener(currentDiagnosis);
+	return new vscode.Disposable(() => listeners.delete(listener));
+}
+
+function setCurrentDiagnosis(
+	diagnosis: WorkbenchNetApiFailureDiagnosis | undefined,
+): void {
+	if (currentDiagnosis === diagnosis) {
+		return;
+	}
+	currentDiagnosis = diagnosis;
+	for (const listener of listeners) {
+		listener(diagnosis);
+	}
+}
 
 export function updateWorkbenchFailureNotification(
 	diagnosis: WorkbenchNetApiFailureDiagnosis | undefined,
 ): void {
-	if (diagnosis === 'scripts-failing') {
-		if (!scriptsFailureNotificationShown) {
-			scriptsFailureNotificationShown = true;
+	if (diagnosis === 'bridge-inactive') {
+		setCurrentDiagnosis(diagnosis);
+		if (!bridgeInactiveNotificationShown) {
+			bridgeInactiveNotificationShown = true;
 			diagnostic('workbenchNetApiFailureNotificationRequested', { diagnosis });
-			void vscode.window.showWarningMessage('Workbench scripts are failing.')
+			void vscode.window.showErrorMessage(
+				'Workbench NET API bridge is not active. Workbench could not find a Reforger Script Tools NET API function.',
+			)
 				.then(
 					selection => diagnostic('workbenchNetApiFailureNotificationResolved', {
 						diagnosis,
@@ -24,9 +53,11 @@ export function updateWorkbenchFailureNotification(
 		}
 		return;
 	}
-	scriptsFailureNotificationShown = false;
+	bridgeInactiveNotificationShown = false;
+	setCurrentDiagnosis(undefined);
 }
 
 export function resetWorkbenchFailureNotification(): void {
-	scriptsFailureNotificationShown = false;
+	bridgeInactiveNotificationShown = false;
+	setCurrentDiagnosis(undefined);
 }

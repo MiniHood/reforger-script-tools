@@ -73,7 +73,7 @@ export interface WorkbenchLogRead {
   truncated: boolean;
 }
 
-export type WorkbenchNetApiFailureDiagnosis = "scripts-failing";
+export type WorkbenchNetApiFailureDiagnosis = "bridge-inactive";
 
 export type WorkbenchValidationProfile = "WORKBENCH";
 
@@ -421,7 +421,7 @@ export class WorkbenchGateway {
       truncated: logs.value.truncated,
       missingHandlerMatched: matched,
     });
-    return matched ? "scripts-failing" : undefined;
+    return matched ? "bridge-inactive" : undefined;
   }
 
   private async inspectFailedNetApiCall(

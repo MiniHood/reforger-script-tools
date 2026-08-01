@@ -661,6 +661,7 @@ async function resolveWorkbenchLoadedAddonInventory(
     );
     return undefined;
   }
+  resetWorkbenchFailureNotification();
   let inventory;
   try {
     inventory = await writeLoadedAddonSourceInventory(context, result.value);

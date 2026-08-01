@@ -3,9 +3,31 @@ import {
   WorkbenchGateway,
   workbenchLogReportsMissingHandler,
 } from "../workbenchNetApi/gateway/workbenchGateway";
+import {
+  onDidChangeWorkbenchFailure,
+  resetWorkbenchFailureNotification,
+  updateWorkbenchFailureNotification,
+} from "../workbenchNetApi/workbenchFailureNotification";
 import { encodeNetApiString, startNetApiPeer } from "./netApiPeer";
 
 suite("Workbench Gateway", () => {
+  teardown(() => resetWorkbenchFailureNotification());
+
+  test("publishes missing-handler evidence as a persistent bridge state", () => {
+    const diagnoses: Array<"bridge-inactive" | undefined> = [];
+    const subscription = onDidChangeWorkbenchFailure(diagnosis => {
+      diagnoses.push(diagnosis);
+    });
+    try {
+      updateWorkbenchFailureNotification("bridge-inactive");
+      resetWorkbenchFailureNotification();
+
+      assert.deepStrictEqual(diagnoses, [undefined, "bridge-inactive", undefined]);
+    } finally {
+      subscription.dispose();
+    }
+  });
+
   test("matches generic missing NET API log evidence", () => {
     const lines = [
       "01:22:48.623 NETWORK   (E): Failed to call not existing Net API function 'RST_WorkbenchOtherOperation'",
@@ -52,7 +74,7 @@ suite("Workbench Gateway", () => {
         ok: false,
         failure: { category: "unavailable", recoveryHint: "retry" },
       }),
-      "scripts-failing",
+      "bridge-inactive",
     );
   });
 
@@ -78,7 +100,7 @@ suite("Workbench Gateway", () => {
         ok: true,
         value: { isRunning: true, scriptsCompiled: true },
       }),
-      "scripts-failing",
+      "bridge-inactive",
     );
   });
 
@@ -89,12 +111,12 @@ suite("Workbench Gateway", () => {
       endpoint: { host: "192.0.2.1", port: 5775 },
       onNetApiFailure: diagnosis => diagnoses.push(diagnosis),
     });
-    gateway.diagnoseNetApiFailure = async () => "scripts-failing";
+    gateway.diagnoseNetApiFailure = async () => "bridge-inactive";
 
     const result = await gateway.getStatus();
 
     assert.strictEqual(result.ok, false);
-    assert.deepStrictEqual(diagnoses, ["scripts-failing"]);
+    assert.deepStrictEqual(diagnoses, ["bridge-inactive"]);
   });
 
   test("gets compiler readiness through the documented NET API framing", async () => {

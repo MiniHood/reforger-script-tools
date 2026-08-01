@@ -16,7 +16,10 @@ import {
 	WorkbenchStatus,
 	WorkbenchValidationResult,
 } from '../gateway/workbenchGateway';
-import { updateWorkbenchFailureNotification } from '../workbenchFailureNotification';
+import {
+	onDidChangeWorkbenchFailure,
+	updateWorkbenchFailureNotification,
+} from '../workbenchFailureNotification';
 import {
 	WorkbenchDiagnosticRange,
 	workbenchDiagnosticProjection,
@@ -174,6 +177,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private startupValidationAttempted = false;
 	private validationCompletedThisSession = false;
 	private staleReason: string | undefined;
+	private bridgeInactive = false;
 	private disposed = false;
 
 	public constructor(
@@ -185,7 +189,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.gateway = createGateway(
 			this.configuration,
 			this.serverPath,
-			diagnosis => this.updateScriptsFailureNotification(diagnosis),
+			diagnosis => this.updateBridgeFailureNotification(diagnosis),
 		);
 	}
 
@@ -197,6 +201,10 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			this.statusItem,
 			this.compilerDiagnostics,
 			this.validationOutput,
+			onDidChangeWorkbenchFailure(diagnosis => {
+				this.bridgeInactive = diagnosis === 'bridge-inactive';
+				this.setPhase(this.phase);
+			}),
 			vscode.languages.registerDocumentLinkProvider(
 				{ language: workbenchDiagnostics.outputLanguageId },
 				{
@@ -261,7 +269,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.gateway = createGateway(
 			this.configuration,
 			this.serverPath,
-			diagnosis => this.updateScriptsFailureNotification(diagnosis),
+			diagnosis => this.updateBridgeFailureNotification(diagnosis),
 		);
 		this.integration?.onWorkbenchConfigurationChanged(
 			this.configuration.enabled,
@@ -820,8 +828,8 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		}
 	}
 
-	private updateScriptsFailureNotification(
-		diagnosis: 'scripts-failing' | undefined,
+	private updateBridgeFailureNotification(
+		diagnosis: 'bridge-inactive' | undefined,
 	): void {
 		updateWorkbenchFailureNotification(diagnosis);
 	}
@@ -841,22 +849,26 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			});
 		}
 		this.phase = phase;
-		this.statusItem.backgroundColor = phase === 'unavailable'
+		this.statusItem.backgroundColor = phase === 'unavailable' || this.bridgeInactive
 			? new vscode.ThemeColor('statusBarItem.errorBackground')
 			: undefined;
 		const presentation = statusPresentation(phase);
-		const baseText = phase === 'unavailable' && this.lastFailure?.category === 'save-failed'
+		const baseText = this.bridgeInactive
+			? '$(error) Workbench API inactive'
+			: phase === 'unavailable' && this.lastFailure?.category === 'save-failed'
 			? '$(warning) Workbench save failed'
 			: presentation.text;
 		this.statusItem.text = baseText;
-		const detail = phase === 'unavailable' && this.lastFailure?.category === 'save-failed'
+		const detail = this.bridgeInactive
+			? 'Workbench reported that a Reforger Script Tools NET API function does not exist. The bridge is not active.'
+			: phase === 'unavailable' && this.lastFailure?.category === 'save-failed'
 			? 'Compiler validation stopped because the active script could not be saved.'
 			: presentation.detail;
 		const endpoint = `${this.configuration.host}:${this.configuration.port}`;
 		this.statusItem.tooltip = [
 			detail,
 			`Endpoint: ${endpoint}`,
-			...(this.lastStatus?.isRunning
+			...(!this.bridgeInactive && this.lastStatus?.isRunning
 				? [
 					'Workbench API: connected.',
 					this.lastStatus.scriptsCompiled
@@ -934,7 +946,7 @@ function isWorkbenchEnablementExplicitlyDisabled(): boolean {
 function createGateway(
 	configuration: WorkbenchConfiguration,
 	serverPath: Promise<string | undefined>,
-	onNetApiFailure: (diagnosis: 'scripts-failing') => void,
+	onNetApiFailure: (diagnosis: 'bridge-inactive') => void,
 ): WorkbenchGateway {
 	return new WorkbenchGateway({
 		enabled: configuration.enabled,
