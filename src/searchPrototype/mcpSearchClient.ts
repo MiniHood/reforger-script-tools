@@ -99,6 +99,16 @@ interface CachedSearchPage {
 	nextCursor?: string;
 }
 
+export function nearestCachedSearchPage(pages: ReadonlyMap<number, unknown>, requestedPage: number): number {
+	let nearest = 0;
+	for (const page of pages.keys()) {
+		if (page <= requestedPage && page > nearest) {
+			nearest = page;
+		}
+	}
+	return nearest;
+}
+
 export class McpSearchClient {
 	private process: ChildProcessWithoutNullStreams | undefined;
 	private receiveBuffer = Buffer.alloc(0);
@@ -158,7 +168,7 @@ export class McpSearchClient {
 			const sourceStart = Math.max(0, pageStart - sourceOffset);
 			const sourceEnd = Math.min(sourceTotal, pageEnd - sourceOffset);
 			if (response.value && sourceStart < sourceEnd) {
-				results.push(...await this.sourceRange(query, response.source, sourceStart, sourceEnd, sourceTotal, symbolKinds));
+				results.push(...await this.sourceRange(query, response.source, sourceStart, sourceEnd, symbolKinds));
 			}
 			sourceOffset += sourceTotal;
 		}
@@ -283,21 +293,20 @@ export class McpSearchClient {
 		source: SearchSource,
 		start: number,
 		end: number,
-		maxResults: number,
 		symbolKinds?: readonly SearchSymbolKind[],
 	): Promise<SearchHit[]> {
 		const results: SearchHit[] = [];
-		let sourceOffset = 0;
-		for (let pageNumber = 1; pageNumber <= Math.max(1, Math.floor(maxResults)); pageNumber += 1) {
+		const firstPageNumber = Math.floor(start / sourcePageSize) + 1;
+		const lastPageNumber = Math.floor((end - 1) / sourcePageSize) + 1;
+		for (let pageNumber = firstPageNumber; pageNumber <= lastPageNumber; pageNumber += 1) {
 			const page = await this.searchPage(query, source, sourcePageSize, pageNumber, symbolKinds);
-			const pageEnd = sourceOffset + page.results.length;
-			const resultStart = Math.max(0, start - sourceOffset);
-			const resultEnd = Math.min(page.results.length, end - sourceOffset);
+			const pageStart = (pageNumber - 1) * sourcePageSize;
+			const resultStart = Math.max(0, start - pageStart);
+			const resultEnd = Math.min(page.results.length, end - pageStart);
 			if (resultStart < resultEnd) {
 				results.push(...page.results.slice(resultStart, resultEnd));
 			}
-			sourceOffset = pageEnd;
-			if (sourceOffset >= end || !page.nextCursor || page.results.length === 0) {
+			if (!page.nextCursor || page.results.length === 0) {
 				break;
 			}
 		}
@@ -324,8 +333,13 @@ export class McpSearchClient {
 			this.searchPageCaches.set(cacheKey, pages);
 		}
 
-		let previousPage: CachedSearchPage | undefined;
-		for (let pageNumber = 1; pageNumber <= page; pageNumber += 1) {
+		const cachedPageNumber = nearestCachedSearchPage(pages, page);
+		let previousPage = cachedPageNumber > 0 ? pages.get(cachedPageNumber) : undefined;
+		if (cachedPageNumber === page && previousPage) {
+			return previousPage;
+		}
+		const firstPageToFetch = previousPage ? cachedPageNumber + 1 : 1;
+		for (let pageNumber = firstPageToFetch; pageNumber <= page; pageNumber += 1) {
 			const cached = pages.get(pageNumber);
 			if (cached) {
 				previousPage = cached;

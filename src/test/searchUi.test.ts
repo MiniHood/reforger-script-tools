@@ -1,7 +1,7 @@
 import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { formatSearchKind, normalizeSearchPage, searchKindFilters, searchToolFor } from '../searchPrototype/mcpSearchClient';
+import { formatSearchKind, nearestCachedSearchPage, normalizeSearchPage, searchKindFilters, searchToolFor } from '../searchPrototype/mcpSearchClient';
 
 const searchUiSource = fs.readFileSync(
 	path.join(__dirname, '../../src/searchPrototype/searchUiPrototype.ts'),
@@ -128,6 +128,9 @@ suite('Reforger search UI MCP mapping', () => {
 	});
 
 	test('supports cursor-backed result pages and selectable page sizes', () => {
+		assert.strictEqual(nearestCachedSearchPage(new Map([[1, {}], [32, {}], [96, {}]]), 80), 32);
+		assert.strictEqual(nearestCachedSearchPage(new Map([[1, {}], [32, {}], [96, {}]]), 96), 96);
+		assert.strictEqual(nearestCachedSearchPage(new Map([[1, {}], [32, {}], [96, {}]]), 0), 0);
 		assert.match(searchClientSource, /public async search\([\s\S]*?pageSize: number,[\s\S]*?page: number/);
 		assert.match(searchClientSource, /symbolKinds\?: readonly SearchSymbolKind\[\]/);
 		assert.match(searchClientSource, /kinds: symbolKinds/);
@@ -141,7 +144,8 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /data-page-prev/);
 		assert.match(searchUiSource, /data-page-next/);
 		assert.match(searchUiSource, /data-page-size/);
-		assert.match(searchUiSource, /<select data-page-size aria-label="Total results per page">/);
+		assert.match(searchUiSource, /<select data-page-size aria-label="Total results per page"/);
+		assert.match(searchUiSource, /data-page-size aria-label="Total results per page"' \+ \(state\.status === 'loading' \? ' disabled' : ''\)/);
 		assert.match(searchUiSource, /<span class="page-arrows"><button type="button" data-page-prev[\s\S]*data-page-next/);
 		assert.match(searchUiSource, /<select data-page-size[\s\S]*<span class="page-status"><span class="muted">Page<\/span>/);
 		assert.match(searchUiSource, /\.page-status \{ display: inline-flex; flex: 0 0 150px; align-items: center; justify-content: flex-end;/);
@@ -164,6 +168,13 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.doesNotMatch(searchUiSource, /function search\(resetPagination\) \{ if \(resetPagination\) \{ state\.page = 1; state\.total = 0; \}/);
 		assert.doesNotMatch(searchUiSource, /if \(message\.type === 'loading'\) \{[^}]*render\(\); \}/);
 		assert.match(searchUiSource, /event\.ctrlKey && event\.key === 'F3'/);
+		assert.match(searchUiSource, /if \(state\.status === 'loading'\) return;/);
+		assert.match(searchUiSource, /state\.lastSearchKey/);
+		assert.match(searchUiSource, /function requestPage\(value\) \{ if \(state\.status === 'loading'\) return;/);
+		assert.match(searchClientSource, /const cachedPageNumber = nearestCachedSearchPage\(pages, page\);/);
+		assert.match(searchClientSource, /const firstPageToFetch = previousPage \? cachedPageNumber \+ 1 : 1;/);
+		assert.match(searchClientSource, /const firstPageNumber = Math\.floor\(start \/ sourcePageSize\) \+ 1;/);
+		assert.match(searchClientSource, /const lastPageNumber = Math\.floor\(\(end - 1\) \/ sourcePageSize\) \+ 1;/);
 		assert.match(searchUiSource, /type: 'debugSnapshot'/);
 		assert.match(searchUiSource, /message\.type === 'debugSnapshot'/);
 		assert.match(searchUiSource, /searchUi\.snapshot/);
