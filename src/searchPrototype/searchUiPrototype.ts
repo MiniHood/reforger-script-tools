@@ -237,17 +237,23 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 		}
 		const language = hit.source === 'wiki' ? 'markdown' : 'enforce';
 		const documentWithLanguage = await vscode.languages.setTextDocumentLanguage(opened, language);
+		if (hit.source === 'wiki') {
+			await vscode.commands.executeCommand('markdown.showPreview', documentWithLanguage.uri);
+			diagnostic('searchUi.resultOpenCompleted', {
+				source: hit.source,
+				physicalDocument: Boolean(sourcePath),
+				markdownPreview: true,
+			});
+			return;
+		}
 		const editor = await vscode.window.showTextDocument(documentWithLanguage);
 		const range = selectionRange(documentWithLanguage, hit, boundedDocument?.startLine ?? 1);
 		editor.selection = new vscode.Selection(range.start, range.end);
 		editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-		if (hit.source === 'wiki') {
-			await vscode.commands.executeCommand('markdown.showPreview', documentWithLanguage.uri);
-		}
 		diagnostic('searchUi.resultOpenCompleted', {
 			source: hit.source,
 			physicalDocument: Boolean(sourcePath),
-			markdownPreview: hit.source === 'wiki',
+			markdownPreview: false,
 		});
 	} catch (error) {
 		diagnostic('searchUi.resultOpenFailed', {
