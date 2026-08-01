@@ -21,7 +21,19 @@ export async function discoverWorkspaceScriptRoots(): Promise<string[]> {
 			}
 		}
 	}
-	return [...roots].sort();
+	return dedupeWorkspaceScriptRoots([...roots]);
+}
+
+export function dedupeWorkspaceScriptRoots(values: readonly string[]): string[] {
+	const roots = new Map<string, string>();
+	for (const value of values) {
+		const normalized = path.resolve(value).replace(/\\/g, '/');
+		const key = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+		if (!roots.has(key)) {
+			roots.set(key, value);
+		}
+	}
+	return [...roots.values()].sort();
 }
 
 /** Finds one unambiguous project descriptor per opened workspace folder. */

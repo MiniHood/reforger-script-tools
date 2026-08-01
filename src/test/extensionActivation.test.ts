@@ -25,7 +25,7 @@ import {
 	runWithGameDataProgress,
 } from '../languageClient/languageClient';
 import { positionFromByteOffset } from '../languageClient/symbolLocationBridge';
-import { discoverWorkspaceProjectFile } from '../languageClient/workspaceWatchBridge';
+import { dedupeWorkspaceScriptRoots, discoverWorkspaceProjectFile } from '../languageClient/workspaceWatchBridge';
 import { registerBlockCommentPair } from '../languageClient/typingAssistTransactionBridge';
 import { executeIndent, executeInsertNewline, executeInsertSpace } from '../languageClient/controlHeaderEnterBridge';
 import { VersionedEditorTransaction } from '../languageClient/versionedEditorTransaction';
@@ -55,6 +55,13 @@ import {
 } from '../languageClient/semanticTokenBoundaryGuardBridge';
 
 suite('extension activation', () => {
+	test('deduplicates case-insensitive workspace script roots', () => {
+		const roots = process.platform === 'win32'
+			? ['C:\\Workspace\\Scripts', 'c:\\workspace\\scripts']
+			: ['/workspace/Scripts', '/workspace/scripts'];
+		const expected = process.platform === 'win32' ? [roots[0]] : roots;
+		assert.deepStrictEqual(dedupeWorkspaceScriptRoots(roots), expected);
+	});
 	test('presents informational game-data refresh progress in the status area', () => {
 		assert.deepStrictEqual(gameDataProgressOptions(), {
 			location: vscode.ProgressLocation.Window,
