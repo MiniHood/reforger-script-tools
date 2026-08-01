@@ -23,7 +23,9 @@ export interface SearchHit {
 export interface SearchResponse {
 	results: SearchHit[];
 	warnings: string[];
-	totalBySource: Partial<Record<SearchSource, number>>;
+	total: number;
+	page: number;
+	pageSize: number;
 }
 
 export interface SearchDocument {
@@ -57,6 +59,8 @@ interface PendingRequest {
 
 const requestTimeoutMs = 135_000;
 const maxSearchPageCaches = 32;
+const maxCachedPagesPerSearch = 32;
+const sourcePageSize = 100;
 
 interface RecordValue {
 	[key: string]: unknown;
@@ -85,31 +89,43 @@ export class McpSearchClient {
 		page: number,
 	): Promise<SearchResponse> {
 		await this.start();
-		const normalizedPageSize = Math.min(100, Math.max(1, Math.floor(pageSize)));
-		const normalizedPage = Math.max(1, Math.floor(page));
+		const normalizedPageSize = Math.min(100, Math.max(1, Number.isFinite(pageSize) ? Math.floor(pageSize) : 25));
+		const requestedPage = Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1);
+		if (sources.length === 0) {
+			return { results: [], warnings: [], total: 0, page: 1, pageSize: normalizedPageSize };
+		}
 		const responses = await Promise.all(sources.map(async source => {
 			try {
-				const value = await this.searchPage(query, source, normalizedPageSize, normalizedPage);
+				const value = await this.searchPage(query, source, sourcePageSize, 1);
 				return { source, value, warning: undefined };
 			} catch (error) {
 				return { source, value: undefined, warning: searchErrorMessage(source, error) };
 			}
 		}));
 
-		const results = responses.flatMap(response => response.value?.results ?? []);
 		const warnings = responses
 			.map(response => response.warning)
 			.filter((warning): warning is string => warning !== undefined);
-		if (results.length === 0 && warnings.length === responses.length) {
+		if (responses.every(response => response.value === undefined) && warnings.length === responses.length) {
 			throw new Error(warnings.join(' '));
 		}
-		const totalBySource: Partial<Record<SearchSource, number>> = {};
+		const total = responses.reduce((sum, response) => sum + (response.value?.total ?? 0), 0);
+		const totalPages = Math.max(1, Math.ceil(total / normalizedPageSize));
+		const normalizedPage = Math.min(requestedPage, totalPages);
+		const pageStart = (normalizedPage - 1) * normalizedPageSize;
+		const pageEnd = pageStart + normalizedPageSize;
+		const results: SearchHit[] = [];
+		let sourceOffset = 0;
 		for (const response of responses) {
-			if (response.value) {
-				totalBySource[response.source] = response.value.total;
+			const sourceTotal = response.value?.total ?? 0;
+			const sourceStart = Math.max(0, pageStart - sourceOffset);
+			const sourceEnd = Math.min(sourceTotal, pageEnd - sourceOffset);
+			if (response.value && sourceStart < sourceEnd) {
+				results.push(...await this.sourceRange(query, response.source, sourceStart, sourceEnd, sourceTotal));
 			}
+			sourceOffset += sourceTotal;
 		}
-		return { results, warnings, totalBySource };
+		return { results, warnings, total, page: normalizedPage, pageSize: normalizedPageSize };
 	}
 
 	public async read(hit: SearchHit): Promise<SearchDocument> {
@@ -199,6 +215,7 @@ export class McpSearchClient {
 		child.on('exit', () => {
 			this.process = undefined;
 			this.initialized = undefined;
+			this.searchPageCaches.clear();
 			this.failPending(new Error('The Reforger search server stopped.'));
 		});
 		child.stdin.on('error', error => this.failPending(error));
@@ -222,6 +239,31 @@ export class McpSearchClient {
 			throw new Error(asString(structured.message, `MCP tool ${tool} failed.`));
 		}
 		return response.result?.structuredContent ?? {};
+	}
+
+	private async sourceRange(
+		query: string,
+		source: SearchSource,
+		start: number,
+		end: number,
+		maxResults: number,
+	): Promise<SearchHit[]> {
+		const results: SearchHit[] = [];
+		let sourceOffset = 0;
+		for (let pageNumber = 1; pageNumber <= Math.max(1, Math.floor(maxResults)); pageNumber += 1) {
+			const page = await this.searchPage(query, source, sourcePageSize, pageNumber);
+			const pageEnd = sourceOffset + page.results.length;
+			const resultStart = Math.max(0, start - sourceOffset);
+			const resultEnd = Math.min(page.results.length, end - sourceOffset);
+			if (resultStart < resultEnd) {
+				results.push(...page.results.slice(resultStart, resultEnd));
+			}
+			sourceOffset = pageEnd;
+			if (sourceOffset >= end || !page.nextCursor || page.results.length === 0) {
+				break;
+			}
+		}
+		return results;
 	}
 
 	private async searchPage(
@@ -267,6 +309,22 @@ export class McpSearchClient {
 					: {}),
 			};
 			pages.set(pageNumber, currentPage);
+			while (pages.size > maxCachedPagesPerSearch) {
+				const oldest = pages.keys().next().value;
+				if (oldest !== 1) {
+					if (oldest !== undefined) {
+						pages.delete(oldest);
+					}
+					continue;
+				}
+				const remaining = pages.keys();
+				remaining.next();
+				const nextOldest = remaining.next().value;
+				if (nextOldest === undefined) {
+					break;
+				}
+				pages.delete(nextOldest);
+			}
 			previousPage = currentPage;
 		}
 		return previousPage ?? { results: [], total: 0 };

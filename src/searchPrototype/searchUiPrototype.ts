@@ -114,6 +114,7 @@ async function handleMessage(
 			active,
 			message.query,
 			message.source,
+			message.resultType,
 			numberField(message.page) ?? 1,
 			numberField(message.pageSize) ?? 25,
 		);
@@ -136,6 +137,7 @@ async function runSearch(
 	active: ActiveSearch,
 	query: string,
 	sourceValue: unknown,
+	typeValue: unknown,
 	page: number,
 	pageSize: number,
 ): Promise<void> {
@@ -149,14 +151,14 @@ async function runSearch(
 	});
 	if (!normalizedQuery) {
 		active.latestResults.clear();
-		active.panel.webview.postMessage({ type: 'results', requestId, results: [], warnings: [] });
+		active.panel.webview.postMessage({ type: 'results', requestId, results: [], warnings: [], total: 0, page, pageSize });
 		return;
 	}
 
 	active.panel.webview.postMessage({ type: 'loading', requestId });
 	try {
 		const client = await getClient(context, active);
-		const result = await client.search(normalizedQuery, sourcesFor(sourceValue), pageSize, page);
+		const result = await client.search(normalizedQuery, sourcesFor(sourceValue, typeValue), pageSize, page);
 		if (active.disposed || requestId !== active.requestSequence) {
 			return;
 		}
@@ -172,9 +174,9 @@ async function runSearch(
 			requestId,
 			results: result.results,
 			warnings: result.warnings,
-			totalBySource: result.totalBySource,
-			page,
-			pageSize,
+			total: result.total,
+			page: result.page,
+			pageSize: result.pageSize,
 		});
 	} catch (error) {
 		if (!active.disposed && requestId === active.requestSequence) {
@@ -287,8 +289,10 @@ async function getClientFromActive(active: ActiveSearch): Promise<McpSearchClien
 	return active.client;
 }
 
-function sourcesFor(value: unknown): SearchSource[] {
-	switch (value) {
+
+function sourcesFor(value: unknown, typeValue: unknown): SearchSource[] {
+	const sources: SearchSource[] = (() => {
+		switch (value) {
 		case 'workspace':
 			return ['workspace'];
 		case 'gameData':
@@ -297,7 +301,15 @@ function sourcesFor(value: unknown): SearchSource[] {
 			return ['wiki'];
 		default:
 			return ['workspace', 'gameData', 'wiki'];
+		}
+	})();
+	if (typeValue === 'symbol') {
+		return sources.filter(source => source !== 'wiki');
 	}
+	if (typeValue === 'documentation') {
+		return sources.filter(source => source === 'wiki');
+	}
+	return sources;
 }
 
 function selectionRange(
@@ -400,7 +412,7 @@ window.__reforgerSearchVscode.postMessage({ type: 'webviewReady', width: window.
 </script>
 <script nonce="${nonce}">
 const vscode = window.__reforgerSearchVscode;
-const state = { query: '', source: 'all', type: 'all', results: [], warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, totalBySource: {} };
+const state = { query: '', source: 'all', type: 'all', results: [], warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0 };
 const sources = [
   { value: 'all', label: 'All sources' },
   { value: 'workspace', label: 'Workspace' },
@@ -414,15 +426,13 @@ const sourceButtons = () => sources.map(source => '<button class="' + (state.sou
 const resultTypes = [{ value: 'all', label: 'All result types' }, { value: 'symbol', label: 'Symbols' }, { value: 'documentation', label: 'Documentation' }];
 const typeButtons = () => resultTypes.map(type => '<button class="' + (state.type === type.value ? 'active' : '') + '" data-type="' + esc(type.value) + '">' + esc(type.label) + '</button>').join('');
 const pageSizeOptions = [25, 50, 100];
-const sourceMatchesType = source => state.type === 'all' || (state.type === 'symbol' && source !== 'wiki') || (state.type === 'documentation' && source === 'wiki');
-const pagedSources = () => sources.filter(source => source.value !== 'all' && (state.source === 'all' || state.source === source.value) && sourceMatchesType(source.value));
-const totalMatches = () => pagedSources().reduce((total, source) => total + (state.totalBySource[source.value] ?? 0), 0);
-const totalPages = () => Math.max(1, ...pagedSources().map(source => Math.ceil((state.totalBySource[source.value] ?? 0) / state.pageSize)));
+const totalMatches = () => state.total;
+const totalPages = () => Math.max(1, Math.ceil(state.total / state.pageSize));
 const pageControls = () => {
   const disabled = !state.query.trim() || state.status === 'loading';
   const pageTotal = totalPages();
   const sizes = pageSizeOptions.map(size => '<option value="' + size + '"' + (state.pageSize === size ? ' selected' : '') + '>' + size + ' results</option>').join('');
-  return '<div class="page-controls" aria-label="Search result pages"><button type="button" data-page-prev' + (disabled || state.page <= 1 ? ' disabled' : '') + ' aria-label="Previous page">‹</button><span class="muted">Page</span><input data-page-input type="number" min="1" max="' + pageTotal + '" value="' + state.page + '" aria-label="Current result page"' + (disabled ? ' disabled' : '') + '><span class="muted">of ' + pageTotal + '</span><button type="button" data-page-next' + (disabled || state.page >= pageTotal ? ' disabled' : '') + ' aria-label="Next page">›</button><select data-page-size aria-label="Results per source"' + (disabled ? ' disabled' : '') + '>' + sizes + '</select></div>';
+  return '<div class="page-controls" aria-label="Search result pages"><button type="button" data-page-prev' + (disabled || state.page <= 1 ? ' disabled' : '') + ' aria-label="Previous page">‹</button><span class="muted">Page</span><input data-page-input type="number" min="1" max="' + pageTotal + '" value="' + state.page + '" aria-label="Current result page"' + (disabled ? ' disabled' : '') + '><span class="muted">of ' + pageTotal + '</span><button type="button" data-page-next' + (disabled || state.page >= pageTotal ? ' disabled' : '') + ' aria-label="Next page">›</button><select data-page-size aria-label="Total results per page"' + (disabled ? ' disabled' : '') + '>' + sizes + '</select></div>';
 };
 const inlineMarkdown = value => value
   .replace(/\\\\([*_])/g, '$1')
@@ -480,13 +490,13 @@ function render() {
   const body = state.error ? '<div class="error">' + esc(state.error) + '</div>' : results.length ? '<div class="source-rows">' + resultRows() + '</div>' : '<div class="empty">' + (state.status === 'idle' ? 'Enter a symbol, concept, or documentation term to search.' : 'No results match this search.') + '</div>';
   const warnings = state.warnings.map(warning => '<div class="warning">' + esc(warning) + '</div>').join('');
   const bottomPager = state.query.trim() && totalMatches() > 0 ? '<div class="page-bottom">' + pageControls() + '</div>' : '';
-  document.getElementById('app').innerHTML = '<div class="shell"><div class="eyebrow">Source browser · live MCP search</div><h1>Find usage in Reforger</h1><p class="intro">Search the indexed workspace, shipped Game Data, and Official Wiki together. Select a result to open the exact source document and highlight the matching lines.</p><div class="toolbar"><input id="query" value="' + esc(state.query) + '" placeholder="Search a symbol, concept, or phrase..." aria-label="Search query"></div><div class="layout"><aside class="source-rail"><div class="group-label">SEARCH IN</div>' + sourceButtons() + '<div class="group-label">RESULT TYPE</div>' + typeButtons() + '</aside><section><div class="source-header"><div><h2>' + totalMatches() + ' matches</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Showing up to ' + state.pageSize + ' results per source') + '</span></div>' + pageControls() + '</div><div class="status">' + (state.status === 'error' ? 'Search failed' : '') + '</div>' + warnings + body + bottomPager + '</section></div></div>';
+  document.getElementById('app').innerHTML = '<div class="shell"><div class="eyebrow">Source browser · live MCP search</div><h1>Find usage in Reforger</h1><p class="intro">Search the indexed workspace, shipped Game Data, and Official Wiki together. Select a result to open the exact source document and highlight the matching lines.</p><div class="toolbar"><input id="query" value="' + esc(state.query) + '" placeholder="Search a symbol, concept, or phrase..." aria-label="Search query"></div><div class="layout"><aside class="source-rail"><div class="group-label">SEARCH IN</div>' + sourceButtons() + '<div class="group-label">RESULT TYPE</div>' + typeButtons() + '</aside><section><div class="source-header"><div><h2>' + totalMatches() + ' matches</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Showing up to ' + state.pageSize + ' total results') + '</span></div>' + pageControls() + '</div><div class="status">' + (state.status === 'error' ? 'Search failed' : '') + '</div>' + warnings + body + bottomPager + '</section></div></div>';
   const query = document.getElementById('query');
   query.focus();
   query.setSelectionRange(state.query.length, state.query.length);
   query.addEventListener('input', event => { state.query = event.target.value; scheduleSearch(); });
   query.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); search(true); } });
-  document.querySelectorAll('[data-type]').forEach(element => element.addEventListener('click', () => { state.type = element.dataset.type; state.page = 1; render(); }));
+  document.querySelectorAll('[data-type]').forEach(element => element.addEventListener('click', () => { state.type = element.dataset.type; state.page = 1; search(true); }));
   document.querySelectorAll('[data-source]').forEach(element => element.addEventListener('click', () => { state.source = element.dataset.source; search(true); }));
   document.querySelectorAll('[data-page-prev]').forEach(element => element.addEventListener('click', () => requestPage(state.page - 1)));
   document.querySelectorAll('[data-page-next]').forEach(element => element.addEventListener('click', () => requestPage(state.page + 1)));
@@ -504,8 +514,8 @@ function render() {
 let searchTimer;
 function scheduleSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(() => search(true), 260); }
 function requestPage(value) { const requested = Number.parseInt(value, 10); if (!Number.isFinite(requested)) return; state.page = Math.min(totalPages(), Math.max(1, requested)); search(false); }
-function search(resetPagination) { if (resetPagination) { state.page = 1; state.totalBySource = {}; } state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; render(); vscode.postMessage({ type: 'search', query: state.query, source: state.source, page: state.page, pageSize: state.pageSize }); }
-window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; render(); } if (message.type === 'results') { state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.warnings = message.warnings ?? []; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; render(); } });
+function search(resetPagination) { if (resetPagination) { state.page = 1; state.total = 0; } state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; render(); vscode.postMessage({ type: 'search', query: state.query, source: state.source, resultType: state.type, page: state.page, pageSize: state.pageSize }); }
+window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; render(); } if (message.type === 'results') { state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; render(); } });
 render();
 </script>
 </body>

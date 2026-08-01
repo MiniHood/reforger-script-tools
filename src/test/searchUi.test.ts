@@ -107,7 +107,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchClientSource, /limit: pageSize/);
 		assert.match(searchClientSource, /cursor/);
 		assert.match(searchClientSource, /nextCursor/);
-		assert.match(searchClientSource, /totalBySource/);
+		assert.match(searchClientSource, /total: number/);
 		assert.match(searchUiSource, /const pageSizeOptions = \[25, 50, 100\];/);
 		assert.match(searchUiSource, /data-page-input/);
 		assert.match(searchUiSource, /data-page-prev/);
@@ -115,5 +115,14 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /data-page-size/);
 		assert.match(searchUiSource, /value="' \+ state\.page \+ '"/);
 		assert.match(searchUiSource, /of ' \+ pageTotal \+ '<\/span>/);
+		assert.match(searchUiSource, /state\.type = element\.dataset\.type; state\.page = 1; search\(true\)/);
+		assert.match(searchUiSource, /resultType: state\.type/);
+		assert.match(searchUiSource, /message\.resultType/);
+		assert.match(searchClientSource, /const sourcePageSize = 100;/);
+		assert.match(searchClientSource, /let sourceOffset = 0;/);
+		assert.match(searchClientSource, /this\.searchPageCaches\.clear\(\);/);
+		assert.doesNotMatch(searchUiSource, /maxPageNumber/);
+		assert.doesNotMatch(searchUiSource, /results per source/);
+		assert.match(searchUiSource, /Showing up to ' \+ state\.pageSize \+ ' total results/);
 	});
 });
