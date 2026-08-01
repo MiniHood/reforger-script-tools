@@ -134,14 +134,7 @@ pub(crate) fn signature_help_report_for_cached_analysis_with_external_indexes(
             .name
             .as_deref()
             .unwrap_or(candidate.display.label.as_str());
-        let signature = candidate
-            .signature
-            .as_deref()
-            .or(candidate.constructor_signature.as_deref());
-        let Some(signature) = signature else {
-            continue;
-        };
-        let Some(parts) = callable_signature_parts(label, signature) else {
+        let Some(parts) = candidate.callable_signature_parts.as_ref() else {
             continue;
         };
         let active_parameter = active_parameter_for_candidate(&context, &parts);

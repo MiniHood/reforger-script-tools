@@ -43,6 +43,72 @@ fn external_index_progress_is_published_as_a_client_notification() {
 }
 
 #[test]
+fn pending_hover_returns_only_current_lexical_facts_after_semantic_skip() {
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    let uri = "file:///Scripts/Skipped.c";
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": "class Skipped {}"
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    let task = server
+        .document_runtime
+        .test_admit_task(uri, TaskClass::Semantic);
+    assert!(server.document_runtime.test_install_current_foreground(uri));
+    server
+        .handle_internal_event(ServerEvent::DocumentAnalysisSkipped {
+            task: task.identity().clone(),
+            reason: "superseded-during-analysis".to_string(),
+            elapsed_ms: 0,
+        })
+        .unwrap();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/hover",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 0 }
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8(server.writer).unwrap();
+    let mut reader = BufReader::new(output.as_bytes());
+    let response = loop {
+        let message = read_message(&mut reader).unwrap();
+        let message = message.expect("hover response");
+        if message["id"] == 1 {
+            break message;
+        }
+    };
+    assert_eq!(response["id"], 1);
+    assert_eq!(
+        response["result"]["contents"]["value"],
+        "**Keyword**\n\n```enforce\nclass\n```"
+    );
+    assert!(response.get("error").is_none());
+}
+
+#[test]
 fn one_cpu_capacity_reserves_execution_for_foreground() {
     assert_eq!(
         RuntimeWorkCapacity::for_logical_cpus(1),
@@ -80,7 +146,6 @@ fn one_cpu_foreground_lane_advances_background_only_when_foreground_is_idle() {
     assert_eq!(
         next_runnable_work_key_for_lane(
             &pending,
-            now,
             RuntimeWorkerLane::ForegroundWithIdleBackground,
         ),
         Some((TaskClass::Semantic, "file:///semantic.c".to_string()))
@@ -93,7 +158,6 @@ fn one_cpu_foreground_lane_advances_background_only_when_foreground_is_idle() {
     assert_eq!(
         next_runnable_work_key_for_lane(
             &pending,
-            now,
             RuntimeWorkerLane::ForegroundWithIdleBackground,
         ),
         Some((TaskClass::Foreground, "file:///foreground.c".to_string()))
@@ -117,7 +181,7 @@ fn shared_executor_prioritizes_ready_semantic_work_over_ready_rich_work() {
     );
 
     assert_eq!(
-        next_runnable_work_key(&pending, now),
+        next_runnable_work_key(&pending),
         Some((TaskClass::Semantic, "file:///semantic.c".to_string()))
     );
 }
@@ -180,86 +244,6 @@ fn foreground_worker_completes_while_background_semantic_work_is_in_flight() {
     release_semantic_sender
         .send(())
         .expect("release blocked semantic worker");
-}
-
-#[test]
-fn rich_scheduler_selects_the_earliest_due_job_not_the_first_uri() {
-    let now = Instant::now();
-    let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 2));
-    let mut pending = BTreeMap::new();
-    pending.insert(
-        "file:///a.c".to_string(),
-        rich_semantic_tokens_job(&mut runtime, "file:///a.c", 1, now),
-    );
-    pending.insert(
-        "file:///z.c".to_string(),
-        rich_semantic_tokens_job(
-            &mut runtime,
-            "file:///z.c",
-            1,
-            now - Duration::from_millis(1),
-        ),
-    );
-
-    assert_eq!(
-        earliest_due_pending_uri(&pending).as_deref(),
-        Some("file:///z.c")
-    );
-}
-
-#[test]
-fn rich_work_is_runnable_without_an_idle_delay() {
-    let now = Instant::now();
-    let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(1, 1));
-    let job = RuntimeWorkJob::Rich(rich_semantic_tokens_job(
-        &mut runtime,
-        "file:///rich.c",
-        1,
-        now,
-    ));
-
-    assert_eq!(job.due_at(), job.scheduled_at());
-}
-
-#[test]
-fn rich_worker_relies_on_runtime_capacity_and_coalesces_only_same_uri() {
-    let now = Instant::now();
-    let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(17, 17));
-    let mut pending = BTreeMap::new();
-    for index in 0..17 {
-        let uri = format!("file:///rich-{index}.c");
-        let job = rich_semantic_tokens_job(&mut runtime, &uri, 1, now);
-        coalesce_rich_job(&mut pending, job);
-    }
-
-    assert_eq!(pending.len(), 17);
-    assert_eq!(
-        runtime.upsert("file:///rich-overflow.c", 1, ""),
-        UpsertOutcome::Accepted
-    );
-    assert!(matches!(
-        runtime.admit(
-            TaskClass::Rich,
-            runtime.latest("file:///rich-overflow.c").unwrap(),
-            18,
-            Instant::now(),
-        ),
-        AdmissionDisposition::DroppedOverload {
-            class: TaskClass::Rich,
-            ..
-        }
-    ));
-
-    let original = pending["file:///rich-0.c"].task.clone();
-    let replacement = rich_semantic_tokens_job(
-        &mut runtime,
-        "file:///rich-0.c",
-        2,
-        now + Duration::from_millis(1),
-    );
-    coalesce_rich_job(&mut pending, replacement);
-    assert_eq!(pending.len(), 17);
-    assert!(original.is_cancelled());
 }
 
 #[test]
@@ -443,7 +427,6 @@ fn channel_runtime_worker_results_do_not_wait_for_unrelated_incoming_messages() 
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -505,7 +488,7 @@ fn channel_runtime_worker_results_do_not_wait_for_unrelated_incoming_messages() 
 #[test]
 fn document_analysis_scheduler_keeps_only_latest_pending_revision() {
     let (sender, receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(4, 1024));
     assert_eq!(
         runtime.upsert("file:///Scripts/Pending.c", 2, "class Old {}"),
@@ -515,7 +498,6 @@ fn document_analysis_scheduler_keeps_only_latest_pending_revision() {
         TaskClass::Semantic,
         runtime.latest("file:///Scripts/Pending.c").unwrap(),
         1,
-        Instant::now(),
     ) {
         AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
         _ => unreachable!(),
@@ -528,7 +510,6 @@ fn document_analysis_scheduler_keeps_only_latest_pending_revision() {
         TaskClass::Semantic,
         runtime.latest("file:///Scripts/Pending.c").unwrap(),
         2,
-        Instant::now(),
     ) {
         AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
         _ => unreachable!(),
@@ -552,55 +533,12 @@ fn document_analysis_scheduler_keeps_only_latest_pending_revision() {
 }
 
 #[test]
-fn document_analysis_scheduler_bounds_distinct_pending_documents() {
-    let (sender, receiver) = mpsc::channel();
-    // Deliberately keep the executor workerless: immediate semantic work
-    // otherwise drains this queue before capacity can be observed.
-    let scheduler = RuntimeWorkExecutor {
-        state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
-        sender: sender.into(),
-        test_before_execute: None,
-    };
-    for index in 0..=MAX_PENDING_DOCUMENT_ANALYSIS_JOBS {
-        let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 1024));
-        let uri = format!("file:///Scripts/Pending{index}.c");
-        assert_eq!(
-            runtime.upsert(uri.clone(), 1, "class Pending {}"),
-            UpsertOutcome::Accepted
-        );
-        let task = match runtime.admit(
-            TaskClass::Semantic,
-            runtime.latest(&uri).unwrap(),
-            index as u64,
-            Instant::now(),
-        ) {
-            AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
-            _ => unreachable!(),
-        };
-        scheduler.schedule(OpenDocumentAnalysisJob {
-            task,
-            scheduled_at: Instant::now(),
-        });
-    }
-
-    let event = receiver
-        .recv_timeout(Duration::from_secs(1))
-        .expect("capacity eviction event");
-    assert!(matches!(
-        event,
-        ServerEvent::DocumentAnalysisSkipped { reason, .. }
-            if reason == "scheduler-capacity-evicted"
-    ));
-}
-
-#[test]
 fn semantic_tokens_wait_for_current_analysis_instead_of_publishing_a_lexical_flash() {
     let (sender, receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -737,11 +675,10 @@ fn semantic_tokens_wait_for_current_analysis_instead_of_publishing_a_lexical_fla
 #[test]
 fn rich_semantic_tokens_converge_before_the_first_editor_request() {
     let (sender, receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -811,11 +748,10 @@ fn rich_semantic_tokens_converge_before_the_first_editor_request() {
 #[test]
 fn pending_semantic_tokens_receive_content_modified_when_typing_supersedes_the_revision() {
     let (sender, _receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -881,11 +817,10 @@ fn pending_semantic_tokens_receive_content_modified_when_typing_supersedes_the_r
 #[test]
 fn completion_waits_for_current_analysis_before_rendering_callable_parameters() {
     let (sender, receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -949,11 +884,10 @@ fn completion_waits_for_current_analysis_before_rendering_callable_parameters() 
 #[test]
 fn completion_returns_preprocessor_directives_after_foreground_publication() {
     let (sender, receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -1020,11 +954,10 @@ fn completion_returns_preprocessor_directives_after_foreground_publication() {
 #[test]
 fn pending_signature_help_uses_only_the_current_unique_simple_callable() {
     let (sender, receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -1107,11 +1040,10 @@ fn pending_signature_help_uses_only_the_current_unique_simple_callable() {
 #[test]
 fn pending_signature_help_rejects_ambiguous_or_member_calls() {
     let (sender, _receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -1172,11 +1104,10 @@ fn pending_signature_help_rejects_ambiguous_or_member_calls() {
 #[test]
 fn pending_definition_returns_only_a_current_snapshot_declaration_target() {
     let (sender, receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -1263,11 +1194,10 @@ fn pending_definition_returns_only_a_current_snapshot_declaration_target() {
 #[test]
 fn completion_waits_for_current_analysis_before_resolving_receiver() {
     let (sender, receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -1333,11 +1263,10 @@ fn completion_waits_for_current_analysis_before_resolving_receiver() {
 #[test]
 fn completion_waits_for_current_analysis_before_returning_argument_labels() {
     let (sender, receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -1402,11 +1331,10 @@ fn completion_waits_for_current_analysis_before_returning_argument_labels() {
 #[test]
 fn pending_analysis_publishes_current_parser_diagnostics_before_worker_publication() {
     let (sender, receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -1446,11 +1374,10 @@ fn pending_analysis_publishes_current_parser_diagnostics_before_worker_publicati
 #[test]
 fn pending_analysis_clears_repaired_parser_diagnostics_before_worker_publication() {
     let (sender, receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -1516,77 +1443,12 @@ fn pending_analysis_clears_repaired_parser_diagnostics_before_worker_publication
 }
 
 #[test]
-fn pending_hover_returns_only_current_lexical_facts_after_semantic_overload() {
-    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
-    let uri = "file:///Scripts/Overloaded.c";
-    server
-        .handle_message(
-            json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/didOpen",
-                "params": { "textDocument": {
-                    "uri": uri,
-                    "languageId": "enforce",
-                    "version": 1,
-                    "text": "class Overloaded {}"
-                }}
-            }),
-            None,
-            0,
-            0,
-        )
-        .unwrap();
-    let task = server.document_runtime.test_admit_task(uri, TaskClass::Semantic);
-    assert!(server.document_runtime.test_install_current_foreground(uri));
-    server
-        .handle_internal_event(ServerEvent::DocumentAnalysisSkipped {
-            task: task.identity().clone(),
-            reason: "scheduler-capacity-evicted".to_string(),
-            elapsed_ms: 0,
-        })
-        .unwrap();
-    server
-        .handle_message(
-            json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "textDocument/hover",
-                "params": {
-                    "textDocument": { "uri": uri },
-                    "position": { "line": 0, "character": 0 }
-                }
-            }),
-            None,
-            0,
-            0,
-        )
-        .unwrap();
-
-    let output = String::from_utf8(server.writer).unwrap();
-    let mut reader = BufReader::new(output.as_bytes());
-    let response = loop {
-        let message = read_message(&mut reader).unwrap();
-        let message = message.expect("hover response");
-        if message["id"] == 1 {
-            break message;
-        }
-    };
-    assert_eq!(response["id"], 1);
-    assert_eq!(
-        response["result"]["contents"]["value"],
-        "**Keyword**\n\n```enforce\nclass\n```"
-    );
-    assert!(response.get("error").is_none());
-}
-
-#[test]
 fn active_scope_delimiters_use_current_foreground_syntax_before_semantic_analysis() {
     let (sender, receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -1691,11 +1553,10 @@ fn active_scope_delimiters_use_current_foreground_syntax_before_semantic_analysi
 #[test]
 fn active_scope_delimiters_stop_pending_after_foreground_rejection() {
     let (sender, receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -1769,11 +1630,10 @@ fn active_scope_delimiters_stop_pending_after_foreground_rejection() {
 #[test]
 fn pending_document_symbol_request_returns_current_lexical_outline() {
     let (sender, receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -1852,7 +1712,6 @@ fn runtime_debug_hover_rejects_a_capture_superseded_before_publication() {
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -1920,11 +1779,10 @@ fn runtime_debug_hover_rejects_a_capture_superseded_before_publication() {
 #[test]
 fn pending_debug_request_receives_content_modified_when_a_new_edit_supersedes_it() {
     let (sender, _receiver) = mpsc::channel();
-    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let scheduler = RuntimeWorkExecutor::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );

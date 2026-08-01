@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 #[cfg(test)]
 use std::cell::Cell;
 #[cfg(test)]
+#[cfg(test)]
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::io::Read;
@@ -25,7 +26,7 @@ use std::io::{self, BufReader, Write};
 use std::path::PathBuf;
 use std::sync::mpsc;
 #[cfg(test)]
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 #[cfg(test)]
 use std::time::Duration;
@@ -174,7 +175,6 @@ const WORKSPACE_FILE_CHANGED_METHOD: &str = "reforger/workspaceFileChanged";
 const WORKSPACE_FILE_DELETED_METHOD: &str = "reforger/workspaceFileDeleted";
 const LOADED_ADDON_GRAPH_METHOD: &str = "reforger/loadedAddonGraph";
 const INCOMING_EVENT_QUEUE_CAPACITY: usize = 64;
-const MAX_PENDING_DOCUMENT_ANALYSIS_JOBS: usize = 32;
 const MAX_PENDING_DOCUMENT_REQUESTS_PER_URI: usize = 32;
 // The executor retains a single foreground slot. A second CPU-bearing worker
 // exists only when the host actually has another logical CPU available. This
@@ -201,7 +201,6 @@ pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
     let mut server = LspServer::new_with_runtime_senders(
         stdout.lock(),
         options,
-        None,
         Some(analysis_scheduler),
         Some(event_sender.clone().into()),
     );
@@ -332,23 +331,6 @@ fn request_document_uri(params: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-#[cfg(test)]
-fn earliest_due_pending_uri(pending: &BTreeMap<String, RichSemanticTokensJob>) -> Option<String> {
-    pending
-        .iter()
-        .min_by_key(|(uri, job)| (job.scheduled_at, *uri))
-        .map(|(uri, _)| uri.clone())
-}
-
-#[cfg(test)]
-fn coalesce_rich_job(
-    pending: &mut BTreeMap<String, RichSemanticTokensJob>,
-    job: RichSemanticTokensJob,
-) {
-    if let Some(previous) = pending.insert(job.uri.clone(), job) {
-        previous.task.cancel();
-    }
-}
 
 fn format_paths(paths: &[PathBuf]) -> String {
     if paths.is_empty() {
@@ -825,13 +807,12 @@ impl<W: Write> LspServer<W> {
 
     #[cfg(test)]
     fn new(writer: W, options: LspServerOptions) -> Self {
-        Self::new_with_runtime_senders(writer, options, None, None, None)
+        Self::new_with_runtime_senders(writer, options, None, None)
     }
 
     fn new_with_runtime_senders(
         writer: W,
         options: LspServerOptions,
-        _removed_rich_scheduler: Option<()>,
         analysis_scheduler: Option<RuntimeWorkExecutor>,
         event_sender: Option<ServerEventSender>,
     ) -> Self {
@@ -1221,42 +1202,27 @@ pub(crate) fn range_for_span(source: &str, span: crate::lexer::TextSpan) -> LspR
 }
 
 pub fn position_for_offset(source: &str, offset: usize) -> LspPosition {
-    LspPositionIndex::new(source).position_for_offset(offset)
+    let position = crate::analysis_runtime::PositionIndex::new(source).position_for_offset(offset);
+    LspPosition {
+        line: position.line,
+        character: position.character,
+    }
 }
 
 pub fn offset_for_position(source: &str, position: LspPosition) -> Option<usize> {
-    let mut line = 0u32;
-    let mut character = 0u32;
-
-    for (index, value) in source.char_indices() {
-        if value == '\n' && index > 0 && source.as_bytes()[index - 1] == b'\r' {
-            continue;
-        }
-        if line == position.line {
-            if character == position.character {
-                return Some(index);
-            }
-            if value == '\r' || value == '\n' {
-                return None;
-            }
-            let next_character = character + value.len_utf16() as u32;
-            if position.character < next_character {
-                return Some(index);
-            }
-            character = next_character;
-        } else if value == '\r' {
-            line += 1;
-            character = 0;
-        } else if value == '\n' && (index == 0 || source.as_bytes()[index - 1] != b'\r') {
-            line += 1;
-            character = 0;
-        }
-    }
-
-    if line == position.line && character == position.character {
-        Some(source.len())
+    let offset = crate::analysis_runtime::PositionIndex::new(source).offset_for_position_recovering(
+        crate::analysis_runtime::Position {
+            line: position.line,
+            character: position.character,
+        },
+    )?;
+    if source.as_bytes().get(offset) == Some(&b'\n')
+        && offset > 0
+        && source.as_bytes().get(offset - 1) == Some(&b'\r')
+    {
+        Some(offset + 1)
     } else {
-        None
+        Some(offset)
     }
 }
 

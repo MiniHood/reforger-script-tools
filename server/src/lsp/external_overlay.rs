@@ -5,8 +5,9 @@ use super::{
     ServerEventSender,
 };
 use crate::addon_sources::{
-    load_all_cached_addon_indexes, load_cached_dependency_addon_indexes,
-    load_cached_loaded_addon_indexes, load_or_build_loaded_addon_indexes,
+    load_all_cached_addon_indexes,
+    load_cached_loaded_addon_indexes, load_or_build_dependency_addon_indexes,
+    load_or_build_loaded_addon_indexes,
     loaded_addon_sources_are_current, loaded_workbench_graph_matches_scope, AddonScopeAuthority,
     LoadedAddonIndexResult, LoadedAddonInstanceIdentity,
 };
@@ -22,7 +23,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
 
@@ -35,11 +36,55 @@ fn index_phase(scope_authority: AddonScopeAuthority) -> &'static str {
     }
 }
 
+fn default_workbench_profile_directory() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE").map(|user_profile| {
+        PathBuf::from(user_profile)
+            .join("Documents")
+            .join("My Games")
+            .join("ArmaReforgerWorkbench")
+            .join("profile")
+    })
+}
+
 #[derive(Clone)]
 pub(crate) struct ExternalIndexHandle {
     state: Arc<Mutex<ExternalIndexState>>,
     control: crate::index_build::IndexBuildControl,
     mode: ExternalIndexMode,
+    workspace_updates: Arc<OnceLock<WorkspaceUpdateSender>>,
+}
+
+struct WorkspaceChange {
+    path: PathBuf,
+    replacement: Option<Arc<WorkspaceIndexedFile>>,
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceUpdateSender {
+    queue: Arc<WorkspaceUpdateQueue>,
+}
+
+#[derive(Debug)]
+struct WorkspaceUpdateQueue {
+    pending: Mutex<BTreeMap<PathBuf, Option<Arc<WorkspaceIndexedFile>>>>,
+    wake: Condvar,
+}
+
+impl WorkspaceUpdateSender {
+    fn submit(&self, change: WorkspaceChange) -> Result<(), String> {
+        let mut pending = self.queue.pending.lock().unwrap();
+        pending.insert(change.path, change.replacement);
+        self.queue.wake.notify_one();
+        Ok(())
+    }
+
+    fn take_batch(&self) -> BTreeMap<PathBuf, Option<Arc<WorkspaceIndexedFile>>> {
+        let mut pending = self.queue.pending.lock().unwrap();
+        while pending.is_empty() {
+            pending = self.queue.wake.wait(pending).unwrap();
+        }
+        std::mem::take(&mut *pending)
+    }
 }
 
 #[derive(Debug)]
@@ -191,34 +236,36 @@ impl ExternalIndexSnapshot {
 
 impl ExternalIndexHandle {
     fn missing() -> Self {
+        let state = Arc::new(Mutex::new(ExternalIndexState {
+            status: ExternalIndexStatus::Missing,
+            generation: 0,
+            workspace_index: None,
+            workspace_exclusions: BTreeMap::new(),
+            workspace_paths_by_identity: BTreeMap::new(),
+            game_data_index: None,
+            workspace_files: Arc::new(BTreeMap::new()),
+            workspace_live_changes: BTreeMap::new(),
+            workspace_last_sequences: BTreeMap::new(),
+            workspace_generation: 0,
+            workspace_startup_pending: false,
+            workspace_roots: Vec::new(),
+            addon_index_storage: None,
+            graph_generation: 0,
+            summary: None,
+            workspace_summary: RuntimeIndexSummary::default(),
+            game_data_summary: None,
+            game_data_scope_authority: None,
+            game_data_scope_instances: Vec::new(),
+            cache_status: None,
+            cache_detail: None,
+            fingerprint: None,
+            error: None,
+        }));
         Self {
             control: crate::index_build::IndexBuildControl::default(),
             mode: ExternalIndexMode::Loaded,
-            state: Arc::new(Mutex::new(ExternalIndexState {
-                status: ExternalIndexStatus::Missing,
-                generation: 0,
-                workspace_index: None,
-                workspace_exclusions: BTreeMap::new(),
-                workspace_paths_by_identity: BTreeMap::new(),
-                game_data_index: None,
-                workspace_files: Arc::new(BTreeMap::new()),
-                workspace_live_changes: BTreeMap::new(),
-                workspace_last_sequences: BTreeMap::new(),
-                workspace_generation: 0,
-                workspace_startup_pending: false,
-                workspace_roots: Vec::new(),
-                addon_index_storage: None,
-                graph_generation: 0,
-                summary: None,
-                workspace_summary: RuntimeIndexSummary::default(),
-                game_data_summary: None,
-                game_data_scope_authority: None,
-                game_data_scope_instances: Vec::new(),
-                cache_status: None,
-                cache_detail: None,
-                fingerprint: None,
-                error: None,
-            })),
+            state,
+            workspace_updates: Arc::new(OnceLock::new()),
         }
     }
 
@@ -524,7 +571,11 @@ impl ExternalIndexHandle {
         let indexed = Arc::new(build_workspace_file_index(&root, &normalized_path, &text));
         let symbol_count = indexed.contribution.symbols.len();
         let parse_diagnostics = indexed.parse_diagnostics;
-        self.publish_workspace_change(normalized_path, Some(indexed));
+        self.workspace_sender()
+            .submit(WorkspaceChange {
+                path: normalized_path,
+                replacement: Some(indexed),
+            })?;
         Ok(Some((symbol_count, parse_diagnostics)))
     }
 
@@ -533,7 +584,19 @@ impl ExternalIndexHandle {
             return None;
         }
         let normalized_path = normalize_workspace_path(path);
-        Some(self.publish_workspace_change(normalized_path, None))
+        Some(self
+            .workspace_sender()
+            .submit(WorkspaceChange {
+                path: normalized_path,
+                replacement: None,
+            })
+            .is_ok())
+    }
+
+    fn workspace_sender(&self) -> &WorkspaceUpdateSender {
+        self.workspace_updates.get_or_init(|| {
+            start_workspace_update_worker(self.state.clone(), None)
+        })
     }
 
     fn accept_workspace_sequence(&self, path: &Path, sequence: u64) -> bool {
@@ -550,58 +613,6 @@ impl ExternalIndexHandle {
         true
     }
 
-    fn publish_workspace_change(
-        &self,
-        path: PathBuf,
-        replacement: Option<Arc<WorkspaceIndexedFile>>,
-    ) -> bool {
-        loop {
-            let (mut files, workspace_generation, startup_pending) = {
-                let state = self.state.lock().unwrap();
-                (
-                    state.workspace_files.as_ref().clone(),
-                    state.workspace_generation,
-                    state.workspace_startup_pending,
-                )
-            };
-            let removed = replacement.is_none() && files.remove(&path).is_some();
-            if let Some(indexed) = replacement.clone() {
-                files.insert(path.clone(), indexed);
-            }
-            let (workspace_index, workspace_summary) = workspace_aggregate(&files);
-            let workspace_paths_by_identity = workspace_identity_paths(&files);
-            let mut state = self.state.lock().unwrap();
-            if state.workspace_generation != workspace_generation {
-                continue;
-            }
-            state.status = ExternalIndexStatus::Updating;
-            if startup_pending {
-                state
-                    .workspace_live_changes
-                    .insert(path.clone(), replacement.clone());
-            }
-            state.workspace_files = Arc::new(files);
-            state.workspace_index = workspace_index;
-            state.workspace_exclusions.clear();
-            state.workspace_paths_by_identity = workspace_paths_by_identity;
-            state.workspace_summary = workspace_summary;
-            let game_data_summary = state.game_data_summary.clone();
-            recompute_summary(&mut state, game_data_summary);
-            // During startup a deletion can be a tombstone for a file the baseline scan has not
-            // published yet. It must invalidate the startup snapshot even when this map lacks it.
-            let published_change = replacement.is_some() || removed || startup_pending;
-            if published_change {
-                state.workspace_generation += 1;
-                state.generation += 1;
-            }
-            state.status = if state.workspace_index.is_some() || state.game_data_index.is_some() {
-                ExternalIndexStatus::Ready
-            } else {
-                ExternalIndexStatus::Missing
-            };
-            return published_change;
-        }
-    }
 }
 
 fn publish_loaded_addon_result(
@@ -671,34 +682,40 @@ pub(crate) fn start_external_index(
     });
 
     let control = crate::index_build::IndexBuildControl::default();
+    let state = Arc::new(Mutex::new(ExternalIndexState {
+        status: ExternalIndexStatus::Building,
+        generation: 0,
+        workspace_index: None,
+        workspace_exclusions: BTreeMap::new(),
+        workspace_paths_by_identity: BTreeMap::new(),
+        game_data_index: None,
+        workspace_files: Arc::new(BTreeMap::new()),
+        workspace_live_changes: BTreeMap::new(),
+        workspace_last_sequences: BTreeMap::new(),
+        workspace_generation: 0,
+        workspace_startup_pending: true,
+        workspace_roots: options.workspace_scripts.clone(),
+        addon_index_storage: options.addon_index_storage.clone(),
+        graph_generation: 0,
+        summary: None,
+        workspace_summary: RuntimeIndexSummary::default(),
+        game_data_summary: None,
+        game_data_scope_authority: None,
+        game_data_scope_instances: Vec::new(),
+        cache_status: None,
+        cache_detail: None,
+        fingerprint: None,
+        error: None,
+    }));
+    let workspace_updates = Arc::new(OnceLock::new());
+    workspace_updates
+        .set(start_workspace_update_worker(state.clone(), event_sender.clone()))
+        .expect("workspace update worker is initialized once");
     let handle = ExternalIndexHandle {
         control: control.clone(),
         mode: options.external_index_mode,
-        state: Arc::new(Mutex::new(ExternalIndexState {
-            status: ExternalIndexStatus::Building,
-            generation: 0,
-            workspace_index: None,
-            workspace_exclusions: BTreeMap::new(),
-            workspace_paths_by_identity: BTreeMap::new(),
-            game_data_index: None,
-            workspace_files: Arc::new(BTreeMap::new()),
-            workspace_live_changes: BTreeMap::new(),
-            workspace_last_sequences: BTreeMap::new(),
-            workspace_generation: 0,
-            workspace_startup_pending: true,
-            workspace_roots: options.workspace_scripts.clone(),
-            addon_index_storage: options.addon_index_storage.clone(),
-            graph_generation: 0,
-            summary: None,
-            workspace_summary: RuntimeIndexSummary::default(),
-            game_data_summary: None,
-            game_data_scope_authority: None,
-            game_data_scope_instances: Vec::new(),
-            cache_status: None,
-            cache_detail: None,
-            fingerprint: None,
-            error: None,
-        })),
+        state,
+        workspace_updates,
     };
 
     let state = handle.state.clone();
@@ -743,6 +760,86 @@ pub(crate) fn start_external_index(
     });
 
     handle
+}
+
+fn start_workspace_update_worker(
+    state: Arc<Mutex<ExternalIndexState>>,
+    event_sender: Option<ServerEventSender>,
+) -> WorkspaceUpdateSender {
+    let sender = WorkspaceUpdateSender {
+        queue: Arc::new(WorkspaceUpdateQueue {
+            pending: Mutex::new(BTreeMap::new()),
+            wake: Condvar::new(),
+        }),
+    };
+    let worker_queue = sender.clone();
+    thread::spawn(move || {
+        loop {
+            let changes = worker_queue.take_batch();
+            if publish_workspace_changes(&state, &changes) {
+                if let Some(sender) = &event_sender {
+                    let _ = sender.send(ServerEvent::ExternalIndexChanged);
+                }
+            }
+        }
+    });
+    sender
+}
+
+fn publish_workspace_changes(
+    state: &Arc<Mutex<ExternalIndexState>>,
+    changes: &BTreeMap<PathBuf, Option<Arc<WorkspaceIndexedFile>>>,
+) -> bool {
+    loop {
+        let (mut files, workspace_generation, startup_pending) = {
+            let state = state.lock().unwrap();
+            (
+                state.workspace_files.as_ref().clone(),
+                state.workspace_generation,
+                state.workspace_startup_pending,
+            )
+        };
+        let mut published_change = false;
+        for (path, replacement) in changes {
+            if let Some(indexed) = replacement {
+                files.insert(path.clone(), indexed.clone());
+                published_change = true;
+            } else if files.remove(path).is_some() || startup_pending {
+                published_change = true;
+            }
+        }
+        let (workspace_index, workspace_summary) = workspace_aggregate(&files);
+        let workspace_paths_by_identity = workspace_identity_paths(&files);
+        let mut state = state.lock().unwrap();
+        if state.workspace_generation != workspace_generation {
+            continue;
+        }
+        state.status = ExternalIndexStatus::Updating;
+        if startup_pending {
+            for (path, replacement) in changes {
+                state
+                    .workspace_live_changes
+                    .insert(path.clone(), replacement.clone());
+            }
+        }
+        state.workspace_files = Arc::new(files);
+        state.workspace_index = workspace_index;
+        state.workspace_exclusions.clear();
+        state.workspace_paths_by_identity = workspace_paths_by_identity;
+        state.workspace_summary = workspace_summary;
+        let game_data_summary = state.game_data_summary.clone();
+        recompute_summary(&mut state, game_data_summary);
+        if published_change {
+            state.workspace_generation += 1;
+            state.generation += 1;
+        }
+        state.status = if state.workspace_index.is_some() || state.game_data_index.is_some() {
+            ExternalIndexStatus::Ready
+        } else {
+            ExternalIndexStatus::Missing
+        };
+        return published_change;
+    }
 }
 
 /// Emits the bounded per-add-on cache breakdown for both startup and a graph
@@ -933,8 +1030,9 @@ fn run_external_index_thread(
             Some(addon_index_storage.as_ref().map_or_else(
                 || Err("add-on index storage is unavailable".to_string()),
                 |storage| {
-                    load_cached_dependency_addon_indexes(
+                    load_or_build_dependency_addon_indexes(
                         &dependency_project_files,
+                        default_workbench_profile_directory().as_deref(),
                         storage,
                         &workspace_roots,
                         &control,
@@ -1533,6 +1631,32 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    fn wait_for_workspace_generation(handle: &ExternalIndexHandle, generation: u64) {
+        for _ in 0..100 {
+            if handle.status_summary().generation >= generation {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!(
+            "workspace generation did not reach {generation}: {:?}",
+            handle.status_summary()
+        );
+    }
+
+    fn wait_for_workspace_file_count(handle: &ExternalIndexHandle, count: usize) {
+        for _ in 0..100 {
+            if handle.state.lock().unwrap().workspace_files.len() >= count {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!(
+            "workspace file count did not reach {count}: {:?}",
+            handle.status_summary()
+        );
+    }
+
     #[test]
     fn index_phases_separate_offline_hydration_from_workbench_reconciliation() {
         assert_eq!(
@@ -1921,11 +2045,12 @@ class Example : BaseExample
             .update_workspace_file(alias, "class Recreated {}".to_string(), 3)
             .unwrap()
             .is_some());
+        wait_for_workspace_file_count(&handle, 1);
         let state = handle.state.lock().unwrap();
         assert_eq!(state.workspace_last_sequences.len(), 1);
         assert_eq!(state.workspace_last_sequences.values().next(), Some(&3));
         assert_eq!(state.workspace_files.len(), 1);
-        assert_eq!(state.workspace_generation, 3);
+        assert_eq!(state.workspace_generation, 1);
     }
 
     #[test]
@@ -1940,6 +2065,7 @@ class Example : BaseExample
         handle
             .update_workspace_file(other.clone(), "class Other {}".to_string(), 2)
             .unwrap();
+        wait_for_workspace_file_count(&handle, 2);
         let current_uri = file_uri_for_path(&current).unwrap();
         let current_uri = if cfg!(windows) {
             let drive_colon = current_uri.rfind(":/").unwrap();
@@ -1996,9 +2122,11 @@ class Example : BaseExample
             cached.workspace_exclusion.as_ref().unwrap()
         ));
 
+        let generation_before_replacement = handle.status_summary().generation;
         handle
             .update_workspace_file(other, "class Replacement {}".to_string(), 3)
             .unwrap();
+        wait_for_workspace_generation(&handle, generation_before_replacement + 1);
         let refreshed = handle.snapshot_for_document_identity(current_identity.as_deref());
         assert!(!Arc::ptr_eq(
             cached.workspace_exclusion.as_ref().unwrap(),
@@ -2024,6 +2152,7 @@ class Example : BaseExample
                 )
                 .unwrap();
         }
+        wait_for_workspace_file_count(&handle, 6);
         for path in paths {
             let uri = file_uri_for_path(&path).unwrap();
             let identity = file_uri_path_identity(&uri);
@@ -2051,6 +2180,7 @@ class Example : BaseExample
             handle.delete_workspace_file(Path::new("startup-deleted.c"), 1),
             Some(true)
         );
+        wait_for_workspace_generation(&handle, 1);
 
         let state = handle.state.lock().unwrap();
         assert_eq!(state.workspace_generation, 1);

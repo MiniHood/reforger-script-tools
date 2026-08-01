@@ -12,8 +12,10 @@ use std::time::Instant;
 pub(super) struct DocumentQuery<'a> {
     pub document: &'a OpenDocument,
     pub external_indexes: ExternalIndexSnapshot,
+    pub(super) state: DocumentQueryState<'a>,
 }
 
+#[derive(Clone, Copy)]
 pub(super) enum DocumentQueryState<'a> {
     Cached(&'a FileIndexAnalysis),
     Foreground(&'a ForegroundQuerySnapshot),
@@ -32,6 +34,18 @@ pub(super) struct DocumentSymbolProjection {
 }
 
 impl<'a> DocumentQuery<'a> {
+    pub fn new(
+        document: &'a OpenDocument,
+        external_indexes: ExternalIndexSnapshot,
+    ) -> Self {
+        let state = Self::state_for(document);
+        Self {
+            document,
+            external_indexes,
+            state,
+        }
+    }
+
     pub fn state_for(document: &'a OpenDocument) -> DocumentQueryState<'a> {
         if document.analysis_ready() {
             DocumentQueryState::Cached(document.analysis())
@@ -43,7 +57,7 @@ impl<'a> DocumentQuery<'a> {
     }
 
     pub fn quality(&self) -> QueryQuality {
-        match Self::state_for(self.document) {
+        match self.state() {
             DocumentQueryState::Cached(_) => QueryQuality::Exact,
             DocumentQueryState::Foreground(_) | DocumentQueryState::Pending => {
                 QueryQuality::Unavailable
@@ -51,20 +65,24 @@ impl<'a> DocumentQuery<'a> {
         }
     }
 
+    pub fn state(&self) -> DocumentQueryState<'a> {
+        self.state
+    }
+
     pub(super) fn document_symbols(&self) -> DocumentSymbolProjection {
         let document = self.document;
         let projection_start = Instant::now();
-        if let DocumentQueryState::Cached(analysis) = Self::state_for(document) {
+        if let DocumentQueryState::Cached(analysis) = self.state() {
             let cached = document.document_symbols_ready();
             let symbols = if cached {
                 document.document_symbols().to_vec()
             } else {
-                document_symbols_from_cached_analysis(&document.text, analysis)
+                document_symbols_from_cached_analysis(&document.snapshot.text(), analysis)
             };
             DocumentSymbolProjection {
                 symbols,
-                bytes: document.text.len(),
-                revision: document.revision,
+                bytes: document.snapshot.text().len(),
+                revision: document.snapshot.revision(),
                 parse_diagnostics: analysis.parse_diagnostics,
                 cached,
                 quality: "Exact",
@@ -73,8 +91,8 @@ impl<'a> DocumentQuery<'a> {
         } else {
             DocumentSymbolProjection {
                 symbols: lexical_document_symbols_for_snapshot(&document.snapshot),
-                bytes: document.text.len(),
-                revision: document.revision,
+                bytes: document.snapshot.text().len(),
+                revision: document.snapshot.revision(),
                 parse_diagnostics: 0,
                 cached: false,
                 quality: "Unavailable",

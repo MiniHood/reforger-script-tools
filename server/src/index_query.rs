@@ -1,4 +1,8 @@
-use crate::index::{CompletionMemberLookup, GlobalSymbolId, IndexedConditionalBranch, SymbolIndex};
+use crate::index::{
+    parameter_signature_text, CompletionMemberLookup, GlobalSymbolId, IndexedConditionalBranch,
+    SymbolIndex,
+};
+use crate::callable::{CallableParameter, CallableSignatureParts};
 use crate::lexer::TextSpan;
 use crate::model::{CallableForm, SourceCategory, SourceKind, SymbolKind};
 use crate::symbol_display::{SymbolDisplay, SymbolDisplayInfo};
@@ -25,6 +29,7 @@ pub struct EditorCompletionCandidate {
     pub detail: Option<String>,
     pub signature: Option<String>,
     pub constructor_signature: Option<String>,
+    pub(crate) callable_signature_parts: Option<CallableSignatureParts>,
     pub span: TextSpan,
     pub selection_span: TextSpan,
     pub source_kind: SourceKind,
@@ -291,7 +296,7 @@ impl<'index> IndexQuery<'index> {
         });
         preferred_ids
             .into_iter()
-            .filter_map(|id| self.editor_top_level_completion_candidate(id))
+            .filter_map(|id| self.editor_symbol_completion_candidate(id, EditorCompletionOrigin::Unknown))
             .take(limit)
             .collect()
     }
@@ -477,42 +482,11 @@ impl<'index> IndexQuery<'index> {
         preferred_class: Option<GlobalSymbolId>,
         id: GlobalSymbolId,
     ) -> Option<EditorCompletionCandidate> {
-        let symbol = self.index.symbol(id)?;
-        let file = self.index.file(id.file_id)?;
-        let origin = self.completion_origin(owner, preferred_class, symbol.parent);
-        let display = self.symbol_display(id)?;
-        let detail = display.detail.clone();
-        let constructor_signature = self.class_constructor_signature(symbol.id, symbol.kind);
-        let is_attribute_like = self.is_attribute_like_class(symbol.id, symbol.kind);
-
-        Some(EditorCompletionCandidate {
-            id,
-            name: symbol.name.clone(),
-            kind: symbol.kind,
-            detail,
-            signature: display.signature.clone(),
-            constructor_signature,
-            span: symbol.span,
-            selection_span: symbol.selection_span,
-            source_kind: file.metadata.kind,
-            source_category: file.metadata.category,
-            source_priority: file.metadata.priority,
-            relative_path: file.metadata.relative_path.clone(),
-            absolute_path: file.metadata.absolute_path.clone(),
-            is_attribute_like,
-            origin,
-            conditional_context: symbol.conditional_context.clone(),
-            callable_form: symbol.callable_form,
-            generic_type_parameter_count: self.generic_type_parameter_count(symbol.id, symbol.kind),
-            display,
-        })
-    }
-
-    fn editor_top_level_completion_candidate(
-        &self,
-        id: GlobalSymbolId,
-    ) -> Option<EditorCompletionCandidate> {
-        self.editor_symbol_completion_candidate(id, EditorCompletionOrigin::Unknown)
+        let origin = self
+            .index
+            .symbol(id)
+            .map(|symbol| self.completion_origin(owner, preferred_class, symbol.parent))?;
+        self.editor_symbol_completion_candidate(id, origin)
     }
 
     fn enum_member_completion_candidates(&self, name: &str) -> Vec<EditorCompletionCandidate> {
@@ -533,7 +507,7 @@ impl<'index> IndexQuery<'index> {
                 if !self.is_editor_completion_source(*child_id) {
                     continue;
                 }
-                if let Some(candidate) = self.editor_static_completion_candidate(*child_id) {
+                if let Some(candidate) = self.editor_symbol_completion_candidate(*child_id, EditorCompletionOrigin::Unknown) {
                     candidates.push(candidate);
                 }
             }
@@ -615,13 +589,6 @@ impl<'index> IndexQuery<'index> {
             .collect()
     }
 
-    fn editor_static_completion_candidate(
-        &self,
-        id: GlobalSymbolId,
-    ) -> Option<EditorCompletionCandidate> {
-        self.editor_symbol_completion_candidate(id, EditorCompletionOrigin::Unknown)
-    }
-
     fn editor_symbol_completion_candidate(
         &self,
         id: GlobalSymbolId,
@@ -641,6 +608,7 @@ impl<'index> IndexQuery<'index> {
             detail,
             signature: display.signature.clone(),
             constructor_signature,
+            callable_signature_parts: self.callable_signature_parts(symbol.id, symbol.kind),
             span: symbol.span,
             selection_span: symbol.selection_span,
             source_kind: file.metadata.kind,
@@ -706,6 +674,75 @@ impl<'index> IndexQuery<'index> {
                 .symbol(*child_id)
                 .filter(|symbol| symbol.kind == SymbolKind::Constructor)
                 .and_then(|symbol| self.index.callable_signature(symbol.id))
+        })
+    }
+
+    fn callable_signature_parts(
+        &self,
+        id: GlobalSymbolId,
+        kind: SymbolKind,
+    ) -> Option<CallableSignatureParts> {
+        if kind == SymbolKind::Class {
+            return self.index.children(id).iter().find_map(|child_id| {
+                self.index
+                    .symbol(*child_id)
+                    .filter(|symbol| symbol.kind == SymbolKind::Constructor)
+                    .and_then(|symbol| self.callable_signature_parts(symbol.id, symbol.kind))
+            });
+        }
+        if !matches!(
+            kind,
+            SymbolKind::Function
+                | SymbolKind::Method
+                | SymbolKind::Constructor
+                | SymbolKind::Destructor
+        ) {
+            return None;
+        }
+        let symbol = self.index.symbol(id)?;
+        let parameters_info = self
+            .index
+            .children(id)
+            .iter()
+            .filter_map(|child_id| self.index.symbol(*child_id))
+            .filter(|parameter| parameter.kind == SymbolKind::Parameter)
+            .map(|parameter| {
+                let raw = parameter_signature_text(parameter);
+                let mut type_and_modifiers = parameter.modifiers.join(" ");
+                if let Some(type_text) = &parameter.detail.type_text {
+                    if !type_and_modifiers.is_empty() {
+                        type_and_modifiers.push(' ');
+                    }
+                    type_and_modifiers.push_str(type_text);
+                }
+                CallableParameter {
+                    raw,
+                    name: parameter
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| "<unknown>".to_string()),
+                    type_and_modifiers,
+                    default_text: parameter.detail.default_text.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let parameters = format!(
+            "({})",
+            parameters_info
+                .iter()
+                .map(|parameter| parameter.raw.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let result = symbol
+            .detail
+            .return_type_text
+            .clone()
+            .map(|return_type| format!("-> {return_type}"));
+        Some(CallableSignatureParts {
+            parameters,
+            parameters_info,
+            result,
         })
     }
 

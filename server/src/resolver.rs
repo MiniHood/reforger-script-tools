@@ -2,8 +2,9 @@ use crate::ast::{
     member_access_for_member_name_at_offset, named_argument_label_at_offset, Expression,
 };
 use crate::expression_type::{
-    base_owner_type_from_symbol, member_lookup_owners, owner_type_from_type_text, ExpressionType,
-    ExpressionTypeEnvironment,
+    base_owner_type_from_symbol, enum_member_ids_for_owner, has_modifier,
+    is_pseudo_class_member_name, matching_members_for_exact_owner, member_lookup_owners,
+    ExpressionType, ExpressionTypeEnvironment,
 };
 use crate::index::{GlobalSymbolId, IndexedFile, IndexedSymbol, SymbolIndex};
 use crate::lexer::{lex, Keyword, Operator, TextSpan, Token, TokenKind};
@@ -1695,81 +1696,11 @@ fn collect_receiver_expression_before_dot<'source, 'tree>(
     }
 }
 
-fn enum_member_ids_for_owner(
-    index: &SymbolIndex,
-    owner: &str,
-    member: &str,
-) -> Vec<GlobalSymbolId> {
-    let mut ids = Vec::new();
-    collect_enum_member_ids_for_owner(index, owner, member, &mut BTreeSet::new(), &mut ids);
-    ids
-}
-
-fn collect_enum_member_ids_for_owner(
-    index: &SymbolIndex,
-    owner: &str,
-    member: &str,
-    visited: &mut BTreeSet<String>,
-    ids: &mut Vec<GlobalSymbolId>,
-) {
-    if !visited.insert(owner.to_string()) {
-        return;
-    }
-
-    for expanded_owner in member_lookup_owners(index, owner) {
-        if expanded_owner == owner {
-            continue;
-        }
-        collect_enum_member_ids_for_owner(index, &expanded_owner, member, visited, ids);
-    }
-
-    for enum_id in index.top_level_symbols_for_name(owner) {
-        let Some(enum_symbol) = index.symbol(*enum_id) else {
-            continue;
-        };
-        if enum_symbol.kind != SymbolKind::Enum {
-            continue;
-        }
-        for child in index.children(*enum_id) {
-            let Some(symbol) = index.symbol(*child) else {
-                continue;
-            };
-            if symbol.kind == SymbolKind::EnumMember && symbol.name.as_deref() == Some(member) {
-                push_unique_id(ids, *child);
-            }
-        }
-        if let Some(base_type) = enum_symbol
-            .detail
-            .base_type
-            .as_deref()
-            .and_then(owner_type_from_type_text)
-        {
-            collect_enum_member_ids_for_owner(index, &base_type, member, visited, ids);
-        }
-    }
-}
-
-fn matching_members_for_exact_owner(
-    index: &SymbolIndex,
-    owner: &str,
-    name: &str,
-) -> Vec<GlobalSymbolId> {
-    index.preferred_members_named_for_class(owner, name)
-}
-
 fn is_member_lookup_kind(kind: SymbolKind) -> bool {
     matches!(
         kind,
         SymbolKind::Field | SymbolKind::Method | SymbolKind::Constructor | SymbolKind::Destructor
     )
-}
-
-fn is_pseudo_class_member_name(name: &str) -> bool {
-    matches!(name, "ClassName" | "IsInherited" | "ToString" | "Type")
-}
-
-fn has_modifier(symbol: &IndexedSymbol, modifier: &str) -> bool {
-    symbol.modifiers.iter().any(|value| value == modifier)
 }
 
 fn span_contains(span: TextSpan, offset: usize) -> bool {

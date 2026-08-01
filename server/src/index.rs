@@ -2409,7 +2409,7 @@ fn is_class_member_kind(kind: SymbolKind) -> bool {
     )
 }
 
-fn parameter_signature_text(symbol: &IndexedSymbol) -> String {
+pub(crate) fn parameter_signature_text(symbol: &IndexedSymbol) -> String {
     let mut value = String::new();
     if !symbol.modifiers.is_empty() {
         value.push_str(&symbol.modifiers.join(" "));

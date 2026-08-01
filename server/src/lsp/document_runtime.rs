@@ -8,7 +8,7 @@ use super::semantic_tokens::{
 };
 use super::{
     clear_diagnostics_message, document_symbol_count, document_symbols_from_cached_analysis,
-    file_index_for_source_with_timings, file_path_identity, file_uri_path_identity,
+    file_index_for_source_with_timings, file_uri_path_identity,
     generic_angle_offsets_for_delimiters, lex,
     lexical_semantic_tokens_for_source_with_bracket_coloring, parse_source,
     publish_diagnostics_message, request_document_uri, AdmissionDisposition, AnalysisTask,
@@ -20,14 +20,17 @@ use super::{
     MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
 };
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime, UpsertOutcome};
+#[cfg(test)]
+use super::file_path_identity;
 use serde_json::Value;
 use std::collections::BTreeMap;
+#[cfg(test)]
 use std::path::Path;
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
 #[cfg(test)]
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 macro_rules! runtime_log {
     ($runtime:expr, $message:expr) => {
@@ -124,14 +127,14 @@ impl DocumentRuntime {
         self.documents
             .get(uri)
             .map(|document| DocumentRuntimeTestState {
-                revision: document.revision,
-                version: document.version,
-                text: document.text.to_string(),
+                revision: document.snapshot.revision(),
+                version: document.snapshot.version(),
+                text: document.snapshot.text().to_string(),
                 foreground_ready: document.foreground_ready(),
                 analysis_ready: document.analysis_ready(),
                 rich_semantic_tokens: document
                     .semantic_tokens
-                    .has_rich_for_revision(document.revision),
+                    .has_rich_for_revision(document.snapshot.revision()),
             })
     }
 
@@ -141,9 +144,22 @@ impl DocumentRuntime {
     }
 
     #[cfg(test)]
+    pub(super) fn test_install_current_foreground(&mut self, uri: &str) -> bool {
+        let snapshot = self.runtime.latest(uri).expect("accepted snapshot");
+        let document = self.documents.get_mut(uri).expect("open document");
+        document.replace(snapshot.clone());
+        document.install_foreground(
+            snapshot.revision(),
+            PositionIndex::new(snapshot.text()),
+            lex(snapshot.text()),
+            parse_source(snapshot.text()),
+        )
+    }
+
+    #[cfg(test)]
     pub(super) fn test_admit_task(&mut self, uri: &str, class: TaskClass) -> AnalysisTask {
         let snapshot = self.runtime.latest(uri).expect("accepted snapshot");
-        match self.runtime.admit(class, snapshot, 1, Instant::now()) {
+        match self.runtime.admit(class, snapshot, 1) {
             AdmissionDisposition::Enqueued { .. } => self.runtime.take_next().unwrap(),
             other => panic!("unexpected admission disposition: {other:?}"),
         }
@@ -166,20 +182,20 @@ impl DocumentRuntime {
         let document = self.documents.get_mut(uri).expect("open document");
         let cancel = task.cancellation_token();
         document.semantic_tokens.mark_pending(
-            document.revision,
+            document.snapshot.revision(),
             external_generation,
             workspace_excludes_document,
             cancel.clone(),
         );
         let incremental =
             semantic_tokens_for_cached_analysis_with_external_indexes_incremental_cancelled(
-                &document.text,
+                &document.snapshot.text(),
                 document.analysis(),
                 None,
                 None,
                 self.bracket_coloring,
                 RichSemanticProjectionCacheContext::new(
-                    document.revision,
+                    document.snapshot.revision(),
                     external_generation,
                     document.rich_projection_cache().as_deref(),
                 ),
@@ -188,23 +204,10 @@ impl DocumentRuntime {
             .expect("test rich projection");
         (
             task,
-            document.revision,
+            document.snapshot.revision(),
             incremental.projection,
             incremental.cache,
             cancel,
-        )
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_install_current_foreground(&mut self, uri: &str) -> bool {
-        let snapshot = self.runtime.latest(uri).expect("accepted snapshot");
-        let document = self.documents.get_mut(uri).expect("open document");
-        document.replace(snapshot.clone());
-        document.install_foreground(
-            snapshot.revision(),
-            PositionIndex::new(snapshot.text()),
-            lex(snapshot.text()),
-            parse_source(snapshot.text()),
         )
     }
 
@@ -214,16 +217,14 @@ impl DocumentRuntime {
         uri: &str,
         external_indexes: ExternalIndexSnapshot,
     ) -> Option<DocumentQuery<'a>> {
-        Some(DocumentQuery {
-            document: self.documents.get(uri)?,
-            external_indexes,
-        })
+        Some(DocumentQuery::new(self.documents.get(uri)?, external_indexes))
     }
 
     pub(super) fn document_path_identity(&self, uri: &str) -> Option<&str> {
         self.document_path_identities.get(uri).map(String::as_str)
     }
 
+    #[cfg(test)]
     pub(super) fn self_save_generation_preservation(
         &self,
         path: &Path,
@@ -233,7 +234,7 @@ impl DocumentRuntime {
         let path_identity = file_path_identity(path)?;
         let (uri, _) = self.documents.iter().find(|(uri, document)| {
             self.document_path_identities.get(*uri) == Some(&path_identity)
-                && document.text.as_ref() == text
+                && document.snapshot.text() == text
         })?;
         Some(SemanticGenerationPreservation {
             uri: uri.clone(),
@@ -268,9 +269,9 @@ impl DocumentRuntime {
         let Some(document) = self.documents.get_mut(uri) else {
             return selection;
         };
-        selection.bytes = document.text.len();
-        selection.revision = document.revision;
-        let source = document.text.clone();
+        selection.bytes = document.snapshot.text().len();
+        selection.revision = document.snapshot.revision();
+        let source = document.snapshot.text_arc();
         let generic_angle_offsets = document
             .foreground()
             .map(|foreground| {
@@ -279,7 +280,7 @@ impl DocumentRuntime {
             .unwrap_or_default();
         let (kind, result_id, disposition, projection) = {
             let selected = document.semantic_tokens.select_or_insert_lexical(
-                document.revision,
+                document.snapshot.revision(),
                 external_generation,
                 || {
                     lexical_semantic_tokens_for_source_with_bracket_coloring(
@@ -309,11 +310,11 @@ impl DocumentRuntime {
             && !document
                 .semantic_tokens
                 .pending_for_revision_and_external_generation(
-                    document.revision,
+                    document.snapshot.revision(),
                     external_generation,
                 )
         {
-            selection.rich_work = Some((uri.to_string(), document.revision, external_generation));
+            selection.rich_work = Some((uri.to_string(), document.snapshot.revision(), external_generation));
         }
         selection.token_count = projection.token_count;
         selection.parse_diagnostics = projection.parse_diagnostics;
@@ -542,7 +543,6 @@ impl DocumentRuntime {
             TaskClass::Foreground,
             snapshot,
             request_id,
-            Instant::now() + Duration::from_secs(30),
         ) {
             AdmissionDisposition::Enqueued { .. } => {
                 scheduler.schedule_foreground(ForegroundDocumentJob {
@@ -737,8 +737,8 @@ impl DocumentRuntime {
             )]);
         }
         let uri = task.uri().to_string();
-        let version = document.version;
-        let revision = document.revision;
+        let version = document.snapshot.version();
+        let revision = document.snapshot.revision();
         let diagnostics = document
             .syntax()
             .expect("foreground installation supplies syntax")
@@ -772,7 +772,7 @@ impl DocumentRuntime {
         let Some(document) = self.documents.get(uri) else {
             return Vec::new();
         };
-        if document.revision != revision || !document.foreground_ready() {
+        if document.snapshot.revision() != revision || !document.foreground_ready() {
             return Vec::new();
         }
         let snapshot = document.snapshot.clone();
@@ -782,7 +782,6 @@ impl DocumentRuntime {
             TaskClass::Semantic,
             snapshot,
             request_id,
-            Instant::now() + Duration::from_secs(30),
         ) {
             AdmissionDisposition::Enqueued { .. } => scheduler.schedule(OpenDocumentAnalysisJob {
                 task: self
@@ -793,7 +792,7 @@ impl DocumentRuntime {
             }),
             AdmissionDisposition::DroppedOverload { .. } => {
                 if let Some(document) = self.documents.get_mut(uri) {
-                    if document.revision == revision {
+                    if document.snapshot.revision() == revision {
                         document.reject_pending_analysis();
                     }
                 }
@@ -881,30 +880,8 @@ impl DocumentRuntime {
                 reason,
                 elapsed_ms,
             } => {
-                let current = self.runtime.complete(&task);
+                self.runtime.complete(&task);
                 let mut effects = Vec::new();
-                if reason == "scheduler-capacity-evicted" && current {
-                    if let Some(document) = self.documents.get_mut(task.uri()) {
-                        if document.revision == task.revision() && !document.analysis_ready() {
-                            document.reject_pending_analysis();
-                            if let Err(error) = self
-                                .discard_deferred_document_requests_for_revision(
-                                    task.uri(),
-                                    task.revision(),
-                                    &mut effects,
-                                )
-                            {
-                                return Some(Err(error));
-                            }
-                            self.reject_deferred_semantic_token_requests(
-                                task.uri(),
-                                Some(task.revision()),
-                                None,
-                                &mut effects,
-                            );
-                        }
-                    }
-                }
                 effects.push(runtime_log!(
                     self,
                     format!(
@@ -989,10 +966,10 @@ impl DocumentRuntime {
                 uri, revision, elapsed_ms
             ))]);
         };
-        if document.revision != revision {
+        if document.snapshot.revision() != revision {
             return Some(vec![runtime_log!(self, format!(
                 "semanticTokensRich discarded uri={} revision={} current_revision={} reason=stale-revision elapsed_ms={}",
-                uri, revision, document.revision, elapsed_ms
+                uri, revision, document.snapshot.revision(), elapsed_ms
             ))]);
         }
         let Some(publication) = document.semantic_tokens.publish_generation_for_ready_task(
@@ -1140,7 +1117,7 @@ impl DocumentRuntime {
                 .is_some_and(|preservation| preservation.uri == *uri)
                 .then(|| {
                     document.semantic_tokens.rebind_self_save_rich_generation(
-                        document.revision,
+                        document.snapshot.revision(),
                         previous_generation,
                         generation,
                     )
@@ -1158,14 +1135,14 @@ impl DocumentRuntime {
                     } => format!(
                         "semanticTokens self-save reused uri={} revision={} previous_external_generation={} external_generation={} state=ready reference_elapsed_ms={}",
                         uri,
-                        document.revision,
+                        document.snapshot.revision(),
                         previous_generation,
                         generation,
                         reference_elapsed_ms
                     ),
                     super::open_documents::SelfSaveRichPreservation::Pending => format!(
                         "semanticTokens self-save retargeted uri={} revision={} previous_external_generation={} external_generation={} state=pending",
-                        uri, document.revision, previous_generation, generation
+                        uri, document.snapshot.revision(), previous_generation, generation
                     ),
                 }));
                 continue;
@@ -1198,7 +1175,7 @@ impl DocumentRuntime {
                 "semanticTokensRich skipped uri={} revision={} reason=missing-document-before-schedule elapsed_ms={}", uri, revision, start.elapsed().as_millis()
             ))];
         };
-        if document.revision != revision
+        if document.snapshot.revision() != revision
             || !document
                 .semantic_tokens
                 .needs_rich_projection(revision, generation)
@@ -1217,7 +1194,6 @@ impl DocumentRuntime {
             TaskClass::Rich,
             snapshot,
             request_id,
-            Instant::now() + Duration::from_secs(30),
         ) {
             AdmissionDisposition::Enqueued { .. } => self
                 .runtime
@@ -1320,7 +1296,7 @@ impl DocumentRuntime {
         if document.analysis_ready() {
             return Ok((false, Vec::new()));
         }
-        let revision = document.revision;
+        let revision = document.snapshot.revision();
         let mut effects = Vec::new();
         if document.analysis_rejected() {
             if let Some(id) = message.id.clone() {
@@ -1393,7 +1369,7 @@ impl DocumentRuntime {
         let Some(document) = self.documents.get(&uri) else {
             return Ok(Vec::new());
         };
-        let revision = document.revision;
+        let revision = document.snapshot.revision();
         let mut effects = Vec::new();
         if document.analysis_rejected() {
             if let Some(id) = message.id.clone() {
@@ -1466,7 +1442,6 @@ impl DocumentRuntime {
             TaskClass::Rich,
             snapshot,
             request_id,
-            Instant::now() + Duration::from_secs(30),
         ) {
             AdmissionDisposition::Enqueued { .. } => Ok(self
                 .runtime
@@ -1525,7 +1500,7 @@ impl DocumentRuntime {
                 let current = self.runtime.complete(&task);
                 if current {
                     if let Some(document) = self.documents.get_mut(task.uri()) {
-                        if document.revision == task.revision() {
+                        if document.snapshot.revision() == task.revision() {
                             document.reject_pending_analysis();
                         }
                     }
@@ -1587,7 +1562,6 @@ mod tests {
     use crate::analysis_runtime::UpsertOutcome;
     use crate::lsp::file_uri_for_path;
     use serde_json::json;
-    use std::time::{Duration, Instant};
 
     #[test]
     fn captured_query_pairs_the_open_snapshot_with_the_supplied_external_snapshot() {
@@ -1613,7 +1587,7 @@ mod tests {
             )
             .expect("open document query");
 
-        assert_eq!(query.document.version, 7);
+        assert_eq!(query.document.snapshot.version(), 7);
         assert_eq!(query.document.snapshot.text(), "class Query {}");
         assert_eq!(query.external_indexes.status, "missing");
     }
@@ -1634,7 +1608,6 @@ mod tests {
             TaskClass::Rich,
             snapshot,
             1,
-            Instant::now() + Duration::from_secs(1),
         ) {
             AdmissionDisposition::Enqueued { .. } => runtime.runtime.take_next().unwrap(),
             other => panic!("unexpected admission disposition: {other:?}"),
@@ -1642,12 +1615,12 @@ mod tests {
         let incremental = {
             let document = runtime.documents.get(uri).unwrap();
             semantic_tokens_for_cached_analysis_with_external_indexes_incremental_cancelled(
-                &document.text,
+                &document.snapshot.text(),
                 document.analysis(),
                 None,
                 None,
                 BracketColoringMode::Semantic,
-                RichSemanticProjectionCacheContext::new(document.revision, 0, None),
+                RichSemanticProjectionCacheContext::new(document.snapshot.revision(), 0, None),
                 &|| false,
             )
             .expect("test rich projection")
@@ -1755,7 +1728,7 @@ mod tests {
             )
             .expect("change succeeds");
 
-        assert_eq!(runtime.documents[&uri].version, 2);
+        assert_eq!(runtime.documents[&uri].snapshot.version(), 2);
         assert_eq!(runtime.documents[&uri].snapshot.text(), "class After {}");
         assert!(runtime.documents[&uri].analysis_ready());
         assert!(changed

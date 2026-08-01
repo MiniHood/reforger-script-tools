@@ -1,8 +1,10 @@
 use crate::analysis_runtime::QueryQuality;
 use crate::callable::{
-    callable_argument_context_at_offset, callable_signature_parts, callable_type_owner,
+    callable_argument_context_at_offset, callable_type_owner,
     CallableParameter, CallableSignatureParts, CallableTarget,
 };
+#[cfg(test)]
+use crate::callable::callable_signature_parts;
 use crate::construction::{
     compatible_construction_candidates, lexical_construction_context_at_operand, ConstructionQuery,
 };
@@ -163,8 +165,7 @@ pub struct LspCompletionReport {
     /// The candidate guarantee for this current-revision result. This is an
     /// internal contract/logging field, not an LSP `isIncomplete` surrogate.
     pub query_quality: QueryQuality,
-    /// Why a non-exact result was selected. `RecoveryExact` is deliberately
-    /// unused until a recovery query can prove candidate equivalence.
+    /// Why a non-exact result was selected.
     pub recovery_reason: Option<String>,
     pub parse_diagnostics: usize,
     pub completion_context: String,
@@ -3796,18 +3797,7 @@ fn parameter_label_candidates_for_callables(
     let mut order = 0usize;
 
     for callable in callables {
-        let label = callable
-            .name
-            .as_deref()
-            .unwrap_or(callable.display.label.as_str());
-        let signature = callable
-            .signature
-            .as_deref()
-            .or(callable.constructor_signature.as_deref());
-        let Some(signature) = signature else {
-            continue;
-        };
-        let Some(parts) = callable_signature_parts(label, signature) else {
+        let Some(parts) = callable.callable_signature_parts.clone() else {
             continue;
         };
         for (parameter_index, parameter) in parts.parameters_info.into_iter().enumerate() {
@@ -4810,8 +4800,7 @@ fn completion_item_for_override_candidate(
         .name
         .clone()
         .or_else(|| Some(candidate.display.label.clone()))?;
-    let signature = candidate.signature.as_deref()?;
-    let call = callable_signature_parts(&label, signature)?;
+    let call = candidate.callable_signature_parts.clone()?;
     let return_type = call
         .result
         .as_deref()
@@ -5656,7 +5645,7 @@ fn completion_item_for_candidate(
             detail: Some(render.call.parameters.clone()),
             description: render.call.result.clone(),
         })
-        .or_else(|| completion_label_details(&label, candidate));
+        .or_else(|| completion_label_details(candidate));
     let generic_type_snippet = (candidate.kind == SymbolKind::Class
         && insert_context == CompletionInsertContext::Type
         && candidate.generic_type_parameter_count > 0)
@@ -5707,11 +5696,9 @@ fn completion_item_for_candidate(
 }
 
 fn completion_label_details(
-    label: &str,
     candidate: &EditorCompletionCandidate,
 ) -> Option<LspCompletionItemLabelDetails> {
-    let signature = candidate.signature.as_deref()?;
-    let call = callable_signature_parts(label, signature)?;
+    let call = candidate.callable_signature_parts.clone()?;
     Some(LspCompletionItemLabelDetails {
         detail: Some(call.parameters),
         description: call.result,
@@ -5724,11 +5711,11 @@ fn callable_completion_render(
     insert_context: CompletionInsertContext,
     render_context: CompletionRenderContext<'_>,
 ) -> Option<CallableCompletionRender> {
-    let signature = match candidate.kind {
+    let call = match candidate.kind {
         SymbolKind::Function
         | SymbolKind::Method
         | SymbolKind::Constructor
-        | SymbolKind::Destructor => candidate.signature.as_deref()?,
+        | SymbolKind::Destructor => candidate.callable_signature_parts.clone()?,
         SymbolKind::Class
             if matches!(
                 insert_context,
@@ -5737,9 +5724,8 @@ fn callable_completion_render(
             ) =>
         {
             let call = candidate
-                .constructor_signature
-                .as_deref()
-                .and_then(|signature| callable_signature_parts(label, signature))
+                .callable_signature_parts
+                .clone()
                 .or_else(|| {
                     (insert_context == CompletionInsertContext::ContextualConstructorCall).then(
                         || CallableSignatureParts {
@@ -5765,8 +5751,7 @@ fn callable_completion_render(
             if insert_context == CompletionInsertContext::Type
                 && is_attribute_like_completion_candidate(candidate) =>
         {
-            let signature = candidate.constructor_signature.as_deref()?;
-            let call = callable_signature_parts(label, signature)?;
+            let call = candidate.callable_signature_parts.clone()?;
             if let Some(insert_text) = rpl_rpc_attribute_template(label, &call, true) {
                 return Some(CallableCompletionRender::from_insert(
                     call,
@@ -5782,7 +5767,6 @@ fn callable_completion_render(
         }
         _ => return None,
     };
-    let call = callable_signature_parts(label, signature)?;
     let insert = callable_insert_text_with_context(label, &call, Some(render_context));
     Some(CallableCompletionRender::from_insert(call, insert))
 }

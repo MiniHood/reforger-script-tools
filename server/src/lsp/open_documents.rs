@@ -23,12 +23,6 @@ pub(crate) struct OpenDocument {
     /// The runtime-owned immutable source identity.  Analysis and caches below
     /// are derived state only and may never outlive this revision.
     pub(crate) snapshot: DocumentSnapshot,
-    // Compatibility views share the snapshot's `Arc<str>` allocation.  They
-    // exist only while feature adapters migrate to snapshot access; ownership
-    // and admission remain in `AnalysisRuntime`.
-    pub(crate) text: Arc<str>,
-    pub(crate) version: i32,
-    pub(crate) revision: u64,
     /// Current-revision parser output, retained independently from deferred
     /// semantic/index analysis so parser diagnostics never wait for it.
     syntax: Option<Parse>,
@@ -66,14 +60,9 @@ impl OpenDocument {
     /// only a foreground-safe projection until the worker installs this
     /// revision; no legacy empty-file analysis exists in this state.
     pub(crate) fn pending(snapshot: DocumentSnapshot) -> Self {
-        let text = snapshot.text_arc();
-        let version = snapshot.version();
-        let revision = snapshot.revision();
+
         Self {
             snapshot,
-            text,
-            version,
-            revision,
             syntax: None,
             foreground: None,
             analysis: None,
@@ -87,9 +76,6 @@ impl OpenDocument {
     }
 
     pub(crate) fn replace(&mut self, snapshot: DocumentSnapshot) {
-        self.text = snapshot.text_arc();
-        self.version = snapshot.version();
-        self.revision = snapshot.revision();
         self.snapshot = snapshot;
         self.syntax = None;
         self.foreground = None;
@@ -211,7 +197,7 @@ impl OpenDocument {
         revision: u64,
         cache: RichSemanticProjectionCache,
     ) -> bool {
-        if revision != self.revision {
+        if revision != self.snapshot.revision() {
             return false;
         }
         self.rich_projection_cache = Some(Arc::new(cache));
@@ -225,7 +211,7 @@ impl OpenDocument {
     ) -> bool {
         self.rich_projection_cache.as_mut().is_some_and(|cache| {
             Arc::make_mut(cache).rebind_external_generation(
-                self.revision,
+                self.snapshot.revision(),
                 previous_generation,
                 external_generation,
             )
