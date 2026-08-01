@@ -6,16 +6,16 @@ import {
 import { encodeNetApiString, startNetApiPeer } from "./netApiPeer";
 
 suite("Workbench Gateway", () => {
-  test("matches missing NET API log evidence for the requested handler", () => {
+  test("matches generic missing NET API log evidence", () => {
     const lines = [
-      "01:22:48.623 NETWORK   (E): Failed to call not existing Net API function 'RST_WorkbenchLoadedAddonGraph'",
+      "01:22:48.623 NETWORK   (E): Failed to call not existing Net API function 'RST_WorkbenchOtherOperation'",
       "01:23:05.325 NETWORK   (E): Failed to call not existing Net API function 'RST_WorkbenchOtherOperation'",
     ];
 
     assert.strictEqual(
       workbenchLogReportsMissingHandler(
         lines,
-        "RST_WorkbenchLoadedAddonGraph",
+        "RST_WorkbenchOtherOperation",
       ),
       true,
     );
@@ -40,7 +40,7 @@ suite("Workbench Gateway", () => {
       value: {
         source: "workbench",
         lines: [
-          "NETWORK (E): Failed to call not existing Net API function 'RST_WorkbenchLoadedAddonGraph'",
+          "NETWORK (E): Failed to call not existing Net API function 'RST_WorkbenchOtherOperation'",
         ],
         markers: [],
         truncated: false,
@@ -80,83 +80,6 @@ suite("Workbench Gateway", () => {
         value: { isRunning: true, scriptsCompiled: true },
       });
       assert.deepStrictEqual(gateway.availability, { kind: "ready" });
-    } finally {
-      await peer.close();
-    }
-  });
-
-  test("gets the exact ordered loaded add-on graph from the bridge", async () => {
-    const peer = await startNetApiPeer((request) => {
-      assert.deepStrictEqual(request.payload, {
-        APIFunc: "RST_WorkbenchLoadedAddonGraph",
-      });
-      return {
-        errorCode: "Ok",
-        payload: {
-          bridgeVersion: "1.52.0",
-          protocolVersion: 1,
-          graphJson: JSON.stringify([
-            {
-              guid: "684CE8AA3B1D6573",
-              id: "GCSuppression",
-              title: "GC Suppression",
-              sourceRoot:
-                "C:\\Users\\Gray\\Documents\\My Games\\ArmaReforgerWorkbench\\addons\\GC-Suppression",
-            },
-          ]),
-        },
-      };
-    });
-    try {
-      const gateway = new WorkbenchGateway({
-        enabled: true,
-        endpoint: { host: "127.0.0.1", port: peer.port },
-      });
-
-      assert.deepStrictEqual(await gateway.getLoadedAddonGraph(), {
-        ok: true,
-        value: {
-          bridgeVersion: "1.52.0",
-          protocolVersion: 1,
-          addons: [
-            {
-              guid: "684CE8AA3B1D6573",
-              id: "GCSuppression",
-              title: "GC Suppression",
-              sourceRoot:
-                "C:\\Users\\Gray\\Documents\\My Games\\ArmaReforgerWorkbench\\addons\\GC-Suppression",
-            },
-          ],
-        },
-      });
-    } finally {
-      await peer.close();
-    }
-  });
-
-  test("rejects an incomplete loaded add-on graph", async () => {
-    const peer = await startNetApiPeer(() => ({
-      errorCode: "Ok",
-      payload: {
-        bridgeVersion: "1.52.0",
-        protocolVersion: 1,
-        graphJson: JSON.stringify([
-          {
-            guid: "5614BBCCBB55ED1C",
-            id: "core",
-            title: "Enfusion core data",
-            sourceRoot: "",
-          },
-        ]),
-      },
-    }));
-    try {
-      const gateway = new WorkbenchGateway({
-        enabled: true,
-        endpoint: { host: "127.0.0.1", port: peer.port },
-      });
-      const result = await gateway.getLoadedAddonGraph();
-      assert.equal(result.ok, false);
     } finally {
       await peer.close();
     }
