@@ -142,8 +142,9 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /state\.type = element\.dataset\.type; state\.page = 1; search\(true\)/);
 		assert.match(searchUiSource, /resultType: state\.type/);
 		assert.match(searchUiSource, /message\.resultType/);
-		assert.match(searchUiSource, /const resultTypes = \$\{JSON\.stringify\(searchKindFilters\)\};/);
+		assert.match(searchUiSource, /const resultTypes = \$\{JSON\.stringify\(searchKindFilters\.map\(\(\{ value, label \}\) => \(\{ value, label \}\)\)\)\};/);
 		assert.match(searchUiSource, /searchKindsFor\(typeValue\)/);
+		assert.match(searchUiSource, /if \(!isSearchKindValue\(message\.resultType\)\) \{/);
 		assert.match(searchClientSource, /const sourcePageSize = 100;/);
 		assert.match(searchClientSource, /let sourceOffset = 0;/);
 		assert.match(searchClientSource, /this\.searchPageCaches\.clear\(\);/);

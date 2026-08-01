@@ -111,6 +111,9 @@ async function handleMessage(
 		return;
 	}
 	if (message.type === 'search' && typeof message.query === 'string') {
+		if (!isSearchKindValue(message.resultType)) {
+			return;
+		}
 		await runSearch(
 			context,
 			active,
@@ -139,7 +142,7 @@ async function runSearch(
 	active: ActiveSearch,
 	query: string,
 	sourceValue: unknown,
-	typeValue: unknown,
+	typeValue: string,
 	page: number,
 	pageSize: number,
 ): Promise<void> {
@@ -305,7 +308,11 @@ function sourcesFor(value: unknown): SearchSource[] {
 	}
 }
 
-function searchKindsFor(value: unknown): readonly SearchSymbolKind[] | undefined {
+function isSearchKindValue(value: unknown): value is string {
+	return typeof value === 'string' && searchKindFilters.some(filter => filter.value === value);
+}
+
+function searchKindsFor(value: string): readonly SearchSymbolKind[] | undefined {
 	return searchKindFilters.find(filter => filter.value === value)?.kinds;
 }
 
@@ -422,7 +429,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&a
 const sourceLabel = value => sources.find(source => source.value === value)?.label ?? value;
 const visibleResults = () => state.results;
 const sourceButtons = () => sources.map(source => '<button class="' + (state.source === source.value ? 'active' : '') + '" data-source="' + esc(source.value) + '">' + esc(source.label) + '</button>').join('');
-const resultTypes = ${JSON.stringify(searchKindFilters)};
+const resultTypes = ${JSON.stringify(searchKindFilters.map(({ value, label }) => ({ value, label })))};
 const typeButtons = () => resultTypes.map(type => '<button class="' + (state.type === type.value ? 'active' : '') + '" data-type="' + esc(type.value) + '">' + esc(type.label) + '</button>').join('');
 const pageSizeOptions = [25, 50, 100];
 const totalMatches = () => state.total;
