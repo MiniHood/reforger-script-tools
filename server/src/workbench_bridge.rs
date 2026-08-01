@@ -29,6 +29,7 @@ pub const BRIDGE_ENTITY_MUTATION_SOURCE: &str = include_str!("../bridge/RST_Work
 pub const BRIDGE_HISTORY_SOURCE: &str = include_str!("../bridge/RST_WorkbenchHistory.c");
 pub const BRIDGE_SHAPE_POINTS_SOURCE: &str = include_str!("../bridge/RST_WorkbenchShapePoints.c");
 pub const BRIDGE_SHAPE_GEOMETRY_SOURCE: &str = include_str!("../bridge/RST_WorkbenchShapeGeometry.c");
+pub const BRIDGE_SPLINE_SOURCE: &str = include_str!("../bridge/RST_WorkbenchSpline.c");
 pub const BRIDGE_COMPONENTS_SOURCE: &str = include_str!("../bridge/RST_WorkbenchComponents.c");
 pub const BRIDGE_PROPERTIES_SOURCE: &str = include_str!("../bridge/RST_WorkbenchProperties.c");
 pub const BRIDGE_PREFAB_SOURCE: &str = include_str!("../bridge/RST_WorkbenchPrefab.c");

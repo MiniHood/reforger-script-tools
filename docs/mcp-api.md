@@ -170,6 +170,9 @@ Read, convert, generate, and edit polyline or spline points.
 | [`workbench_convert_shape_points`](mcp-api/tools/workbench_convert_shape_points.md) | `entityId`, `fromSpace`, `points`, `toSpace` | `bridgeVersion`, `entity?`, `fromSpace`, `points`, `protocolVersion`, `shapeClass?`, `status`, `toSpace` | Convert shape points between local and world coordinates. |
 | [`workbench_transform_shape_points`](mcp-api/tools/workbench_transform_shape_points.md) | `degrees?`, `entityId`, `mirrorAxis?`, `offset?`, `operation`, `pivot?`, `scale?`, `space` | `bridgeVersion`, `closed`, `entity?`, `points`, `protocolVersion`, `shapeClass?`, `status` | Transform all shape points in local or world space. |
 | [`workbench_resample_polyline`](mcp-api/tools/workbench_resample_polyline.md) | `entityId`, `space`, `spacingMeters` | `bridgeVersion`, `closed`, `entity?`, `originalPointCount`, `pathLength`, `points`, `protocolVersion`, `resultPointCount`, … | Replace a polyline with evenly spaced samples. |
+| [`workbench_inspect_spline`](mcp-api/tools/workbench_inspect_spline.md) | `entityId`, `space` | `anchorCount`, `anchors`, `bridgeVersion`, `closed`, `entity?`, `pathLength`, `protocolVersion`, `sampleCount`, … | Inspect spline anchors and tangent handles. |
+| [`workbench_edit_spline`](mcp-api/tools/workbench_edit_spline.md) | `anchors`, `closed?`, `entityId`, `space` | `anchorCount`, `anchors`, `bridgeVersion`, `closed`, `entity?`, `pathLength`, `protocolVersion`, `sampleCount`, … | Replace spline anchors and tangent modes. |
+| [`workbench_sample_spline`](mcp-api/tools/workbench_sample_spline.md) | `entityId`, `maxSamples`, `space` | `anchorCount`, `anchors`, `bridgeVersion`, `closed`, `entity?`, `pathLength`, `protocolVersion`, `sampleCount`, … | Sample a native spline curve. |
 
 ### Sessions and saving
 

@@ -440,6 +440,56 @@ pub struct WorkbenchShapePoints {
     pub points: Vec<WorkbenchEntityPosition>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkbenchSplineTangentMode {
+    Auto,
+    Explicit,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchSplineAnchor {
+    pub index: usize,
+    pub position: WorkbenchEntityPosition,
+    pub tangent_mode: WorkbenchSplineTangentMode,
+    pub in_tangent: WorkbenchEntityPosition,
+    pub out_tangent: WorkbenchEntityPosition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkbenchSplineTangentModeInput {
+    Auto,
+    Explicit,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkbenchSplineAnchorInput {
+    pub position: WorkbenchEntityPosition,
+    pub tangent_mode: WorkbenchSplineTangentModeInput,
+    pub in_tangent: Option<WorkbenchEntityPosition>,
+    pub out_tangent: Option<WorkbenchEntityPosition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchSpline {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity: Option<WorkbenchSelectedEntity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shape_class: Option<String>,
+    pub closed: bool,
+    pub anchor_count: usize,
+    pub anchors: Vec<WorkbenchSplineAnchor>,
+    pub samples: Vec<WorkbenchEntityPosition>,
+    pub sample_space: String,
+    pub sample_count: usize,
+    pub path_length: f32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkbenchShapePointEdit {
     Set,
@@ -2935,6 +2985,110 @@ impl WorkbenchController {
             json!({"entityId": entity_id, "operation": "resample", "space": shape_point_space_name(space), "spacingMeters": spacing_meters}),
         )?;
         Ok(raw.into_resample())
+    }
+
+    pub fn inspect_spline(
+        &self,
+        entity_id: &str,
+        space: WorkbenchShapePointSpace,
+    ) -> Result<WorkbenchSpline, WorkbenchFailure> {
+        self.spline_request(json!({
+            "entityId": entity_id,
+            "operation": "inspect",
+            "space": shape_point_space_name(space),
+        }))
+    }
+
+    pub fn edit_spline(
+        &self,
+        entity_id: &str,
+        space: WorkbenchShapePointSpace,
+        anchors: &[WorkbenchSplineAnchorInput],
+        closed: Option<bool>,
+    ) -> Result<WorkbenchSpline, WorkbenchFailure> {
+        let encoded = anchors
+            .iter()
+            .enumerate()
+            .map(|(index, anchor)| {
+                let mode = match anchor.tangent_mode {
+                    WorkbenchSplineTangentModeInput::Auto => "auto",
+                    WorkbenchSplineTangentModeInput::Explicit => "explicit",
+                };
+                let in_tangent = anchor
+                    .in_tangent
+                    .clone()
+                    .unwrap_or(WorkbenchEntityPosition {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    });
+                let out_tangent = anchor
+                    .out_tangent
+                    .clone()
+                    .unwrap_or(WorkbenchEntityPosition {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    });
+                format!(
+                    "{index},{mode},{},{},{},{},{},{},{},{},{}",
+                    anchor.position.x,
+                    anchor.position.y,
+                    anchor.position.z,
+                    in_tangent.x,
+                    in_tangent.y,
+                    in_tangent.z,
+                    out_tangent.x,
+                    out_tangent.y,
+                    out_tangent.z,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(";");
+        self.spline_request(json!({
+            "entityId": entity_id,
+            "operation": "edit",
+            "space": shape_point_space_name(space),
+            "anchors": encoded,
+            "hasClosed": closed.is_some(),
+            "closed": closed.unwrap_or(false),
+        }))
+    }
+
+    pub fn sample_spline(
+        &self,
+        entity_id: &str,
+        space: WorkbenchShapePointSpace,
+        max_samples: usize,
+    ) -> Result<WorkbenchSpline, WorkbenchFailure> {
+        self.spline_request(json!({
+            "entityId": entity_id,
+            "operation": "sample",
+            "space": shape_point_space_name(space),
+            "maxSamples": max_samples,
+        }))
+    }
+
+    fn spline_request(&self, request: Value) -> Result<WorkbenchSpline, WorkbenchFailure> {
+        let mut payload = request
+            .as_object()
+            .cloned()
+            .ok_or_else(|| failure(WorkbenchFailureCode::Protocol))?;
+        payload.insert(
+            "APIFunc".to_string(),
+            Value::String("RST_WorkbenchSpline".to_string()),
+        );
+        let raw: RawBridgeSpline = serde_json::from_value(
+            self.gateway
+                .request(Value::Object(payload), self.options.gateway.status_deadline)?,
+        )
+        .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.bridge_version != WORKBENCH_BRIDGE_VERSION
+            || raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+        {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        raw.into_result()
     }
 
     pub fn set_selection(
@@ -7480,6 +7634,59 @@ fn parse_shape_points(value: &str) -> Option<Vec<WorkbenchEntityPosition>> {
         .collect()
 }
 
+fn parse_spline_vector(values: &[&str], offset: usize) -> Result<WorkbenchEntityPosition, ()> {
+    let x = values[offset].parse::<f32>().map_err(|_| ())?;
+    let y = values[offset + 1].parse::<f32>().map_err(|_| ())?;
+    let z = values[offset + 2].parse::<f32>().map_err(|_| ())?;
+    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+        return Err(());
+    }
+    Ok(WorkbenchEntityPosition { x, y, z })
+}
+
+fn parse_spline_anchors(value: &str) -> Result<Vec<WorkbenchSplineAnchor>, ()> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    value
+        .split(';')
+        .map(|record| {
+            let fields = record.split(',').collect::<Vec<_>>();
+            if fields.len() != 11 {
+                return Err(());
+            }
+            let tangent_mode = match fields[1] {
+                "auto" => WorkbenchSplineTangentMode::Auto,
+                "explicit" => WorkbenchSplineTangentMode::Explicit,
+                _ => return Err(()),
+            };
+            Ok(WorkbenchSplineAnchor {
+                index: fields[0].parse::<usize>().map_err(|_| ())?,
+                position: parse_spline_vector(&fields, 2)?,
+                tangent_mode,
+                in_tangent: parse_spline_vector(&fields, 5)?,
+                out_tangent: parse_spline_vector(&fields, 8)?,
+            })
+        })
+        .collect()
+}
+
+fn parse_spline_samples(value: &str) -> Result<Vec<WorkbenchEntityPosition>, ()> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    value
+        .split(';')
+        .map(|record| {
+            let fields = record.split(',').collect::<Vec<_>>();
+            if fields.len() != 3 {
+                return Err(());
+            }
+            parse_spline_vector(&fields, 0)
+        })
+        .collect()
+}
+
 fn encode_shape_points(points: &[WorkbenchEntityPosition]) -> String {
     points
         .iter()
@@ -7765,6 +7972,61 @@ pub(crate) fn installed_game_addon_project_files() -> Result<Vec<PathBuf>, Strin
             }
         }
         Ok(projects.into_iter().collect())
+    }
+}
+
+#[derive(Deserialize)]
+struct RawBridgeSpline {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    status: String,
+    #[serde(default)]
+    entity: String,
+    #[serde(rename = "shapeClass", default)]
+    shape_class: String,
+    #[serde(default, deserialize_with = "deserialize_boolish")]
+    closed: bool,
+    #[serde(rename = "anchorCount", default)]
+    anchor_count: usize,
+    #[serde(default)]
+    anchors: String,
+    #[serde(default)]
+    samples: String,
+    #[serde(rename = "sampleSpace", default)]
+    sample_space: String,
+    #[serde(rename = "sampleCount", default)]
+    sample_count: usize,
+    #[serde(rename = "pathLength", default)]
+    path_length: f32,
+}
+
+impl RawBridgeSpline {
+    fn into_result(self) -> Result<WorkbenchSpline, WorkbenchFailure> {
+        let entity = parse_optional_world_selection_record(&self.entity)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        let anchors = parse_spline_anchors(&self.anchors)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        let samples = parse_spline_samples(&self.samples)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if !self.path_length.is_finite() {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        Ok(WorkbenchSpline {
+            bridge_version: self.bridge_version,
+            protocol_version: self.protocol_version,
+            status: self.status,
+            entity,
+            shape_class: (!self.shape_class.is_empty()).then_some(self.shape_class),
+            closed: self.closed,
+            anchor_count: self.anchor_count,
+            anchors,
+            samples,
+            sample_space: self.sample_space,
+            sample_count: self.sample_count,
+            path_length: self.path_length,
+        })
     }
 }
 
@@ -8582,6 +8844,7 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
         ("RST_WorkbenchHistory.c", BRIDGE_HISTORY_SOURCE),
         ("RST_WorkbenchShapePoints.c", BRIDGE_SHAPE_POINTS_SOURCE),
         ("RST_WorkbenchShapeGeometry.c", BRIDGE_SHAPE_GEOMETRY_SOURCE),
+        ("RST_WorkbenchSpline.c", BRIDGE_SPLINE_SOURCE),
         ("RST_WorkbenchComponents.c", BRIDGE_COMPONENTS_SOURCE),
         ("RST_WorkbenchProperties.c", BRIDGE_PROPERTIES_SOURCE),
         ("RST_WorkbenchPrefab.c", BRIDGE_PREFAB_SOURCE),
@@ -12753,6 +13016,164 @@ mod tests {
             .contains("source.GetClassName() != \"PolylineShapeEntity\""));
         assert!(super::BRIDGE_SHAPE_GEOMETRY_SOURCE
             .contains("source.GetClassName() != \"SplineShapeEntity\""));
+    }
+
+    #[test]
+    fn spline_bridge_preserves_native_tangent_modes_and_one_action_edits() {
+        assert!(super::BRIDGE_SPLINE_SOURCE.contains("HasPointExplicitTangents"));
+        assert!(super::BRIDGE_SPLINE_SOURCE.contains("GetTangents"));
+        assert!(super::BRIDGE_SPLINE_SOURCE.contains("GenerateTesselatedShape"));
+        assert!(super::BRIDGE_SPLINE_SOURCE.contains("SplinePointData"));
+        assert!(super::BRIDGE_SPLINE_SOURCE.contains("ClearPointData"));
+        assert!(super::BRIDGE_SPLINE_SOURCE.contains("Reforger Script Tools: edit spline"));
+    }
+
+    #[test]
+    fn spline_inspection_reads_anchor_tangent_modes_and_handles() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({
+                    "APIFunc": "RST_WorkbenchSpline",
+                    "entityId": "0x01 {}",
+                    "operation": "inspect",
+                    "space": "local",
+                })
+            );
+            json!({
+                "bridgeVersion":"1.52.12",
+                "protocolVersion":1,
+                "status":"available",
+                "entity":"0x01 {}|SplineShapeEntity|0|1|10|20|30||||",
+                "shapeClass":"SplineShapeEntity",
+                "closed":false,
+                "anchors":"0,auto,0,0,0,0,0,0,0,0,0;1,explicit,10,0,0,-2,0,0,4,1,2",
+                "samples":"",
+                "sampleSpace":"local",
+                "pathLength":10.0,
+                "sampleCount":0,
+            })
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+        let result = controller.inspect_spline("0x01 {}", super::WorkbenchShapePointSpace::Local).unwrap();
+        assert_eq!(result.status, "available");
+        assert_eq!(result.anchors.len(), 2);
+        assert_eq!(result.anchors[1].tangent_mode, super::WorkbenchSplineTangentMode::Explicit);
+        assert_eq!(result.anchors[1].out_tangent.x, 4.0);
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn spline_edit_replaces_anchors_and_closed_state_in_one_typed_request() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({
+                    "APIFunc": "RST_WorkbenchSpline",
+                    "entityId": "0x01 {}",
+                    "operation": "edit",
+                    "space": "world",
+                    "anchors": "0,auto,1,2,3,0,0,0,0,0,0;1,explicit,4,5,6,-1,0,0,2,0,1",
+                    "hasClosed": true,
+                    "closed": true,
+                })
+            );
+            json!({
+                "bridgeVersion":"1.52.12",
+                "protocolVersion":1,
+                "status":"spline-updated",
+                "entity":"0x01 {}|SplineShapeEntity|0|1|10|20|30||||",
+                "shapeClass":"SplineShapeEntity",
+                "closed":true,
+                "anchors":"0,auto,1,2,3,0,0,0,0,0,0;1,explicit,4,5,6,-1,0,0,2,0,1",
+                "samples":"",
+                "sampleSpace":"world",
+                "pathLength":5.0,
+                "sampleCount":0,
+            })
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+        let result = controller
+            .edit_spline(
+                "0x01 {}",
+                super::WorkbenchShapePointSpace::World,
+                &[super::WorkbenchSplineAnchorInput {
+                    position: super::WorkbenchEntityPosition { x: 1.0, y: 2.0, z: 3.0 },
+                    tangent_mode: super::WorkbenchSplineTangentModeInput::Auto,
+                    in_tangent: None,
+                    out_tangent: None,
+                }, super::WorkbenchSplineAnchorInput {
+                    position: super::WorkbenchEntityPosition { x: 4.0, y: 5.0, z: 6.0 },
+                    tangent_mode: super::WorkbenchSplineTangentModeInput::Explicit,
+                    in_tangent: Some(super::WorkbenchEntityPosition { x: -1.0, y: 0.0, z: 0.0 }),
+                    out_tangent: Some(super::WorkbenchEntityPosition { x: 2.0, y: 0.0, z: 1.0 }),
+                }],
+                Some(true),
+            )
+            .unwrap();
+        assert_eq!(result.status, "spline-updated");
+        assert!(result.closed);
+        assert_eq!(result.anchors[0].position, super::WorkbenchEntityPosition { x: 1.0, y: 2.0, z: 3.0 });
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn spline_sampling_returns_bounded_points_and_path_metrics() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({
+                    "APIFunc": "RST_WorkbenchSpline",
+                    "entityId": "0x01 {}",
+                    "operation": "sample",
+                    "space": "world",
+                    "maxSamples": 3,
+                })
+            );
+            json!({
+                "bridgeVersion":"1.52.12",
+                "protocolVersion":1,
+                "status":"sampled",
+                "entity":"0x01 {}|SplineShapeEntity|0|1|10|20|30||||",
+                "shapeClass":"SplineShapeEntity",
+                "closed":false,
+                "anchors":"0,auto,0,0,0,0,0,0,0,0,0;1,auto,10,0,0,0,0,0,0,0,0",
+                "samples":"0,0,0;5,0,0;10,0,0",
+                "sampleSpace":"world",
+                "pathLength":10.0,
+                "sampleCount":3,
+            })
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+        let result = controller
+            .sample_spline("0x01 {}", super::WorkbenchShapePointSpace::World, 3)
+            .unwrap();
+        assert_eq!(result.status, "sampled");
+        assert_eq!(result.sample_count, 3);
+        assert_eq!(result.path_length, 10.0);
+        assert_eq!(result.samples.last().unwrap().x, 10.0);
+        peer.join().unwrap();
     }
 
     #[test]

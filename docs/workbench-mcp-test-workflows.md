@@ -6,8 +6,8 @@ published `workbench_*` MCP capability. The generated
 endpoint inventory. This document owns the dependency graph, acceptance rules,
 workflow order, and endpoint status vocabulary.
 
-The current public inventory contains 63 Workbench endpoints. A new test
-campaign starts with all 63 endpoints at `not-run`; results from an older
+The current public inventory contains 69 Workbench endpoints. A new test
+campaign starts with all 69 endpoints at `not-run`; results from an older
 harness are historical evidence and never seed a new campaign's status.
 
 ## Acceptance seam
@@ -156,12 +156,12 @@ process through MCP.
 
 ```mermaid
 flowchart TD
-    C[0. Catalogue\n tools/list = 63 endpoints]
+    C[0. Catalogue\n tools/list = 69 endpoints]
     L[1. Owned process\n launch exact fixture]
     R[2. Readiness\n status, bridge, project, scripts, editor]
     W[3. World/read baseline\n resource, world, terrain, trace, selection]
     E[4. Entity chain\n create, inspect, component, transform, hierarchy]
-    H[5. Shape chain\n points, polygon, conversion, transform, resample]
+    H[5. Shape chain\n polyline plus spline anchors, tangents, and samples]
     P[6. Prefab resources\n create, inspect, component/property, save]
     PE[7. Prefab editor\n open edit target, write, save, reopen]
     S[8. Save/play/reload/logs\n save -> reload -> logs\n play -> stop -> state]
@@ -197,7 +197,7 @@ some endpoints more than once for readback, confirmation, or cleanup.
 | 2. Readiness | 5 | install bridge, project context, script validation, list/open editor | `connectedWorkbench`, `managedBridge`, `projectContext` | `managedBridge`, `projectContext`, `worldEditor` |
 | 3. World/read | 13 | resource discovery/open, state, terrain, trace, layers, viewport, entity search, selection baseline | `managedBridge`, `projectContext`, `worldEditor`, `canonicalResource` | `activeWorld`, canonical resource identities |
 | 4. Entity | 18 | create/inspect, components, properties, rename/move/rotate, duplicate, reparent, selection, delete | `activeWorld`, exact entity/component IDs | `entity`, `component`, `relatedEntities` |
-| 5. Shape | 6 | read/edit points, regular polygon, coordinate conversion, transform, resample | exact shape entity; `activeWorld` for disposable polyline | `shape` |
+| 5. Shape | 9 | polyline point operations plus spline inspection, one-action anchor/tangent editing, and bounded native sampling | exact shape entity; `activeWorld` for disposable polyline and spline | `shape`, `spline` |
 | 6. Prefab resources | 8 | create/inspect prefab, component add/remove, property set, save/reopen | `entity` or `activeWorld`; canonical resource IDs | `prefabResource`, saved prefab evidence |
 | 7. Prefab editor | 2 | edit-mode property and component writes, save/reopen readback | `prefabEditEntity` from a public edit-mode workflow | prefab-editor write evidence |
 | 8. Save/play/reload | 5 | save, start play, stop play, reload scripts, read scoped logs | `activeWorld`, `savedWorld`, `managedBridge`, `playSession`, `reloadedRuntime` | `savedWorld`, `playSession`, `reloadedRuntime` |
@@ -260,12 +260,14 @@ confirmed deletion. Every mutation has a direct public readback.
 
 ### Workflow 5: shape editing
 
-Create or use one disposable `PolylineShapeEntity`, read its baseline points,
-and reuse it for direct editing, regular polygon generation, local/world
-conversion, named transforms, and resampling. Read points after every mutation.
-Restore the baseline when practical, then delete the disposable shape. Calls
-that create the shape are setup unless they own an otherwise unexecuted
-create-entity case.
+Create or use disposable `PolylineShapeEntity` and `SplineShapeEntity` targets.
+For the polyline, read its baseline points and reuse it for direct editing,
+regular polygon generation, local/world conversion, named transforms, and
+resampling. For the spline, replace a complete anchor set containing both
+automatic and explicit tangent modes, inspect the native readback, and request
+a bounded curve sample. Read after every mutation, then delete both disposable
+shapes. Calls that create the shapes are setup unless they own an otherwise
+unexecuted create-entity case.
 
 ### Workflow 6: prefab resources
 
@@ -378,6 +380,9 @@ runner executes.
 | `workbench_convert_shape_points` | 5 | transformed or parented `shape`, known points | Local-to-world-to-local round trip preserves points within the declared numeric tolerance. | `not-run` |
 | `workbench_transform_shape_points` | 5 | `shape`, baseline points | One named transform changes all points as specified; readback matches and restore is verified. | `not-run` |
 | `workbench_resample_polyline` | 5 | polyline `shape` with valid path | Valid local/world spacing returns coherent original/result counts and readback preserves required endpoints/closure. | `not-run` |
+| `workbench_inspect_spline` | 5 | disposable `spline` | Returns authored anchors, closure state, automatic/explicit tangent modes, and tangent handles in the requested coordinate space. | `not-run` |
+| `workbench_edit_spline` | 5 | disposable `spline` | Replaces a mixed automatic/explicit anchor set and optional closure state in one action; `workbench_inspect_spline` reads back the authored values. | `not-run` |
+| `workbench_sample_spline` | 5 | disposable `spline` | Returns a bounded native tessellation sample and finite approximate path length without changing authored anchors. | `not-run` |
 
 ### Prefab inspection and mutation
 

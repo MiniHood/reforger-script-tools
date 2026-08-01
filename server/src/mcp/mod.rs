@@ -45,6 +45,7 @@ use crate::workbench::{
     WorkbenchTraceShape, WorkbenchValidationPage, WorkbenchViewportContext,
     WorkbenchViewportContextOptions, WorkbenchWorldSelectionSummary,
     WorkbenchEntityTransform, WorkbenchEntityTransformResult, WorkbenchHistoryResult,
+    WorkbenchSpline, WorkbenchSplineAnchorInput, WorkbenchSplineTangentModeInput,
 };
 use crate::workbench_capture::{
     CaptureRegion, CapturedWindow, WorkbenchWindowList, MAX_ENCODED_BYTES, MAX_MAX_DIMENSION,
@@ -141,6 +142,9 @@ pub const WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_TOOL_NAME: &str =
 pub const WORKBENCH_CONVERT_SHAPE_POINTS_TOOL_NAME: &str = "workbench_convert_shape_points";
 pub const WORKBENCH_TRANSFORM_SHAPE_POINTS_TOOL_NAME: &str = "workbench_transform_shape_points";
 pub const WORKBENCH_RESAMPLE_POLYLINE_TOOL_NAME: &str = "workbench_resample_polyline";
+pub const WORKBENCH_INSPECT_SPLINE_TOOL_NAME: &str = "workbench_inspect_spline";
+pub const WORKBENCH_EDIT_SPLINE_TOOL_NAME: &str = "workbench_edit_spline";
+pub const WORKBENCH_SAMPLE_SPLINE_TOOL_NAME: &str = "workbench_sample_spline";
 pub const WORKBENCH_LIST_EDITORS_TOOL_NAME: &str = "workbench_list_editors";
 pub const WORKBENCH_OPEN_EDITOR_TOOL_NAME: &str = "workbench_open_editor";
 pub const WORKBENCH_OPEN_RESOURCE_TOOL_NAME: &str = "workbench_open_resource";
@@ -238,6 +242,9 @@ const WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_DESCRIPTION: &str = "Replace points
 const WORKBENCH_CONVERT_SHAPE_POINTS_DESCRIPTION: &str = "Convert up to 4096 finite points between local authored coordinates and world coordinates for one exact live PolylineShapeEntity or SplineShapeEntity. Workbench applies the complete entity transform, including rotation, scale, and parent hierarchy; this is read-only.";
 const WORKBENCH_TRANSFORM_SHAPE_POINTS_DESCRIPTION: &str = "Apply exactly one named transform—translate, rotateXZ, scale, mirror, or reverse—to all authored points on one exact live PolylineShapeEntity or SplineShapeEntity in one native Workbench undo action. Choose local or world space explicitly; world transforms preserve parent-aware coordinates through Workbench conversion.";
 const WORKBENCH_RESAMPLE_POLYLINE_DESCRIPTION: &str = "Replace one exact live PolylineShapeEntity's authored path with evenly spaced piecewise-linear samples in explicit local or world space, in one native Workbench undo action. Open paths retain their exact endpoints; closed paths include the closing segment without duplicating the first point. SplineShapeEntity is rejected.";
+const WORKBENCH_INSPECT_SPLINE_DESCRIPTION: &str = "Read one exact live SplineShapeEntity's authored anchors, automatic versus explicit tangent modes, tangent handles, closure state, and entity metadata. Positions and tangent vectors are returned in the explicitly requested local or world space; no world content changes.";
+const WORKBENCH_EDIT_SPLINE_DESCRIPTION: &str = "Replace all authored anchors on one exact live SplineShapeEntity, including automatic or explicit tangent data and optional closure state, in one native Workbench undo action. Positions and tangent vectors use the explicitly requested local or world space, and the response contains native readback.";
+const WORKBENCH_SAMPLE_SPLINE_DESCRIPTION: &str = "Return a bounded sample of one exact live SplineShapeEntity's native tessellated curve in explicit local or world space, together with approximate path length. Sampling is read-only and does not replace authored anchors.";
 const WORKBENCH_LIST_EDITORS_DESCRIPTION: &str = "List the native Workbench editor modules available through the compatible managed handler package. Use an editor ID returned here with workbench_open_editor; this does not open or focus an editor.";
 const WORKBENCH_OPEN_EDITOR_DESCRIPTION: &str = "Open one native Workbench editor module by an ID returned from workbench_list_editors. This is the same module-opening surface for every supported editor and does not select a resource.";
 const WORKBENCH_OPEN_RESOURCE_DESCRIPTION: &str = "Open one canonical Workbench resource through Workbench's native resource routing. Workbench selects the owning editor from the resource type; this includes world, script, particle, animation, audio, and string resources without editor-specific commands.";
@@ -571,6 +578,51 @@ struct McpWorkbenchResamplePolylineInput {
     space: McpWorkbenchShapePointSpace,
     #[schemars(range(min = 0.0001, max = 100000.0))]
     spacing_meters: f32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum McpWorkbenchSplineTangentMode {
+    Auto,
+    Explicit,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchSplineAnchorInput {
+    position: WorkbenchEntityPosition,
+    tangent_mode: McpWorkbenchSplineTangentMode,
+    in_tangent: Option<WorkbenchEntityPosition>,
+    out_tangent: Option<WorkbenchEntityPosition>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchEditSplineInput {
+    #[schemars(length(min = 1, max = 256))]
+    entity_id: String,
+    space: McpWorkbenchShapePointSpace,
+    #[schemars(length(min = 2, max = 4096))]
+    anchors: Vec<McpWorkbenchSplineAnchorInput>,
+    closed: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchInspectSplineInput {
+    #[schemars(length(min = 1, max = 256))]
+    entity_id: String,
+    space: McpWorkbenchShapePointSpace,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchSampleSplineInput {
+    #[schemars(length(min = 1, max = 256))]
+    entity_id: String,
+    space: McpWorkbenchShapePointSpace,
+    #[schemars(range(min = 2, max = 4096))]
+    max_samples: usize,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1975,6 +2027,9 @@ impl ReforgerMcpServer {
             workbench_convert_shape_points_tool(),
             workbench_transform_shape_points_tool(),
             workbench_resample_polyline_tool(),
+            workbench_inspect_spline_tool(),
+            workbench_edit_spline_tool(),
+            workbench_sample_spline_tool(),
             workbench_list_editors_tool(),
             workbench_open_editor_tool(),
             workbench_open_resource_tool(),
@@ -2921,6 +2976,92 @@ impl ReforgerMcpServer {
                         .map_err(|failure| {
                             workbench.correlate_failure("set_entity_property", failure)
                         })
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_INSPECT_SPLINE_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchInspectSplineInput>(&request)?;
+            let space = to_shape_point_space(input.space);
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "inspect_spline",
+                move || {
+                    workbench
+                        .inspect_spline(&input.entity_id, space)
+                        .map_err(|failure| workbench.correlate_failure("inspect_spline", failure))
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_EDIT_SPLINE_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchEditSplineInput>(&request)?;
+            if input.anchors.iter().any(|anchor| {
+                !finite_position(&anchor.position)
+                    || anchor
+                        .in_tangent
+                        .as_ref()
+                        .is_some_and(|value| !finite_position(value))
+                    || anchor
+                        .out_tangent
+                        .as_ref()
+                        .is_some_and(|value| !finite_position(value))
+                    || (matches!(anchor.tangent_mode, McpWorkbenchSplineTangentMode::Explicit)
+                        && (anchor.in_tangent.is_none() || anchor.out_tangent.is_none()))
+                    || (matches!(anchor.tangent_mode, McpWorkbenchSplineTangentMode::Auto)
+                        && (anchor.in_tangent.is_some() || anchor.out_tangent.is_some()))
+            }) {
+                return Ok(tool_error(
+                    "invalid_input",
+                    "Spline anchors must contain finite positions; explicit anchors require both handles and auto anchors must omit handles.",
+                    "Provide finite coordinates, both handles for explicit anchors, and no handles for auto anchors.",
+                ));
+            }
+            let anchors = input
+                .anchors
+                .into_iter()
+                .map(|anchor| WorkbenchSplineAnchorInput {
+                    position: anchor.position,
+                    tangent_mode: match anchor.tangent_mode {
+                        McpWorkbenchSplineTangentMode::Auto => {
+                            WorkbenchSplineTangentModeInput::Auto
+                        }
+                        McpWorkbenchSplineTangentMode::Explicit => {
+                            WorkbenchSplineTangentModeInput::Explicit
+                        }
+                    },
+                    in_tangent: anchor.in_tangent,
+                    out_tangent: anchor.out_tangent,
+                })
+                .collect::<Vec<_>>();
+            let space = to_shape_point_space(input.space);
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "edit_spline",
+                move || {
+                    workbench
+                        .edit_spline(&input.entity_id, space, &anchors, input.closed)
+                        .map_err(|failure| workbench.correlate_failure("edit_spline", failure))
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_SAMPLE_SPLINE_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchSampleSplineInput>(&request)?;
+            let space = to_shape_point_space(input.space);
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "sample_spline",
+                move || {
+                    workbench
+                        .sample_spline(&input.entity_id, space, input.max_samples)
+                        .map_err(|failure| workbench.correlate_failure("sample_spline", failure))
                 },
             )
             .await;
@@ -4297,6 +4438,18 @@ fn api_reference_summary(name: &str) -> (&'static str, &'static str) {
             "Shape geometry",
             "Replace a polyline with evenly spaced samples.",
         ),
+        "workbench_inspect_spline" => (
+            "Shape geometry",
+            "Inspect spline anchors and tangent handles.",
+        ),
+        "workbench_edit_spline" => (
+            "Shape geometry",
+            "Replace spline anchors and tangent modes.",
+        ),
+        "workbench_sample_spline" => (
+            "Shape geometry",
+            "Sample a native spline curve.",
+        ),
         "workbench_start_play_session" => (
             "Sessions and saving",
             "Start World Editor play mode after the world is ready.",
@@ -4689,6 +4842,10 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         append_workspace_tool_reference(&mut reference, tool);
     }
     reference
+}
+
+fn finite_position(point: &WorkbenchEntityPosition) -> bool {
+    point.x.is_finite() && point.y.is_finite() && point.z.is_finite()
 }
 
 fn render_api_documents() -> (String, BTreeMap<String, String>) {
@@ -5719,6 +5876,41 @@ fn workbench_resample_polyline_tool() -> Tool {
     )
 }
 
+fn workbench_inspect_spline_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchInspectSplineInput, WorkbenchSpline>(
+        WORKBENCH_INSPECT_SPLINE_TOOL_NAME,
+        WORKBENCH_INSPECT_SPLINE_DESCRIPTION,
+        "Inspect Workbench spline",
+        ToolAnnotations::with_title("Inspect Workbench spline")
+            .read_only(true)
+            .open_world(false),
+    )
+}
+
+fn workbench_edit_spline_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchEditSplineInput, WorkbenchSpline>(
+        WORKBENCH_EDIT_SPLINE_TOOL_NAME,
+        WORKBENCH_EDIT_SPLINE_DESCRIPTION,
+        "Edit Workbench spline",
+        ToolAnnotations::with_title("Edit Workbench spline")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+    )
+}
+
+fn workbench_sample_spline_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchSampleSplineInput, WorkbenchSpline>(
+        WORKBENCH_SAMPLE_SPLINE_TOOL_NAME,
+        WORKBENCH_SAMPLE_SPLINE_DESCRIPTION,
+        "Sample Workbench spline",
+        ToolAnnotations::with_title("Sample Workbench spline")
+            .read_only(true)
+            .open_world(false),
+    )
+}
+
 fn workbench_list_editors_tool() -> Tool {
     workbench_empty_tool::<WorkbenchEditorList>(
         WORKBENCH_LIST_EDITORS_TOOL_NAME,
@@ -6019,6 +6211,7 @@ mod tests {
         workbench_remove_component_tool, workbench_reparent_entity_tool,
         workbench_resample_polyline_tool, workbench_rotate_entity_tool,
         workbench_sample_terrain_tool, workbench_save_prefab_tool, workbench_save_tool,
+        workbench_inspect_spline_tool, workbench_edit_spline_tool, workbench_sample_spline_tool,
         workbench_search_resources_tool,
         workbench_search_world_entities_tool, workbench_selected_entity_hierarchy_tool,
         workbench_set_component_properties_tool, workbench_set_entity_property_tool,
@@ -6041,6 +6234,8 @@ mod tests {
         WORKBENCH_RELOAD_TOOL_NAME, WORKBENCH_REMOVE_COMPONENT_TOOL_NAME,
         WORKBENCH_REPARENT_ENTITY_TOOL_NAME, WORKBENCH_RESAMPLE_POLYLINE_TOOL_NAME,
         WORKBENCH_ROTATE_ENTITY_TOOL_NAME, WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME,
+        WORKBENCH_INSPECT_SPLINE_TOOL_NAME, WORKBENCH_EDIT_SPLINE_TOOL_NAME,
+        WORKBENCH_SAMPLE_SPLINE_TOOL_NAME,
         WORKBENCH_SAVE_PREFAB_TOOL_NAME, WORKBENCH_SAVE_TOOL_NAME,
         WORKBENCH_SEARCH_RESOURCES_TOOL_NAME,
         WORKBENCH_SEARCH_WORLD_ENTITIES_TOOL_NAME, WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
@@ -6324,6 +6519,30 @@ mod tests {
         assert_eq!(
             convert.annotations.and_then(|value| value.read_only_hint),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn spline_tools_expose_tangent_modes_spaces_and_read_only_sampling() {
+        let inspect = workbench_inspect_spline_tool();
+        let edit = workbench_edit_spline_tool();
+        let sample = workbench_sample_spline_tool();
+        assert_eq!(inspect.name, WORKBENCH_INSPECT_SPLINE_TOOL_NAME);
+        assert_eq!(edit.name, WORKBENCH_EDIT_SPLINE_TOOL_NAME);
+        assert_eq!(sample.name, WORKBENCH_SAMPLE_SPLINE_TOOL_NAME);
+        let edit_schema = serde_json::to_value(&edit.input_schema).unwrap();
+        assert!(edit_schema.to_string().contains("tangentMode"));
+        assert!(edit_schema.to_string().contains("anchors"));
+        assert!(edit_schema.to_string().contains("closed"));
+        let inspect_schema = serde_json::to_value(&inspect.input_schema).unwrap();
+        assert!(inspect_schema.to_string().contains("space"));
+        assert_eq!(
+            sample.annotations.and_then(|value| value.read_only_hint),
+            Some(true)
+        );
+        assert_eq!(
+            edit.annotations.and_then(|value| value.read_only_hint),
+            Some(false)
         );
     }
 

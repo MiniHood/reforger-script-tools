@@ -47,7 +47,8 @@ const toolFamilyRules = [
     /^(set|clear)_selection$|^(create|rename|delete|move|rotate|transform|reparent|duplicate)_entity$|^(add|set|remove)_(component|entity)/,
   ],
   ["history", /^(undo|redo)$/],
-  ["shape-write", /^(edit_shape_points|set_polyline_regular_polygon|convert_shape_points|transform_shape_points|resample_polyline)$/],
+  ["shape-read", /^(inspect_spline|sample_spline)$/],
+  ["shape-write", /^(edit_shape_points|edit_spline|set_polyline_regular_polygon|convert_shape_points|transform_shape_points|resample_polyline)$/],
   ["play-session", /^(start|stop)_play_session$/],
   ["save", /^save$/],
   ["window", /^(list_windows|capture_window)$/],
@@ -58,7 +59,7 @@ const corpusWorkflowTools = {
   readiness: ["workbench_install_bridge", "workbench_project_context", "workbench_validate_scripts", "workbench_list_editors", "workbench_open_editor"],
   "world-read": ["workbench_search_resources", "workbench_list_resources", "workbench_inspect_resource", "workbench_open_resource", "workbench_state", "workbench_world_selection_summary", "workbench_list_entities", "workbench_search_world_entities", "workbench_layer_state", "workbench_find_entities_by_radius", "workbench_sample_terrain", "workbench_get_viewport_context", "workbench_trace"],
   entity: ["workbench_selected_entity_hierarchy", "workbench_inspect_entity", "workbench_list_components", "workbench_inspect_component", "workbench_list_entity_properties", "workbench_create_entity", "workbench_add_component", "workbench_set_component_properties", "workbench_set_entity_properties", "workbench_rename_entity", "workbench_move_entity", "workbench_rotate_entity", "workbench_transform_entity", "workbench_duplicate_entity", "workbench_reparent_entity", "workbench_set_selection", "workbench_clear_selection", "workbench_remove_component", "workbench_delete_entity", "workbench_undo", "workbench_redo"],
-  shape: ["workbench_get_shape_points", "workbench_edit_shape_points", "workbench_set_polyline_regular_polygon", "workbench_convert_shape_points", "workbench_transform_shape_points", "workbench_resample_polyline"],
+  shape: ["workbench_get_shape_points", "workbench_edit_shape_points", "workbench_set_polyline_regular_polygon", "workbench_convert_shape_points", "workbench_transform_shape_points", "workbench_resample_polyline", "workbench_inspect_spline", "workbench_edit_spline", "workbench_sample_spline"],
   "prefab-resource": ["workbench_create_prefab", "workbench_create_generic_prefab", "workbench_inspect_prefab_context", "workbench_inspect_prefab_component", "workbench_add_prefab_resource_component", "workbench_set_prefab_resource_property", "workbench_remove_prefab_resource_component", "workbench_save_prefab"],
   "prefab-editor": ["workbench_set_prefab_property", "workbench_set_prefab_component_property"],
   "save-play-reload": ["workbench_save", "workbench_start_play_session", "workbench_stop_play_session", "workbench_reload", "workbench_read_logs"],
@@ -89,6 +90,7 @@ const corpusFactProducers = {
   entity: "workbench_create_entity",
   component: "workbench_add_component",
   shape: "workbench_create_entity",
+  spline: "workbench_create_entity",
   prefabResource: "workbench_create_generic_prefab",
   prefabEditEntity: "workbench_inspect_prefab_context",
   savedWorld: "workbench_save",
@@ -150,6 +152,7 @@ const corpusToolDependencies = Object.fromEntries([
   [["workbench_create_entity"], ["activeWorld"]],
   [["workbench_add_component", "workbench_set_component_properties", "workbench_set_entity_properties", "workbench_rename_entity", "workbench_move_entity", "workbench_rotate_entity", "workbench_transform_entity", "workbench_reparent_entity", "workbench_duplicate_entity", "workbench_set_selection", "workbench_clear_selection", "workbench_remove_component", "workbench_delete_entity", "workbench_undo", "workbench_redo"], ["entity"]],
   [["workbench_get_shape_points", "workbench_edit_shape_points", "workbench_set_polyline_regular_polygon", "workbench_convert_shape_points", "workbench_transform_shape_points", "workbench_resample_polyline"], ["shape"]],
+  [["workbench_inspect_spline", "workbench_edit_spline", "workbench_sample_spline"], ["spline"]],
   [["workbench_create_prefab"], ["entity"]],
   [["workbench_create_generic_prefab"], ["activeWorld"]],
   [["workbench_add_prefab_resource_component", "workbench_remove_prefab_resource_component", "workbench_set_prefab_resource_property"], ["prefabResource"]],
@@ -202,6 +205,7 @@ const corpusReadbackTools = {
   workbench_convert_shape_points: ["workbench_get_shape_points"],
   workbench_transform_shape_points: ["workbench_get_shape_points"],
   workbench_resample_polyline: ["workbench_get_shape_points"],
+  workbench_edit_spline: ["workbench_inspect_spline"],
   workbench_create_prefab: ["workbench_inspect_resource"],
   workbench_create_generic_prefab: ["workbench_inspect_resource"],
   workbench_add_prefab_resource_component: ["workbench_inspect_prefab_context"],
@@ -234,6 +238,7 @@ const corpusCleanupTools = {
   workbench_convert_shape_points: [],
   workbench_transform_shape_points: ["workbench_edit_shape_points"],
   workbench_resample_polyline: ["workbench_delete_entity"],
+  workbench_edit_spline: ["workbench_delete_entity"],
 };
 
 export function buildWorkbenchEndpointPlan(
@@ -412,6 +417,7 @@ function inferScenarioFacts(step) {
   const facts = [];
   if (captured.some((name) => /entityId/i.test(name))) facts.push("entity");
   if (captured.some((name) => /shapeEntityId/i.test(name))) facts.push("shape");
+  if (captured.some((name) => /splineEntityId/i.test(name))) facts.push("spline");
   if (captured.some((name) => /componentId/i.test(name))) facts.push("component");
   if (captured.some((name) => /polylineEntityId|shapePoints/i.test(name))) facts.push("shape");
   if (captured.some((name) => /windowId/i.test(name))) facts.push("window");
@@ -1894,6 +1900,7 @@ export async function runWorkbenchCorpus({
               entityName: `McpConformanceEntity-${corpusRunId}`,
               duplicateName: `McpConformanceDuplicate-${corpusRunId}`,
               polylineName: `McpConformancePolyline-${corpusRunId}`,
+              splineName: `McpConformanceSpline-${corpusRunId}`,
             },
           }
         : {};
