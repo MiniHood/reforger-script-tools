@@ -154,5 +154,9 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.doesNotMatch(searchUiSource, /Enter a symbol, concept, or documentation term to search\./);
 		assert.doesNotMatch(searchUiSource, /function search\(resetPagination\) \{ if \(resetPagination\) \{ state\.page = 1; state\.total = 0; \}/);
 		assert.doesNotMatch(searchUiSource, /if \(message\.type === 'loading'\) \{[^}]*render\(\); \}/);
+		assert.match(searchUiSource, /event\.ctrlKey && event\.key === 'F3'/);
+		assert.match(searchUiSource, /type: 'debugSnapshot'/);
+		assert.match(searchUiSource, /message\.type === 'debugSnapshot'/);
+		assert.match(searchUiSource, /searchUi\.snapshot/);
 	});
 });

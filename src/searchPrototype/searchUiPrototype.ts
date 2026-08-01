@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { diagnostic } from '../diagnostics/diagnostics';
+import { diagnostic, diagnosticsEnabled } from '../diagnostics/diagnostics';
 import { resolveBaseGameIndexCache } from '../gameData/baseGameIndexCache';
 import { searchCommands, searchContext } from '../extensionConfig/search';
 import { discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
@@ -110,6 +110,10 @@ async function handleMessage(
 		});
 		return;
 	}
+	if (message.type === 'debugSnapshot') {
+		logSearchSnapshot(message.snapshot);
+		return;
+	}
 	if (message.type === 'search' && typeof message.query === 'string') {
 		if (!isSearchKindValue(message.resultType)) {
 			return;
@@ -135,6 +139,39 @@ async function handleMessage(
 			await vscode.env.openExternal(vscode.Uri.parse(hit.sourceUrl));
 		}
 	}
+}
+
+function logSearchSnapshot(value: unknown): void {
+	if (!diagnosticsEnabled()) {
+		void vscode.window.showInformationMessage(
+			'Search snapshot not logged. Enable Reforger Script Tools diagnostics first.',
+		);
+		return;
+	}
+	const snapshot = isRecord(value) ? value : {};
+	const viewport = isRecord(snapshot.viewport) ? snapshot.viewport : {};
+	diagnostic('searchUi.snapshot', {
+		query: textField(snapshot.query),
+		source: textField(snapshot.source),
+		resultType: textField(snapshot.resultType),
+		status: textField(snapshot.status),
+		requestId: numberField(snapshot.requestId),
+		page: numberField(snapshot.page),
+		pageSize: numberField(snapshot.pageSize),
+		total: numberField(snapshot.total),
+		totalPages: numberField(snapshot.totalPages),
+		resultCount: numberField(snapshot.resultCount),
+		visibleResultCount: numberField(snapshot.visibleResultCount),
+		selectedId: textField(snapshot.selectedId),
+		warningCount: Array.isArray(snapshot.warnings) ? snapshot.warnings.length : 0,
+		warnings: jsonField(snapshot.warnings),
+		error: textField(snapshot.error),
+		viewportWidth: numberField(viewport.width),
+		viewportHeight: numberField(viewport.height),
+		devicePixelRatio: numberField(viewport.devicePixelRatio),
+		results: jsonField(snapshot.results),
+	});
+	void vscode.window.showInformationMessage('Search snapshot logged to extension diagnostics.');
 }
 
 async function runSearch(
@@ -485,6 +522,34 @@ const resultRows = () => visibleResults().map(result => {
   return '<article class="source-row ' + (selected ? 'selected' : '') + '" data-open="' + esc(result.id) + '" tabindex="0" role="button"><div class="source-icon">' + (result.kind === 'documentation' ? 'W' : 'S') + '</div><div class="result-content"><div class="result-head"><h3>' + esc(result.title) + '</h3><div class="result-path">' + esc(result.path) + '</div></div><div class="result-detail">' + esc(result.detail) + ' · ' + esc(sourceLabel(result.source)) + '</div>' + preview + '<div class="result-actions">' + external + '</div></div></article>';
 }).join('');
 const hasTextSelection = () => Boolean(window.getSelection()?.toString());
+const captureSearchSnapshot = () => vscode.postMessage({ type: 'debugSnapshot', snapshot: {
+  query: state.query,
+  source: state.source,
+  resultType: state.type,
+  status: state.status,
+  requestId: state.requestId,
+  page: state.page,
+  pageSize: state.pageSize,
+  total: state.total,
+  totalPages: totalPages(),
+  resultCount: state.results.length,
+  visibleResultCount: visibleResults().length,
+  selectedId: state.selected,
+  warnings: state.warnings,
+  error: state.error,
+  viewport: { width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio },
+  results: state.results.map(result => ({
+    id: result.id,
+    source: result.source,
+    kind: result.kind,
+    title: result.title,
+    detail: result.detail,
+    path: result.path,
+    matchKind: result.matchKind,
+    hasSourceUrl: Boolean(result.sourceUrl),
+    hasSourceUri: Boolean(result.sourceUri),
+  })),
+} });
 const openResult = element => {
   if (!element.dataset.open || hasTextSelection()) return;
   state.selected = element.dataset.open;
@@ -517,6 +582,7 @@ function render() {
   });
   document.querySelectorAll('[data-external]').forEach(element => element.addEventListener('click', event => { event.stopPropagation(); vscode.postMessage({ type: 'external', id: element.dataset.external }); }));
 }
+document.addEventListener('keydown', event => { if (event.ctrlKey && event.key === 'F3') { event.preventDefault(); event.stopPropagation(); captureSearchSnapshot(); } });
 let searchTimer;
 function scheduleSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(() => search(true), 260); }
 function requestPage(value) { const requested = Number.parseInt(value, 10); if (!Number.isFinite(requested)) return; state.page = Math.min(totalPages(), Math.max(1, requested)); search(false); }
@@ -547,4 +613,15 @@ function textField(value: unknown): string | undefined {
 
 function numberField(value: unknown): number | undefined {
 	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function jsonField(value: unknown): string | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	try {
+		return JSON.stringify(value).slice(0, 50_000);
+	} catch {
+		return '[unserializable]';
+	}
 }
