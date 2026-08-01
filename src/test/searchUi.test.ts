@@ -127,5 +127,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.doesNotMatch(searchUiSource, /maxPageNumber/);
 		assert.doesNotMatch(searchUiSource, /results per source/);
 		assert.match(searchUiSource, /Showing up to ' \+ state\.pageSize \+ ' total results/);
+		assert.match(searchUiSource, /<div class="empty">No results match this search\.<\/div>/);
+		assert.doesNotMatch(searchUiSource, /Enter a symbol, concept, or documentation term to search\./);
 	});
 });
