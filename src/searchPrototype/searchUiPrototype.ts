@@ -290,6 +290,15 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .result-detail, .result-path { display: block; color: var(--muted); font-size: 12px; }
 .result-path { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .snippet { margin: 9px 0 0; padding: 10px; overflow: auto; background: var(--alt); border: 1px solid var(--border); font: 12px/1.5 var(--vscode-editor-font-family); white-space: pre-wrap; }
+.md-preview { margin: 9px 0 0; padding: 10px 12px; overflow: auto; background: var(--alt); border: 1px solid var(--border); line-height: 1.5; }
+.md-preview h1, .md-preview h2, .md-preview h3, .md-preview h4, .md-preview h5, .md-preview h6 { margin: 0 0 7px; font-size: 14px; }
+.md-preview p { margin: 0 0 8px; }
+.md-preview p:last-child, .md-preview ul:last-child, .md-preview blockquote:last-child { margin-bottom: 0; }
+.md-preview ul { margin: 0 0 8px; padding-left: 20px; }
+.md-preview blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 2px solid var(--accent); color: var(--muted); }
+.md-preview a { color: var(--accent); }
+.md-preview code { padding: 1px 4px; background: var(--panel); font-family: var(--vscode-editor-font-family); }
+.md-preview .md-code { margin: 0 0 8px; padding: 8px; overflow: auto; background: var(--panel); font: 12px/1.45 var(--vscode-editor-font-family); white-space: pre-wrap; }
 .result-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .result-actions button { padding: 5px 8px; }
 .open { color: var(--selected-text); background: var(--selected); border-color: transparent !important; }
@@ -317,10 +326,46 @@ const visibleResults = () => state.results.filter(result => state.type === 'all'
 const sourceButtons = () => sources.map(source => '<button class="' + (state.source === source.value ? 'active' : '') + '" data-source="' + esc(source.value) + '">' + esc(source.label) + '</button>').join('');
 const resultTypes = [{ value: 'all', label: 'All result types' }, { value: 'symbol', label: 'Symbols' }, { value: 'documentation', label: 'Documentation' }];
 const typeButtons = () => resultTypes.map(type => '<button class="' + (state.type === type.value ? 'active' : '') + '" data-type="' + esc(type.value) + '">' + esc(type.label) + '</button>').join('');
+const inlineMarkdown = value => value
+  .replace(/\`([^\`]+)\`/g, '<code>$1</code>')
+  .replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^)\\s]+)\\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
+  .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')
+  .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+  .replace(/\\*([^*]+)\\*/g, '<em>$1</em>')
+  .replace(/_([^_]+)_/g, '<em>$1</em>');
+const renderMarkdown = value => {
+  const lines = esc(value).split('\\n');
+  const output = [];
+  let paragraph = [];
+  let list = false;
+  let code = false;
+  const flushParagraph = () => { if (paragraph.length) { output.push('<p>' + inlineMarkdown(paragraph.join(' ')) + '</p>'); paragraph = []; } };
+  const closeList = () => { if (list) { output.push('</ul>'); list = false; } };
+  lines.forEach(line => {
+    if (line.trim().startsWith('\`\`\`')) {
+      flushParagraph(); closeList();
+      if (code) { output.push('</code></pre>'); } else { output.push('<pre class="md-code"><code>'); }
+      code = !code;
+      return;
+    }
+    if (code) { output.push(line + '\\n'); return; }
+    if (!line.trim()) { flushParagraph(); closeList(); return; }
+    const heading = line.match(/^(#{1,6})\\s+(.+)$/);
+    if (heading) { flushParagraph(); closeList(); output.push('<h' + heading[1].length + '>' + inlineMarkdown(heading[2]) + '</h' + heading[1].length + '>'); return; }
+    const item = line.match(/^\\s*[-*+]\\s+(.+)$/);
+    if (item) { flushParagraph(); if (!list) { output.push('<ul>'); list = true; } output.push('<li>' + inlineMarkdown(item[1]) + '</li>'); return; }
+    if (line.match(/^>\\s?/)) { flushParagraph(); closeList(); output.push('<blockquote>' + inlineMarkdown(line.replace(/^>\\s?/, '')) + '</blockquote>'); return; }
+    closeList(); paragraph.push(line.trim());
+  });
+  flushParagraph(); closeList();
+  if (code) { output.push('</code></pre>'); }
+  return output.join('');
+};
 const resultRows = () => visibleResults().map(result => {
   const selected = state.selected === result.id;
   const external = result.sourceUrl ? '<button data-external="' + esc(result.id) + '">Open official page</button>' : '';
-  return '<article class="source-row ' + (selected ? 'selected' : '') + '"><div class="source-icon">' + (result.kind === 'documentation' ? 'W' : 'S') + '</div><div><h3>' + esc(result.title) + '</h3><div class="result-detail">' + esc(result.detail) + ' · ' + esc(sourceLabel(result.source)) + '</div><pre class="snippet">' + esc(result.excerpt) + '</pre><div class="result-actions"><button class="open" data-open="' + esc(result.id) + '">Open source</button>' + external + '</div></div><div class="result-path">' + esc(result.path) + '</div></article>';
+  const preview = result.kind === 'documentation' ? '<div class="md-preview">' + renderMarkdown(result.excerpt) + '</div>' : '<pre class="snippet">' + esc(result.excerpt) + '</pre>';
+  return '<article class="source-row ' + (selected ? 'selected' : '') + '"><div class="source-icon">' + (result.kind === 'documentation' ? 'W' : 'S') + '</div><div><h3>' + esc(result.title) + '</h3><div class="result-detail">' + esc(result.detail) + ' · ' + esc(sourceLabel(result.source)) + '</div>' + preview + '<div class="result-actions"><button class="open" data-open="' + esc(result.id) + '">Open source</button>' + external + '</div></div><div class="result-path">' + esc(result.path) + '</div></article>';
 }).join('');
 function render() {
   const results = visibleResults();
