@@ -26,11 +26,11 @@ export async function activate(context: vscode.ExtensionContext) {
 	const workbenchReady = integration?.start() ?? Promise.resolve(true);
 	const workbenchStartupGate = integration?.whenConsentSettled() ?? Promise.resolve(true);
 	await workbenchStartupGate;
-	let refreshLanguageClientGameData: (() => Promise<void>) | undefined;
+	let refreshLanguageClientGameData: ReturnType<typeof registerLanguageClientFeatures> | undefined;
 	let workbenchConnectedBeforeLanguageClient = false;
 	registerWorkbenchCompilerFeatures(context, integration, () => {
 		if (refreshLanguageClientGameData) {
-			void refreshLanguageClientGameData();
+			void refreshLanguageClientGameData({ showProgress: false });
 		} else {
 			workbenchConnectedBeforeLanguageClient = true;
 		}
@@ -41,9 +41,9 @@ export async function activate(context: vscode.ExtensionContext) {
 		workbenchStartupGate,
 	);
 	if (workbenchConnectedBeforeLanguageClient) {
-		void refreshLanguageClientGameData();
+		void refreshLanguageClientGameData({ showProgress: false });
 	}
-	registerGameDataFeatures(context, refreshLanguageClientGameData);
+	registerGameDataFeatures(context, () => refreshLanguageClientGameData?.());
 	registerMcpConfigurationCommand(context);
 	logLanguageClientStartupTiming(context, 'activationEnd');
 	diagnostic('activationEnd');

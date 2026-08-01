@@ -112,6 +112,14 @@ interface ExternalIndexProgressSession {
   progress: ExternalIndexProgress;
 }
 
+export interface GameDataRefreshOptions {
+  showProgress?: boolean;
+}
+
+type GameDataProgressPresenter = (
+  task: (progress: ExternalIndexProgress) => Promise<void>,
+) => Thenable<void>;
+
 let activeExternalIndexProgressSession:
   ExternalIndexProgressSession | undefined;
 
@@ -160,7 +168,7 @@ export function registerLanguageClientFeatures(
 	context: vscode.ExtensionContext,
 	workbenchReady?: Promise<boolean>,
 	workbenchStartupGate?: Promise<boolean>,
-): () => Promise<void> {
+): (options?: GameDataRefreshOptions) => Promise<void> {
   logLanguageClientStartupTiming(context, "languageClientRegistrationStart");
   const outputChannel = vscode.window.createOutputChannel(
     languageClientIds.name,
@@ -259,36 +267,50 @@ export function registerLanguageClientFeatures(
     }
   });
   logLanguageClientStartupTiming(context, "languageClientRegistrationEnd");
-  return async () => {
-    await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: "Reforger game data",
-        cancellable: false,
-      },
-      async (progress) => {
-        const session = { progress };
-        activeExternalIndexProgressSession = session;
-        try {
-          if (refreshWorkbenchGraph) {
-            await refreshWorkbenchGraph();
-          } else {
-            await restartLanguageClient(
-              context,
-              outputChannel,
-              "game-data source changed",
-              true,
-              workbenchReady,
-            );
-          }
-        } finally {
-          if (activeExternalIndexProgressSession === session) {
-            activeExternalIndexProgressSession = undefined;
-          }
-        }
-      },
-    );
+  return async (options) => {
+    await runWithGameDataProgress(options, async () => {
+      if (refreshWorkbenchGraph) {
+        await refreshWorkbenchGraph();
+      } else {
+        await restartLanguageClient(
+          context,
+          outputChannel,
+          "game-data source changed",
+          true,
+          workbenchReady,
+        );
+      }
+    });
   };
+}
+
+export async function runWithGameDataProgress(
+  options: GameDataRefreshOptions | undefined,
+  task: () => Promise<void>,
+  present: GameDataProgressPresenter = callback => vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "Reforger game data",
+      cancellable: false,
+    },
+    callback,
+  ),
+): Promise<void> {
+  if (options?.showProgress === false) {
+    await task();
+    return;
+  }
+  await present(async progress => {
+    const session = { progress };
+    activeExternalIndexProgressSession = session;
+    try {
+      await task();
+    } finally {
+      if (activeExternalIndexProgressSession === session) {
+        activeExternalIndexProgressSession = undefined;
+      }
+    }
+  });
 }
 
 export function runAfterWorkbenchStartupGate<T>(

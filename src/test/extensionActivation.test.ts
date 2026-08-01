@@ -21,6 +21,7 @@ import {
 	ifSpaceCommitContractFromCommandArguments,
 	languageClientStartupElapsedMs,
 	runAfterWorkbenchStartupGate,
+	runWithGameDataProgress,
 } from '../languageClient/languageClient';
 import { positionFromByteOffset } from '../languageClient/symbolLocationBridge';
 import { discoverWorkspaceProjectFile } from '../languageClient/workspaceWatchBridge';
@@ -53,6 +54,34 @@ import {
 } from '../languageClient/semanticTokenBoundaryGuardBridge';
 
 suite('extension activation', () => {
+	test('keeps automatic Workbench graph reconciliation out of notification progress', async () => {
+		let progressPresented = false;
+		let refreshRan = false;
+		await runWithGameDataProgress(
+			{ showProgress: false },
+			async () => {
+				refreshRan = true;
+			},
+			async task => {
+				progressPresented = true;
+				await task({ report: () => undefined });
+			},
+		);
+
+		assert.strictEqual(refreshRan, true);
+		assert.strictEqual(progressPresented, false);
+
+		await runWithGameDataProgress(
+			undefined,
+			async () => undefined,
+			async task => {
+				progressPresented = true;
+				await task({ report: () => undefined });
+			},
+		);
+		assert.strictEqual(progressPresented, true);
+	});
+
 	test('does not start indexing before the Workbench approval gate settles', async () => {
 		let releaseApproval = (_approved: boolean): void => undefined;
 		const approval = new Promise<boolean>(resolve => {
