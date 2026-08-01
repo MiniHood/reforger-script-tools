@@ -28,7 +28,7 @@ suite('Reforger search UI MCP mapping', () => {
 	});
 
 	test('extracts the authoritative source line for a symbol preview', () => {
-		assert.strictEqual(sourceLinePreview({ content: '    class SCR_Mode\n', startLine: 18, endLine: 18 }, 18), '    class SCR_Mode');
+		assert.strictEqual(sourceLinePreview({ content: '    class SCR_Mode\n', startLine: 18, endLine: 18 }, 18), 'class SCR_Mode');
 		assert.strictEqual(sourceLinePreview({ content: 'only line', startLine: 0, endLine: 0 }, 1), 'only line');
 	});
 

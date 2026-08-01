@@ -65,7 +65,7 @@ export function sourceLinePreview(document: SearchDocument, line: number | undef
 	const lines = document.content.split(/\r?\n/);
 	const startLine = document.startLine > 0 ? document.startLine : line ?? 1;
 	const lineIndex = Math.max(0, (line ?? startLine) - startLine);
-	return lines[lineIndex] ?? lines[0] ?? '';
+	return (lines[lineIndex] ?? lines[0] ?? '').trimStart();
 }
 
 export interface McpSearchClientOptions {
