@@ -204,6 +204,9 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 		const range = selectionRange(documentWithLanguage, hit, boundedDocument?.startLine ?? 1);
 		editor.selection = new vscode.Selection(range.start, range.end);
 		editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+		if (hit.source === 'wiki') {
+			await vscode.commands.executeCommand('markdown.showPreview', documentWithLanguage.uri);
+		}
 	} catch (error) {
 		await vscode.window.showErrorMessage(
 			`Could not open ${hit.title}: ${error instanceof Error ? error.message : String(error)}`,
@@ -297,6 +300,7 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .md-preview ul { margin: 0 0 8px; padding-left: 20px; }
 .md-preview blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 2px solid var(--accent); color: var(--muted); }
 .md-preview a { color: var(--accent); }
+.md-preview .md-link { color: var(--accent); }
 .md-preview code { padding: 1px 4px; background: var(--panel); font-family: var(--vscode-editor-font-family); }
 .md-preview .md-code { margin: 0 0 8px; padding: 8px; overflow: auto; background: var(--panel); font: 12px/1.45 var(--vscode-editor-font-family); white-space: pre-wrap; }
 .result-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
@@ -327,8 +331,9 @@ const sourceButtons = () => sources.map(source => '<button class="' + (state.sou
 const resultTypes = [{ value: 'all', label: 'All result types' }, { value: 'symbol', label: 'Symbols' }, { value: 'documentation', label: 'Documentation' }];
 const typeButtons = () => resultTypes.map(type => '<button class="' + (state.type === type.value ? 'active' : '') + '" data-type="' + esc(type.value) + '">' + esc(type.label) + '</button>').join('');
 const inlineMarkdown = value => value
+  .replace(/\\\\([*_])/g, '$1')
   .replace(/\`([^\`]+)\`/g, '<code>$1</code>')
-  .replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^)\\s]+)\\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
+  .replace(/\\\\[([^\\\\]]+)\\\\]\\(([^)\\s]+)\\)/g, (match, text, url) => url.startsWith('https://') ? '<a href="' + url + '" target="_blank" rel="noreferrer">' + text + '</a>' : '<span class="md-link">' + text + '</span>')
   .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')
   .replace(/__([^_]+)__/g, '<strong>$1</strong>')
   .replace(/\\*([^*]+)\\*/g, '<em>$1</em>')
