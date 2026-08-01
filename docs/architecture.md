@@ -203,7 +203,12 @@ The optional managed handler package lives under the current Windows user's
 directory. The VS Code extension owns a one-time first-install prompt
 controlled by the unified `reforgerScriptTools.workbench.enabled` setting,
 which defaults to false. Approval enables that setting and stores the
-resulting approval as an internal durable extension state. The managed manifest
+resulting approval as an internal durable extension state. On an installation
+that has not answered the current consent prompt, activation waits for that
+answer before registering Workbench compiler features, starting the language
+server, showing indexing progress, installing bridge scripts, or building any
+index. Declining records the setting as disabled and then permits the ordinary
+non-Workbench language-server startup. The managed manifest
 remains the file-ownership and version record. Public MCP cannot create that
 first manifest; its explicit installer may maintain an existing consented
 installation. A prior

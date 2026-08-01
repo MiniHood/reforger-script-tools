@@ -12,7 +12,7 @@ import { registerWorkbenchCompilerFeatures } from './workbenchNetApi/compiler/wo
 import { createWorkbenchIntegration } from './workbenchNetApi/integration/workbenchIntegration';
 import { resolveLanguageServerPath } from './languageClient/serverPath';
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
 	initializeDiagnostics(context);
 	beginLanguageClientStartupTimingSession();
 	diagnostic('activationStart');
@@ -24,6 +24,8 @@ export function activate(context: vscode.ExtensionContext) {
 		? undefined
 		: createWorkbenchIntegration(context, resolveLanguageServerPath(context));
 	const workbenchReady = integration?.start() ?? Promise.resolve(true);
+	const workbenchStartupGate = integration?.whenConsentSettled() ?? Promise.resolve(true);
+	await workbenchStartupGate;
 	let refreshLanguageClientGameData: (() => Promise<void>) | undefined;
 	let workbenchConnectedBeforeLanguageClient = false;
 	registerWorkbenchCompilerFeatures(context, integration, () => {
@@ -33,7 +35,11 @@ export function activate(context: vscode.ExtensionContext) {
 			workbenchConnectedBeforeLanguageClient = true;
 		}
 	});
-	refreshLanguageClientGameData = registerLanguageClientFeatures(context, workbenchReady);
+	refreshLanguageClientGameData = registerLanguageClientFeatures(
+		context,
+		workbenchReady,
+		workbenchStartupGate,
+	);
 	if (workbenchConnectedBeforeLanguageClient) {
 		void refreshLanguageClientGameData();
 	}

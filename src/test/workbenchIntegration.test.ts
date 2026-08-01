@@ -19,6 +19,42 @@ suite('Workbench Integration', () => {
 		});
 	});
 
+	test('keeps feature startup gated until the first approval prompt is answered', async () => {
+		let answerPrompt = (_approved: boolean): void => undefined;
+		let prompted = false;
+		let bootstraps = 0;
+		const coordinator = new WorkbenchIntegrationCoordinator(
+			stateWith(false),
+			runtimeWith({
+				bootstrap: async () => {
+					bootstraps += 1;
+					return bootstrapResult();
+				},
+			}),
+			uiWith({
+				confirmInstall: () => new Promise<boolean>(resolve => {
+					prompted = true;
+					answerPrompt = resolve;
+				}),
+			}),
+			false,
+		);
+
+		void coordinator.start();
+		await waitUntil(() => prompted);
+		let consentSettled = false;
+		void coordinator.whenConsentSettled().then(() => {
+			consentSettled = true;
+		});
+		await Promise.resolve();
+		assert.strictEqual(consentSettled, false);
+		assert.strictEqual(bootstraps, 0);
+
+		answerPrompt(true);
+		assert.strictEqual(await coordinator.whenConsentSettled(), true);
+		await waitUntil(() => bootstraps === 1);
+	});
+
 	test('disabled Workbench prompts for consent and enables the setting after approval', async () => {
 		let enabled = false;
 		let bootstraps = 0;
@@ -117,9 +153,10 @@ suite('Workbench Integration', () => {
 		assert.strictEqual(prompts, 2);
 	});
 
-	test('declining approval resolves startup without changing Workbench', async () => {
+	test('declining approval disables Workbench integration without installing it', async () => {
 		let prompts = 0;
 		let bootstraps = 0;
+		let disabled = 0;
 		const coordinator = new WorkbenchIntegrationCoordinator(
 			stateWith(false),
 			runtimeWith({
@@ -136,12 +173,19 @@ suite('Workbench Integration', () => {
 				},
 			}),
 			true,
+			undefined,
+			true,
+			async () => {
+				disabled += 1;
+			},
 		);
 
 		await coordinator.start();
 
 		assert.strictEqual(prompts, 1);
 		assert.strictEqual(bootstraps, 0);
+		assert.strictEqual(disabled, 1);
+		assert.strictEqual(await coordinator.whenConsentSettled(), false);
 	});
 
 	test('approval enables the integration and prompts to restart an open Workbench', async () => {

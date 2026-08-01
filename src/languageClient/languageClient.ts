@@ -159,6 +159,7 @@ function sanitizeDiagnosticFields(
 export function registerLanguageClientFeatures(
 	context: vscode.ExtensionContext,
 	workbenchReady?: Promise<boolean>,
+	workbenchStartupGate?: Promise<boolean>,
 ): () => Promise<void> {
   logLanguageClientStartupTiming(context, "languageClientRegistrationStart");
   const outputChannel = vscode.window.createOutputChannel(
@@ -232,7 +233,7 @@ export function registerLanguageClientFeatures(
   );
 
   const bracketColoring = getBracketColoringMode();
-	const startup = Promise.resolve(vscode.window.withProgress(
+	const startup = runAfterWorkbenchStartupGate(workbenchStartupGate, () => vscode.window.withProgress(
 		{
 			location: vscode.ProgressLocation.Window,
 			title: 'Reforger: Indexing loaded add-ons',
@@ -288,6 +289,13 @@ export function registerLanguageClientFeatures(
       },
     );
   };
+}
+
+export function runAfterWorkbenchStartupGate<T>(
+	gate: Promise<boolean> | undefined,
+	task: () => PromiseLike<T> | T,
+): Promise<T> {
+	return Promise.resolve(gate).then(() => task());
 }
 
 function registerFirstDocumentOpenTiming(

@@ -9,9 +9,9 @@ import {
 	WorkbenchProcessStatus,
 } from '../gateway/workbenchGateway';
 
-// V2 avoids inheriting the pre-consent implementation's implicit approval for
-// users who already had a managed bridge installed.
-const approvalStateKey = 'workbenchIntegrationApprovedV2';
+// V3 gates all feature and index startup on an explicit response to the
+// current consent prompt instead of inheriting the earlier late-startup gate.
+const approvalStateKey = 'workbenchIntegrationApprovedV3';
 const installChoice = 'Enable Workbench Integration';
 const installFailureMessage = 'Reforger Workbench integration could not be installed.';
 const restartMessage = 'Reforger Workbench integration was updated. Restart Workbench to activate it.';
@@ -64,6 +64,8 @@ export interface WorkbenchIntegrationState {
 export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 	private readonly ready: Promise<boolean>;
 	private resolveReady: ((ready: boolean) => void) | undefined;
+	private readonly consentSettled: Promise<boolean>;
+	private resolveConsentSettled: ((approved: boolean) => void) | undefined;
 	private startup: Promise<boolean> | undefined;
 	private startupResult: boolean | undefined;
 	private startupInProgress = false;
@@ -85,14 +87,21 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 		enabled: boolean,
 		private readonly enableWorkbench?: () => Promise<void>,
 		private readonly promptWhenDisabled = true,
+		private readonly disableWorkbench?: () => Promise<void>,
 	) {
 		this.enabled = enabled;
 		this.ready = new Promise(resolve => {
 			this.resolveReady = resolve;
 		});
+		this.consentSettled = new Promise(resolve => {
+			this.resolveConsentSettled = resolve;
+		});
 	}
 
 	public start(): Promise<boolean> {
+		if (this.state.isApproved()) {
+			this.resolveConsentSettled?.(true);
+		}
 		if (this.startup && (this.startupInProgress
 			|| this.startupResult !== false
 			|| !this.enabled)) {
@@ -102,6 +111,7 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 			return this.ready;
 		}
 		if (!this.enabled && (!this.promptWhenDisabled || this.state.isApproved())) {
+			this.resolveConsentSettled?.(this.state.isApproved());
 			this.resolveReady?.(true);
 			return this.ready;
 		}
@@ -113,6 +123,7 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 				return result;
 			})
 			.catch(error => {
+				this.resolveConsentSettled?.(false);
 				this.startupInProgress = false;
 				const message = error instanceof Error ? error.message : String(error);
 				diagnostic('workbenchIntegrationStartupFailed', { message });
@@ -181,8 +192,13 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 		return this.ready;
 	}
 
+	public whenConsentSettled(): Promise<boolean> {
+		return this.consentSettled;
+	}
+
 	public dispose(): void {
 		this.disposed = true;
+		this.resolveConsentSettled?.(false);
 		this.resolveReady?.(false);
 	}
 
@@ -199,10 +215,13 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 		let result: WorkbenchGatewayResult<WorkbenchIntegrationBootstrap>;
 		if (!approved) {
 			if (!(await this.ui.confirmInstall())) {
+				await this.disableWorkbench?.();
+				this.resolveConsentSettled?.(false);
 				this.bootstrapFinished = true;
 				this.resolveReady?.(false);
 				return false;
 			}
+			this.resolveConsentSettled?.(true);
 			result = await this.ui.runInstall(() => this.runtime.bootstrap(endpoint));
 		} else if (status.ok
 			&& status.value.installed
@@ -375,6 +394,13 @@ export function createWorkbenchIntegration(
 			);
 		},
 		startup.promptWhenDisabled,
+		async () => {
+			await configuration.update(
+				workbenchConfig.settings.enabled,
+				false,
+				configurationEnablementScope(configuration).target,
+			);
+		},
 	);
 }
 

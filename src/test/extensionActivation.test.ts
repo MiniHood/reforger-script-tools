@@ -20,6 +20,7 @@ import {
 	monitorExternalIndexProgress,
 	ifSpaceCommitContractFromCommandArguments,
 	languageClientStartupElapsedMs,
+	runAfterWorkbenchStartupGate,
 } from '../languageClient/languageClient';
 import { positionFromByteOffset } from '../languageClient/symbolLocationBridge';
 import { discoverWorkspaceProjectFile } from '../languageClient/workspaceWatchBridge';
@@ -52,6 +53,23 @@ import {
 } from '../languageClient/semanticTokenBoundaryGuardBridge';
 
 suite('extension activation', () => {
+	test('does not start indexing before the Workbench approval gate settles', async () => {
+		let releaseApproval = (_approved: boolean): void => undefined;
+		const approval = new Promise<boolean>(resolve => {
+			releaseApproval = resolve;
+		});
+		let indexingStarted = false;
+		const startup = runAfterWorkbenchStartupGate(approval, () => {
+			indexingStarted = true;
+		});
+
+		await Promise.resolve();
+		assert.strictEqual(indexingStarted, false);
+		releaseApproval(false);
+		await startup;
+		assert.strictEqual(indexingStarted, true);
+	});
+
 	test('starts startup timing from each activation', () => {
 		beginLanguageClientStartupTimingSession(1_000);
 		assert.equal(languageClientStartupElapsedMs(1_250), 250);

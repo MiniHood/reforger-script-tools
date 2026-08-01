@@ -250,7 +250,12 @@ The unified `reforgerScriptTools.workbench.enabled` setting defaults to
 enable Workbench integration and install the managed bridge. Approval updates
 the setting to `true`, writes `NetAPI_Enabled` as `REG_SZ "1"`, and either asks
 the user to restart an open Workbench or completes setup without launching a
-closed Workbench. Approval is retained as internal extension state;
+closed Workbench. Until that first prompt is answered, activation does not
+register the Workbench compiler features, start the language server, show the
+indexing progress indicator, install bridge scripts, or build indexes. A
+decline stores the Workbench setting as `false`, after which the normal
+non-Workbench language-server and indexing startup may proceed. Approval is
+retained as internal extension state;
 later enabled activations maintain or upgrade the bridge without prompting and
 never rewrite the registry value. An explicitly disabled setting remains off.
 An approved installation without an explicit enablement value remains off; the
