@@ -94,6 +94,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.doesNotMatch(searchUiSource, /<button class="open" data-open=/);
 		assert.match(searchUiSource, /const hasTextSelection = \(\) => Boolean\(window\.getSelection\(\)\?\.toString\(\)\);/);
 		assert.match(searchUiSource, /if \(event\.target\.closest\('\[data-external\]'\) \|\| hasTextSelection\(\)\) return;/);
+		assert.match(searchUiSource, /keydown', event => \{ if \(event\.target\.closest\('\[data-external\]'\)\) return;/);
 		assert.match(searchUiSource, /data-external="' \+ esc\(result\.id\) \+ '">Open official page/);
 	});
 });

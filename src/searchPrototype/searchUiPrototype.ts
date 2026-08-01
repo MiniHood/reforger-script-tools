@@ -459,7 +459,7 @@ function render() {
   document.querySelectorAll('[data-source]').forEach(element => element.addEventListener('click', () => { state.source = element.dataset.source; search(); }));
   document.querySelectorAll('[data-open]').forEach(element => {
     element.addEventListener('click', event => { if (event.target.closest('[data-external]') || hasTextSelection()) return; openResult(element); });
-    element.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openResult(element); } });
+    element.addEventListener('keydown', event => { if (event.target.closest('[data-external]')) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openResult(element); } });
   });
   document.querySelectorAll('[data-external]').forEach(element => element.addEventListener('click', event => { event.stopPropagation(); vscode.postMessage({ type: 'external', id: element.dataset.external }); }));
 }
