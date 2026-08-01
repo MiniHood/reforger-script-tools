@@ -23,6 +23,7 @@ export interface SearchHit {
 export interface SearchResponse {
 	results: SearchHit[];
 	warnings: string[];
+	totalBySource: Partial<Record<SearchSource, number>>;
 }
 
 export interface SearchDocument {
@@ -55,9 +56,16 @@ interface PendingRequest {
 }
 
 const requestTimeoutMs = 135_000;
+const maxSearchPageCaches = 32;
 
 interface RecordValue {
 	[key: string]: unknown;
+}
+
+interface CachedSearchPage {
+	results: SearchHit[];
+	total: number;
+	nextCursor?: string;
 }
 
 export class McpSearchClient {
@@ -66,30 +74,42 @@ export class McpSearchClient {
 	private nextRequestId = 1;
 	private readonly pending = new Map<number, PendingRequest>();
 	private initialized: Promise<void> | undefined;
+	private readonly searchPageCaches = new Map<string, Map<number, CachedSearchPage>>();
 
 	public constructor(private readonly options: McpSearchClientOptions) {}
 
-	public async search(query: string, sources: SearchSource[]): Promise<SearchResponse> {
+	public async search(
+		query: string,
+		sources: SearchSource[],
+		pageSize: number,
+		page: number,
+	): Promise<SearchResponse> {
 		await this.start();
+		const normalizedPageSize = Math.min(100, Math.max(1, Math.floor(pageSize)));
+		const normalizedPage = Math.max(1, Math.floor(page));
 		const responses = await Promise.all(sources.map(async source => {
 			try {
-				const value = await this.callTool(searchToolFor(source), { query, limit: 12 });
+				const value = await this.searchPage(query, source, normalizedPageSize, normalizedPage);
 				return { source, value, warning: undefined };
 			} catch (error) {
 				return { source, value: undefined, warning: searchErrorMessage(source, error) };
 			}
 		}));
 
-		const results = responses.flatMap(response => response.value
-			? normalizeSearchPage(response.source, response.value)
-			: []);
+		const results = responses.flatMap(response => response.value?.results ?? []);
 		const warnings = responses
 			.map(response => response.warning)
 			.filter((warning): warning is string => warning !== undefined);
 		if (results.length === 0 && warnings.length === responses.length) {
 			throw new Error(warnings.join(' '));
 		}
-		return { results, warnings };
+		const totalBySource: Partial<Record<SearchSource, number>> = {};
+		for (const response of responses) {
+			if (response.value) {
+				totalBySource[response.source] = response.value.total;
+			}
+		}
+		return { results, warnings, totalBySource };
 	}
 
 	public async read(hit: SearchHit): Promise<SearchDocument> {
@@ -148,6 +168,7 @@ export class McpSearchClient {
 		const activeProcess = this.process;
 		this.process = undefined;
 		this.initialized = undefined;
+		this.searchPageCaches.clear();
 		const error = new Error('The Reforger search session was closed.');
 		for (const request of this.pending.values()) {
 			request.reject(error);
@@ -201,6 +222,54 @@ export class McpSearchClient {
 			throw new Error(asString(structured.message, `MCP tool ${tool} failed.`));
 		}
 		return response.result?.structuredContent ?? {};
+	}
+
+	private async searchPage(
+		query: string,
+		source: SearchSource,
+		pageSize: number,
+		page: number,
+	): Promise<CachedSearchPage> {
+		const cacheKey = `${source}\u0000${pageSize}\u0000${query}`;
+		let pages = this.searchPageCaches.get(cacheKey);
+		if (!pages) {
+			if (this.searchPageCaches.size >= maxSearchPageCaches) {
+				const oldest = this.searchPageCaches.keys().next().value;
+				if (oldest !== undefined) {
+					this.searchPageCaches.delete(oldest);
+				}
+			}
+			pages = new Map<number, CachedSearchPage>();
+			this.searchPageCaches.set(cacheKey, pages);
+		}
+
+		let previousPage: CachedSearchPage | undefined;
+		for (let pageNumber = 1; pageNumber <= page; pageNumber += 1) {
+			const cached = pages.get(pageNumber);
+			if (cached) {
+				previousPage = cached;
+				continue;
+			}
+			if (pageNumber > 1 && !previousPage?.nextCursor) {
+				return { results: [], total: previousPage?.total ?? 0 };
+			}
+			const argumentsValue: Record<string, unknown> = { query, limit: pageSize };
+			if (previousPage?.nextCursor) {
+				argumentsValue.cursor = previousPage.nextCursor;
+			}
+			const value = asRecord(await this.callTool(searchToolFor(source), argumentsValue));
+			const results = normalizeSearchPage(source, value);
+			const currentPage: CachedSearchPage = {
+				results,
+				total: asNumber(value.total, results.length),
+				...(typeof value.nextCursor === 'string' && value.nextCursor.length > 0
+					? { nextCursor: value.nextCursor }
+					: {}),
+			};
+			pages.set(pageNumber, currentPage);
+			previousPage = currentPage;
+		}
+		return previousPage ?? { results: [], total: 0 };
 	}
 
 	private request(method: string, params: unknown): Promise<JsonRpcResult> {

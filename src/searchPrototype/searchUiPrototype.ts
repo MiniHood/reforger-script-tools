@@ -109,7 +109,14 @@ async function handleMessage(
 		return;
 	}
 	if (message.type === 'search' && typeof message.query === 'string') {
-		await runSearch(context, active, message.query, message.source);
+		await runSearch(
+			context,
+			active,
+			message.query,
+			message.source,
+			numberField(message.page) ?? 1,
+			numberField(message.pageSize) ?? 25,
+		);
 		return;
 	}
 	if (message.type === 'open' && typeof message.id === 'string') {
@@ -129,6 +136,8 @@ async function runSearch(
 	active: ActiveSearch,
 	query: string,
 	sourceValue: unknown,
+	page: number,
+	pageSize: number,
 ): Promise<void> {
 	const normalizedQuery = query.trim();
 	const requestId = ++active.requestSequence;
@@ -147,7 +156,7 @@ async function runSearch(
 	active.panel.webview.postMessage({ type: 'loading', requestId });
 	try {
 		const client = await getClient(context, active);
-		const result = await client.search(normalizedQuery, sourcesFor(sourceValue));
+		const result = await client.search(normalizedQuery, sourcesFor(sourceValue), pageSize, page);
 		if (active.disposed || requestId !== active.requestSequence) {
 			return;
 		}
@@ -163,6 +172,9 @@ async function runSearch(
 			requestId,
 			results: result.results,
 			warnings: result.warnings,
+			totalBySource: result.totalBySource,
+			page,
+			pageSize,
 		});
 	} catch (error) {
 		if (!active.disposed && requestId === active.requestSequence) {
@@ -338,6 +350,13 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .source-rail button { display: block; width: 100%; margin: 3px 0; padding: 9px 10px; text-align: left; border: 0; background: transparent; }
 .source-rail button.active { background: var(--selected); color: var(--selected-text); }
 .source-header { display: flex; justify-content: space-between; align-items: end; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+.page-controls { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
+.page-controls button, .page-controls input, .page-controls select { min-height: 28px; }
+.page-controls button { min-width: 28px; padding: 3px 7px; }
+.page-controls input { width: 48px; padding: 3px 5px; text-align: center; border: 1px solid var(--border); background: var(--alt); outline: none; }
+.page-controls input:focus, .page-controls select:focus { border-color: var(--accent); }
+.page-controls select { padding: 3px 5px; border: 1px solid var(--border); background: var(--alt); }
+.page-bottom { display: flex; justify-content: flex-end; margin-top: 12px; }
 .muted { color: var(--muted); }
 .tag { border-radius: 12px; padding: 3px 8px; background: var(--alt); color: var(--muted); font-size: 11px; }
 .source-rows { display: grid; gap: 10px; margin-top: 12px; }
@@ -367,7 +386,7 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .error { padding: 10px 12px; border: 1px solid var(--vscode-inputValidation-errorBorder); color: var(--vscode-errorForeground); background: var(--vscode-inputValidation-errorBackground); }
 .warning { padding: 8px 10px; border-left: 2px solid var(--vscode-editorWarning-foreground); color: var(--muted); }
 .empty { padding: 30px 14px; border: 1px dashed var(--border); color: var(--muted); }
-@media (max-width: 720px) { .shell { padding: 18px 14px 60px; } .layout { grid-template-columns: 1fr; } .toolbar { flex-wrap: wrap; } .toolbar input { flex-basis: 100%; } .source-row { grid-template-columns: 26px 1fr; } .result-head { align-items: flex-start; flex-wrap: wrap; } .result-path { max-width: 100%; margin-left: 0; text-align: left; } }
+@media (max-width: 720px) { .shell { padding: 18px 14px 60px; } .layout { grid-template-columns: 1fr; } .toolbar { flex-wrap: wrap; } .toolbar input { flex-basis: 100%; } .source-header { align-items: flex-start; gap: 10px; } .source-row { grid-template-columns: 26px 1fr; } .result-head { align-items: flex-start; flex-wrap: wrap; } .result-path { max-width: 100%; margin-left: 0; text-align: left; } }
 </style>
 </head>
 <body>
@@ -381,7 +400,7 @@ window.__reforgerSearchVscode.postMessage({ type: 'webviewReady', width: window.
 </script>
 <script nonce="${nonce}">
 const vscode = window.__reforgerSearchVscode;
-const state = { query: '', source: 'all', type: 'all', results: [], warnings: [], status: 'idle', error: '', requestId: 0, selected: '' };
+const state = { query: '', source: 'all', type: 'all', results: [], warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, totalBySource: {} };
 const sources = [
   { value: 'all', label: 'All sources' },
   { value: 'workspace', label: 'Workspace' },
@@ -394,6 +413,17 @@ const visibleResults = () => state.results.filter(result => state.type === 'all'
 const sourceButtons = () => sources.map(source => '<button class="' + (state.source === source.value ? 'active' : '') + '" data-source="' + esc(source.value) + '">' + esc(source.label) + '</button>').join('');
 const resultTypes = [{ value: 'all', label: 'All result types' }, { value: 'symbol', label: 'Symbols' }, { value: 'documentation', label: 'Documentation' }];
 const typeButtons = () => resultTypes.map(type => '<button class="' + (state.type === type.value ? 'active' : '') + '" data-type="' + esc(type.value) + '">' + esc(type.label) + '</button>').join('');
+const pageSizeOptions = [25, 50, 100];
+const sourceMatchesType = source => state.type === 'all' || (state.type === 'symbol' && source !== 'wiki') || (state.type === 'documentation' && source === 'wiki');
+const pagedSources = () => sources.filter(source => source.value !== 'all' && (state.source === 'all' || state.source === source.value) && sourceMatchesType(source.value));
+const totalMatches = () => pagedSources().reduce((total, source) => total + (state.totalBySource[source.value] ?? 0), 0);
+const totalPages = () => Math.max(1, ...pagedSources().map(source => Math.ceil((state.totalBySource[source.value] ?? 0) / state.pageSize)));
+const pageControls = () => {
+  const disabled = !state.query.trim() || state.status === 'loading';
+  const pageTotal = totalPages();
+  const sizes = pageSizeOptions.map(size => '<option value="' + size + '"' + (state.pageSize === size ? ' selected' : '') + '>' + size + ' results</option>').join('');
+  return '<div class="page-controls" aria-label="Search result pages"><button type="button" data-page-prev' + (disabled || state.page <= 1 ? ' disabled' : '') + ' aria-label="Previous page">‹</button><span class="muted">Page</span><input data-page-input type="number" min="1" max="' + pageTotal + '" value="' + state.page + '" aria-label="Current result page"' + (disabled ? ' disabled' : '') + '><span class="muted">of ' + pageTotal + '</span><button type="button" data-page-next' + (disabled || state.page >= pageTotal ? ' disabled' : '') + ' aria-label="Next page">›</button><select data-page-size aria-label="Results per source"' + (disabled ? ' disabled' : '') + '>' + sizes + '</select></div>';
+};
 const inlineMarkdown = value => value
   .replace(/\\\\([*_])/g, '$1')
   .replace(/\`([^\`]+)\`/g, '<code>$1</code>')
@@ -449,14 +479,22 @@ function render() {
   const results = visibleResults();
   const body = state.error ? '<div class="error">' + esc(state.error) + '</div>' : results.length ? '<div class="source-rows">' + resultRows() + '</div>' : '<div class="empty">' + (state.status === 'idle' ? 'Enter a symbol, concept, or documentation term to search.' : 'No results match this search.') + '</div>';
   const warnings = state.warnings.map(warning => '<div class="warning">' + esc(warning) + '</div>').join('');
-  document.getElementById('app').innerHTML = '<div class="shell"><div class="eyebrow">Source browser · live MCP search</div><h1>Find usage in Reforger</h1><p class="intro">Search the indexed workspace, shipped Game Data, and Official Wiki together. Select a result to open the exact source document and highlight the matching lines.</p><div class="toolbar"><input id="query" value="' + esc(state.query) + '" placeholder="Search a symbol, concept, or phrase..." aria-label="Search query"></div><div class="layout"><aside class="source-rail"><div class="group-label">SEARCH IN</div>' + sourceButtons() + '<div class="group-label">RESULT TYPE</div>' + typeButtons() + '</aside><section><div class="source-header"><div><h2>' + results.length + ' matches</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Showing up to 12 results per source') + '</span></div><span class="tag">' + (state.status === 'loading' ? 'loading' : 'ready') + '</span></div><div class="status">' + (state.status === 'error' ? 'Search failed' : '') + '</div>' + warnings + body + '</section></div></div>';
+  const bottomPager = state.query.trim() && totalMatches() > 0 ? '<div class="page-bottom">' + pageControls() + '</div>' : '';
+  document.getElementById('app').innerHTML = '<div class="shell"><div class="eyebrow">Source browser · live MCP search</div><h1>Find usage in Reforger</h1><p class="intro">Search the indexed workspace, shipped Game Data, and Official Wiki together. Select a result to open the exact source document and highlight the matching lines.</p><div class="toolbar"><input id="query" value="' + esc(state.query) + '" placeholder="Search a symbol, concept, or phrase..." aria-label="Search query"></div><div class="layout"><aside class="source-rail"><div class="group-label">SEARCH IN</div>' + sourceButtons() + '<div class="group-label">RESULT TYPE</div>' + typeButtons() + '</aside><section><div class="source-header"><div><h2>' + totalMatches() + ' matches</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Showing up to ' + state.pageSize + ' results per source') + '</span></div>' + pageControls() + '</div><div class="status">' + (state.status === 'error' ? 'Search failed' : '') + '</div>' + warnings + body + bottomPager + '</section></div></div>';
   const query = document.getElementById('query');
   query.focus();
   query.setSelectionRange(state.query.length, state.query.length);
   query.addEventListener('input', event => { state.query = event.target.value; scheduleSearch(); });
-  query.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); search(); } });
-  document.querySelectorAll('[data-type]').forEach(element => element.addEventListener('click', () => { state.type = element.dataset.type; render(); }));
-  document.querySelectorAll('[data-source]').forEach(element => element.addEventListener('click', () => { state.source = element.dataset.source; search(); }));
+  query.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); search(true); } });
+  document.querySelectorAll('[data-type]').forEach(element => element.addEventListener('click', () => { state.type = element.dataset.type; state.page = 1; render(); }));
+  document.querySelectorAll('[data-source]').forEach(element => element.addEventListener('click', () => { state.source = element.dataset.source; search(true); }));
+  document.querySelectorAll('[data-page-prev]').forEach(element => element.addEventListener('click', () => requestPage(state.page - 1)));
+  document.querySelectorAll('[data-page-next]').forEach(element => element.addEventListener('click', () => requestPage(state.page + 1)));
+  document.querySelectorAll('[data-page-size]').forEach(element => element.addEventListener('change', event => { state.pageSize = Number(event.target.value); search(true); }));
+  document.querySelectorAll('[data-page-input]').forEach(element => {
+    element.addEventListener('change', event => requestPage(event.target.value));
+    element.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); requestPage(event.target.value); } });
+  });
   document.querySelectorAll('[data-open]').forEach(element => {
     element.addEventListener('click', event => { if (event.target.closest('[data-external]') || hasTextSelection()) return; openResult(element); });
     element.addEventListener('keydown', event => { if (event.target.closest('[data-external]')) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openResult(element); } });
@@ -464,9 +502,10 @@ function render() {
   document.querySelectorAll('[data-external]').forEach(element => element.addEventListener('click', event => { event.stopPropagation(); vscode.postMessage({ type: 'external', id: element.dataset.external }); }));
 }
 let searchTimer;
-function scheduleSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(search, 260); }
-function search() { state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; render(); vscode.postMessage({ type: 'search', query: state.query, source: state.source }); }
-window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; render(); } if (message.type === 'results') { state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.warnings = message.warnings ?? []; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; render(); } });
+function scheduleSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(() => search(true), 260); }
+function requestPage(value) { const requested = Number.parseInt(value, 10); if (!Number.isFinite(requested)) return; state.page = Math.min(totalPages(), Math.max(1, requested)); search(false); }
+function search(resetPagination) { if (resetPagination) { state.page = 1; state.totalBySource = {}; } state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; render(); vscode.postMessage({ type: 'search', query: state.query, source: state.source, page: state.page, pageSize: state.pageSize }); }
+window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; render(); } if (message.type === 'results') { state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.warnings = message.warnings ?? []; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; render(); } });
 render();
 </script>
 </body>

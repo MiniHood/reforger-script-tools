@@ -7,6 +7,10 @@ const searchUiSource = fs.readFileSync(
 	path.join(__dirname, '../../src/searchPrototype/searchUiPrototype.ts'),
 	'utf8',
 );
+const searchClientSource = fs.readFileSync(
+	path.join(__dirname, '../../src/searchPrototype/mcpSearchClient.ts'),
+	'utf8',
+);
 
 suite('Reforger search UI MCP mapping', () => {
 	test('routes each source to its authoritative search tool', () => {
@@ -96,5 +100,20 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /if \(event\.target\.closest\('\[data-external\]'\) \|\| hasTextSelection\(\)\) return;/);
 		assert.match(searchUiSource, /keydown', event => \{ if \(event\.target\.closest\('\[data-external\]'\)\) return;/);
 		assert.match(searchUiSource, /data-external="' \+ esc\(result\.id\) \+ '">Open official page/);
+	});
+
+	test('supports cursor-backed result pages and selectable page sizes', () => {
+		assert.match(searchClientSource, /public async search\([\s\S]*?pageSize: number,[\s\S]*?page: number/);
+		assert.match(searchClientSource, /limit: pageSize/);
+		assert.match(searchClientSource, /cursor/);
+		assert.match(searchClientSource, /nextCursor/);
+		assert.match(searchClientSource, /totalBySource/);
+		assert.match(searchUiSource, /const pageSizeOptions = \[25, 50, 100\];/);
+		assert.match(searchUiSource, /data-page-input/);
+		assert.match(searchUiSource, /data-page-prev/);
+		assert.match(searchUiSource, /data-page-next/);
+		assert.match(searchUiSource, /data-page-size/);
+		assert.match(searchUiSource, /value="' \+ state\.page \+ '"/);
+		assert.match(searchUiSource, /of ' \+ pageTotal \+ '<\/span>/);
 	});
 });
