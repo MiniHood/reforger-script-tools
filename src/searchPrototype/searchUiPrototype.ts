@@ -177,29 +177,33 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 	}
 	try {
 		const client = await getClientFromActive(active);
-		const document = await client.read(hit);
-		const key = `document-${++documentSequence}`;
-		while (searchDocuments.size >= maxSearchDocuments) {
-			const oldest = searchDocuments.keys().next().value;
-			if (oldest === undefined) {
-				break;
+		const sourcePath = await client.resolveSourcePath(hit);
+		let opened: vscode.TextDocument;
+		let boundedDocument: SearchDocument | undefined;
+		if (sourcePath) {
+			opened = await vscode.workspace.openTextDocument(vscode.Uri.file(sourcePath));
+		} else {
+			boundedDocument = await client.read(hit);
+			const key = `document-${++documentSequence}`;
+			while (searchDocuments.size >= maxSearchDocuments) {
+				const oldest = searchDocuments.keys().next().value;
+				if (oldest === undefined) {
+					break;
+				}
+				searchDocuments.delete(oldest);
 			}
-			searchDocuments.delete(oldest);
+			searchDocuments.set(key, boundedDocument.content);
+			const uri = vscode.Uri.parse(
+				`${searchScheme}:/${key}/${encodeURIComponent(hit.path)}`,
+			);
+			opened = await vscode.workspace.openTextDocument(uri);
 		}
-		searchDocuments.set(key, document.content);
-		const uri = vscode.Uri.parse(
-			`${searchScheme}:/${key}/${encodeURIComponent(hit.path)}`,
-		);
-		const opened = await vscode.workspace.openTextDocument(uri);
 		const language = hit.source === 'wiki' ? 'markdown' : 'enforce';
 		const documentWithLanguage = await vscode.languages.setTextDocumentLanguage(opened, language);
 		const editor = await vscode.window.showTextDocument(documentWithLanguage);
-		const startLine = Math.max(0, document.startLine - 1);
-		const endLine = Math.max(startLine, document.endLine - 1);
-		editor.revealRange(
-			new vscode.Range(startLine, 0, endLine, 0),
-			vscode.TextEditorRevealType.InCenterIfOutsideViewport,
-		);
+		const range = selectionRange(documentWithLanguage, hit, boundedDocument?.startLine ?? 1);
+		editor.selection = new vscode.Selection(range.start, range.end);
+		editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
 	} catch (error) {
 		await vscode.window.showErrorMessage(
 			`Could not open ${hit.title}: ${error instanceof Error ? error.message : String(error)}`,
@@ -227,6 +231,24 @@ function sourcesFor(value: unknown): SearchSource[] {
 	}
 }
 
+function selectionRange(
+	document: vscode.TextDocument,
+	hit: SearchHit,
+	contentStartLine: number,
+): vscode.Range {
+	const startLine = Math.max(0, (hit.selectionStartLine ?? contentStartLine) - contentStartLine);
+	const endLine = Math.min(
+		document.lineCount - 1,
+		Math.max(startLine, (hit.selectionEndLine ?? hit.selectionStartLine ?? contentStartLine) - contentStartLine),
+	);
+	return new vscode.Range(
+		startLine,
+		0,
+		endLine,
+		document.lineAt(endLine).text.length,
+	);
+}
+
 function renderSearchUi(webview: vscode.Webview): string {
 	const nonce = createNonce();
 	return `<!DOCTYPE html>
@@ -252,9 +274,7 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .intro { max-width: 780px; color: var(--muted); line-height: 1.5; margin-bottom: 20px; }
 .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; }
 .toolbar input { flex: 1; min-width: 160px; border: 1px solid var(--border); background: var(--alt); padding: 9px 11px; outline: none; }
-.toolbar input:focus, .toolbar select:focus { border-color: var(--accent); }
-.toolbar select { border: 1px solid var(--border); background: var(--alt); padding: 8px 9px; }
-.search-button { padding: 8px 12px; color: var(--selected-text); background: var(--selected); border-color: transparent; }
+.toolbar input:focus { border-color: var(--accent); }
 .layout { display: grid; grid-template-columns: 170px 1fr; gap: 18px; }
 .source-rail { height: fit-content; border: 1px solid var(--border); padding: 10px; background: var(--panel); }
 .group-label { padding: 0 4px 6px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .07em; }
@@ -295,7 +315,8 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&a
 const sourceLabel = value => sources.find(source => source.value === value)?.label ?? value;
 const visibleResults = () => state.results.filter(result => state.type === 'all' || result.kind === state.type);
 const sourceButtons = () => sources.map(source => '<button class="' + (state.source === source.value ? 'active' : '') + '" data-source="' + esc(source.value) + '">' + esc(source.label) + '</button>').join('');
-const typeOptions = () => [['all', 'All result types'], ['symbol', 'Symbols'], ['documentation', 'Documentation']].map(([value, label]) => '<option value="' + value + '">' + label + '</option>').join('');
+const resultTypes = [{ value: 'all', label: 'All result types' }, { value: 'symbol', label: 'Symbols' }, { value: 'documentation', label: 'Documentation' }];
+const typeButtons = () => resultTypes.map(type => '<button class="' + (state.type === type.value ? 'active' : '') + '" data-type="' + esc(type.value) + '">' + esc(type.label) + '</button>').join('');
 const resultRows = () => visibleResults().map(result => {
   const selected = state.selected === result.id;
   const external = result.sourceUrl ? '<button data-external="' + esc(result.id) + '">Open official page</button>' : '';
@@ -305,15 +326,13 @@ function render() {
   const results = visibleResults();
   const body = state.error ? '<div class="error">' + esc(state.error) + '</div>' : results.length ? '<div class="source-rows">' + resultRows() + '</div>' : '<div class="empty">' + (state.status === 'idle' ? 'Enter a symbol, concept, or documentation term to search.' : 'No results match this search.') + '</div>';
   const warnings = state.warnings.map(warning => '<div class="warning">' + esc(warning) + '</div>').join('');
-  document.getElementById('app').innerHTML = '<div class="shell"><div class="eyebrow">Source browser · live MCP search</div><h1>Find usage in Reforger</h1><p class="intro">Search the indexed workspace, shipped Game Data, and Official Wiki together. Select a result to open the exact bounded source passage or documentation returned by the authoritative search API.</p><div class="toolbar"><input id="query" value="' + esc(state.query) + '" placeholder="Search a symbol, concept, or phrase..." aria-label="Search query"><select id="type" aria-label="Result type">' + typeOptions() + '</select><button class="search-button" id="search">Search</button></div><div class="layout"><aside class="source-rail"><div class="group-label">SEARCH IN</div>' + sourceButtons() + '</aside><section><div class="source-header"><div><h2>' + results.length + ' matches</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Showing up to 12 results per source') + '</span></div><span class="tag">' + (state.status === 'loading' ? 'loading' : 'ready') + '</span></div><div class="status">' + (state.status === 'error' ? 'Search failed' : '') + '</div>' + warnings + body + '</section></div></div>';
+  document.getElementById('app').innerHTML = '<div class="shell"><div class="eyebrow">Source browser · live MCP search</div><h1>Find usage in Reforger</h1><p class="intro">Search the indexed workspace, shipped Game Data, and Official Wiki together. Select a result to open the exact source document and highlight the matching lines.</p><div class="toolbar"><input id="query" value="' + esc(state.query) + '" placeholder="Search a symbol, concept, or phrase..." aria-label="Search query"></div><div class="layout"><aside class="source-rail"><div class="group-label">SEARCH IN</div>' + sourceButtons() + '<div class="group-label">RESULT TYPE</div>' + typeButtons() + '</aside><section><div class="source-header"><div><h2>' + results.length + ' matches</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Showing up to 12 results per source') + '</span></div><span class="tag">' + (state.status === 'loading' ? 'loading' : 'ready') + '</span></div><div class="status">' + (state.status === 'error' ? 'Search failed' : '') + '</div>' + warnings + body + '</section></div></div>';
   const query = document.getElementById('query');
   query.focus();
   query.setSelectionRange(state.query.length, state.query.length);
-  document.getElementById('type').value = state.type;
   query.addEventListener('input', event => { state.query = event.target.value; scheduleSearch(); });
   query.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); search(); } });
-  document.getElementById('search').addEventListener('click', search);
-  document.getElementById('type').addEventListener('change', event => { state.type = event.target.value; render(); });
+  document.querySelectorAll('[data-type]').forEach(element => element.addEventListener('click', () => { state.type = element.dataset.type; render(); }));
   document.querySelectorAll('[data-source]').forEach(element => element.addEventListener('click', () => { state.source = element.dataset.source; search(); }));
   document.querySelectorAll('[data-open]').forEach(element => element.addEventListener('click', event => { event.stopPropagation(); state.selected = element.dataset.open; vscode.postMessage({ type: 'open', id: element.dataset.open }); render(); }));
   document.querySelectorAll('[data-external]').forEach(element => element.addEventListener('click', event => { event.stopPropagation(); vscode.postMessage({ type: 'external', id: element.dataset.external }); }));

@@ -35,6 +35,8 @@ suite('Reforger search UI MCP mapping', () => {
 			path: 'Game/GameMode/SCR_BaseGameMode.c:18',
 			excerpt: 'class SCR_BaseGameMode',
 			matchKind: 'symbol',
+			selectionStartLine: 18,
+			selectionEndLine: 18,
 			readInput: {
 				catalogueRevision: 'gd1:revision',
 				relativePath: 'Game/GameMode/SCR_BaseGameMode.c',
@@ -66,5 +68,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.strictEqual(results[0].path, 'Modding/Game Master/Overview.md:12');
 		assert.strictEqual(results[0].sourceUrl, 'https://community.bistudio.com/wiki/Arma_Reforger:Game_Master');
 		assert.strictEqual(results[0].excerpt, 'Game Master controls the scenario.');
+		assert.strictEqual(results[0].selectionStartLine, 12);
+		assert.strictEqual(results[0].selectionEndLine, 12);
 	});
 });

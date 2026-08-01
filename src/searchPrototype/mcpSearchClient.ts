@@ -1,3 +1,5 @@
+import { access } from 'node:fs/promises';
+import * as path from 'node:path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 
 export type SearchSource = 'workspace' | 'gameData' | 'wiki';
@@ -12,6 +14,8 @@ export interface SearchHit {
 	excerpt: string;
 	matchKind?: string;
 	sourceUrl?: string;
+	selectionStartLine?: number;
+	selectionEndLine?: number;
 	readInput: Record<string, unknown>;
 }
 
@@ -99,6 +103,31 @@ export class McpSearchClient {
 			startLine: asNumber(record.startLine, 0),
 			endLine: asNumber(record.endLine, 0),
 		};
+	}
+
+	public async resolveSourcePath(hit: SearchHit): Promise<string | undefined> {
+		const relativePath = typeof hit.readInput.relativePath === 'string'
+			? hit.readInput.relativePath
+			: undefined;
+		if (!relativePath || hit.source === 'gameData') {
+			return undefined;
+		}
+		const roots = hit.source === 'wiki'
+			? [this.options.officialWikiRoot]
+			: this.options.workspaceScripts;
+		for (const root of roots) {
+			const candidate = path.resolve(root, relativePath);
+			if (!isWithinRoot(root, candidate)) {
+				continue;
+			}
+			try {
+				await access(candidate);
+				return candidate;
+			} catch {
+				// Try the next configured source root.
+			}
+		}
+		return undefined;
 	}
 
 	public async start(): Promise<void> {
@@ -290,6 +319,8 @@ function normalizeSymbolHit(source: SearchSource, hit: RecordValue, index: numbe
 		path: `${relativePath}:${line}`,
 		excerpt,
 		matchKind: asString(hit.matchKind, 'symbol'),
+		selectionStartLine: asNumber(asRecord(hit.selectionRange).startLine, line),
+		selectionEndLine: asNumber(asRecord(hit.selectionRange).endLine, line),
 		readInput,
 	}];
 }
@@ -311,6 +342,8 @@ function normalizeWikiHit(hit: RecordValue, index: number): SearchHit[] {
 		path: `${relativePath}:${typeof line === 'number' ? line : 0}`,
 		excerpt: asString(hit.excerpt, ''),
 		matchKind: asString(hit.matchKind, 'body'),
+		selectionStartLine: asNumber(hit.matchedLine, asNumber(hit.excerptStartLine, asNumber(line, 0))),
+		selectionEndLine: asNumber(hit.matchedLine, asNumber(hit.excerptEndLine, asNumber(line, 0))),
 		sourceUrl: typeof hit.sourceUrl === 'string' ? hit.sourceUrl : undefined,
 		readInput,
 	}];
@@ -331,4 +364,11 @@ function asString(value: unknown, fallback: string): string {
 
 function asNumber(value: unknown, fallback: number): number {
 	return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function isWithinRoot(root: string, candidate: string): boolean {
+	const normalizedRoot = path.resolve(root).toLowerCase();
+	const normalizedCandidate = candidate.toLowerCase();
+	return normalizedCandidate === normalizedRoot
+		|| normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`);
 }
