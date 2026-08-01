@@ -1,7 +1,7 @@
 import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { normalizeSearchPage, searchKindFilters, searchToolFor } from '../searchPrototype/mcpSearchClient';
+import { formatSearchKind, normalizeSearchPage, searchKindFilters, searchToolFor } from '../searchPrototype/mcpSearchClient';
 
 const searchUiSource = fs.readFileSync(
 	path.join(__dirname, '../../src/searchPrototype/searchUiPrototype.ts'),
@@ -17,6 +17,11 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.strictEqual(searchToolFor('workspace'), 'search_workspace_symbols');
 		assert.strictEqual(searchToolFor('gameData'), 'search_game_data_symbols');
 		assert.strictEqual(searchToolFor('wiki'), 'search_official_wiki');
+	});
+
+	test('formats compound symbol kinds for result details', () => {
+		assert.strictEqual(formatSearchKind('enumMember'), 'enum Member');
+		assert.strictEqual(formatSearchKind('globalField'), 'global Field');
 	});
 
 	test('defines useful symbol kind filters without a documentation duplicate', () => {

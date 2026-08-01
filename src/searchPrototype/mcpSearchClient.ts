@@ -467,9 +467,13 @@ export function normalizeSearchPage(source: SearchSource, value: unknown): Searc
 	});
 }
 
+export function formatSearchKind(kind: string): string {
+	return kind.replace(/([a-z])([A-Z])/g, '$1 $2');
+}
+
 function normalizeSymbolHit(source: SearchSource, hit: RecordValue, index: number): SearchHit[] {
 	const name = asString(hit.name, 'Unnamed symbol');
-	const kind = asString(hit.kind, 'Symbol');
+	const kind = formatSearchKind(asString(hit.kind, 'Symbol'));
 	const qualifiedName = asString(hit.qualifiedName, name);
 	const relativePath = asString(hit.relativePath, 'Unknown source');
 	const range = asRecord(hit.declarationRange);
