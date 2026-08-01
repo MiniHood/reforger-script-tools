@@ -362,7 +362,8 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .source-rail button { display: block; width: 100%; margin: 3px 0; padding: 9px 10px; text-align: left; border: 0; background: transparent; }
 .source-rail button.active { background: var(--selected); color: var(--selected-text); }
 .source-header { display: flex; justify-content: space-between; align-items: end; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
-.page-controls { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
+.page-controls { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 14px; }
+.page-status { display: inline-flex; align-items: center; gap: 6px; }
 .page-arrows { display: inline-flex; gap: 2px; }
 .page-controls button, .page-controls input, .page-controls select { min-height: 28px; }
 .page-controls button { min-width: 28px; padding: 3px 7px; }
@@ -433,7 +434,7 @@ const pageControls = () => {
   const navigationDisabled = !state.query.trim() || state.status === 'loading';
   const pageTotal = totalPages();
   const sizes = pageSizeOptions.map(size => '<option value="' + size + '"' + (state.pageSize === size ? ' selected' : '') + '>' + size + ' results</option>').join('');
-  return '<div class="page-controls" aria-label="Search result pages"><select data-page-size aria-label="Total results per page">' + sizes + '</select><span class="muted">Page</span><input data-page-input type="number" min="1" max="' + pageTotal + '" value="' + state.page + '" aria-label="Current result page"' + (navigationDisabled ? ' disabled' : '') + '><span class="muted">of ' + pageTotal + '</span><span class="page-arrows"><button type="button" data-page-prev' + (navigationDisabled || state.page <= 1 ? ' disabled' : '') + ' aria-label="Previous page">‹</button><button type="button" data-page-next' + (navigationDisabled || state.page >= pageTotal ? ' disabled' : '') + ' aria-label="Next page">›</button></span></div>';
+  return '<div class="page-controls" aria-label="Search result pages"><select data-page-size aria-label="Total results per page">' + sizes + '</select><span class="page-status"><span class="muted">Page</span><input data-page-input type="number" min="1" max="' + pageTotal + '" value="' + state.page + '" aria-label="Current result page"' + (navigationDisabled ? ' disabled' : '') + '><span class="muted">of ' + pageTotal + '</span></span><span class="page-arrows"><button type="button" data-page-prev' + (navigationDisabled || state.page <= 1 ? ' disabled' : '') + ' aria-label="Previous page">‹</button><button type="button" data-page-next' + (navigationDisabled || state.page >= pageTotal ? ' disabled' : '') + ' aria-label="Next page">›</button></span></div>';
 };
 const inlineMarkdown = value => value
   .replace(/\\\\([*_])/g, '$1')

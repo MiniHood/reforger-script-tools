@@ -115,7 +115,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /data-page-size/);
 		assert.match(searchUiSource, /<select data-page-size aria-label="Total results per page">/);
 		assert.match(searchUiSource, /<span class="page-arrows"><button type="button" data-page-prev[\s\S]*data-page-next/);
-		assert.match(searchUiSource, /<select data-page-size[\s\S]*<span class="muted">Page<\/span>/);
+		assert.match(searchUiSource, /<select data-page-size[\s\S]*<span class="page-status"><span class="muted">Page<\/span>/);
 		assert.match(searchUiSource, /value="' \+ state\.page \+ '"/);
 		assert.match(searchUiSource, /of ' \+ pageTotal \+ '<\/span>/);
 		assert.match(searchUiSource, /state\.type = element\.dataset\.type; state\.page = 1; search\(true\)/);
