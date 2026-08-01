@@ -8,6 +8,7 @@ import { resolveLanguageServerPath } from '../languageClient/serverPath';
 import {
 	McpSearchClient,
 	searchKindFilters,
+	sourceLinePreview,
 	type SearchDocument,
 	type SearchHit,
 	type SearchSymbolKind,
@@ -232,6 +233,7 @@ async function runSearch(
 			page: result.page,
 			pageSize: result.pageSize,
 		});
+		void hydrateSymbolPreviews(active, client, requestId, result.results);
 	} catch (error) {
 		if (!active.disposed && requestId === active.requestSequence) {
 			diagnostic('searchUi.searchFailed', {
@@ -246,6 +248,49 @@ async function runSearch(
 			});
 		}
 	}
+}
+
+async function hydrateSymbolPreviews(
+	active: ActiveSearch,
+	client: McpSearchClient,
+	requestId: number,
+	hits: SearchHit[],
+): Promise<void> {
+	const symbolHits = hits.filter(hit => hit.kind === 'symbol');
+	if (symbolHits.length === 0) {
+		return;
+	}
+	const startedAt = Date.now();
+	const previews: Record<string, string> = {};
+	let nextIndex = 0;
+	const worker = async (): Promise<void> => {
+		while (nextIndex < symbolHits.length) {
+			const hit = symbolHits[nextIndex++];
+			try {
+				const document = await client.read(hit);
+				previews[hit.id] = sourceLinePreview(document, hit.selectionStartLine);
+			} catch {
+				// Keep the bounded search excerpt when the optional preview read fails.
+			}
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(4, symbolHits.length) }, () => worker()));
+	if (active.disposed || requestId !== active.requestSequence || Object.keys(previews).length === 0) {
+		return;
+	}
+	for (const hit of symbolHits) {
+		const excerpt = previews[hit.id];
+		if (excerpt !== undefined) {
+			active.latestResults.set(hit.id, { ...hit, excerpt });
+		}
+	}
+	active.panel.webview.postMessage({ type: 'previews', requestId, previews });
+	diagnostic('searchUi.previewHydrationCompleted', {
+		requestId,
+		requestedCount: symbolHits.length,
+		loadedCount: Object.keys(previews).length,
+		elapsedMs: Date.now() - startedAt,
+	});
 }
 
 async function getClient(
@@ -438,6 +483,7 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .result-detail, .result-path { display: block; color: var(--muted); font-size: 12px; }
 .result-path { max-width: 50%; margin-left: auto; overflow-wrap: anywhere; text-align: right; }
 .snippet { margin: 9px 0 0; padding: 10px; overflow: auto; background: var(--alt); border: 1px solid var(--border); font: 12px/1.5 var(--vscode-editor-font-family); white-space: pre-wrap; }
+.snippet mark { padding: 0 2px; background: var(--vscode-editor-findMatchHighlightBackground); color: var(--vscode-editor-findMatchForeground); }
 .md-preview { margin: 9px 0 0; padding: 10px 12px; overflow: auto; background: var(--alt); border: 1px solid var(--border); line-height: 1.5; }
 .md-preview h1, .md-preview h2, .md-preview h3, .md-preview h4, .md-preview h5, .md-preview h6 { margin: 0 0 7px; font-size: 14px; }
 .md-preview p { margin: 0 0 8px; }
@@ -527,10 +573,24 @@ const renderMarkdown = value => {
   if (code) { output.push('</code></pre>'); }
   return output.join('');
 };
+const highlightText = (value, query) => {
+  const terms = [...new Set(String(query ?? '').trim().split(/\s+/).filter(Boolean))].sort((left, right) => right.length - left.length);
+  if (!terms.length) return esc(value);
+  const matcher = new RegExp(terms.map(term => term.replace(/[.*+?^$()|[\]\\]/g, '\\$&')).join('|'), 'gi');
+  let output = '';
+  let lastIndex = 0;
+  let match;
+  while ((match = matcher.exec(value)) !== null) {
+    const matchIndex = match.index ?? 0;
+    output += esc(value.slice(lastIndex, matchIndex)) + '<mark>' + esc(match[0]) + '</mark>';
+    lastIndex = matchIndex + match[0].length;
+  }
+  return output + esc(value.slice(lastIndex));
+};
 const resultRows = () => visibleResults().map(result => {
   const selected = state.selected === result.id;
   const external = result.sourceUrl ? '<button data-external="' + esc(result.id) + '">Open official page</button>' : '';
-  const preview = result.kind === 'documentation' ? '<div class="md-preview">' + renderMarkdown(result.excerpt) + '</div>' : '<pre class="snippet">' + esc(result.excerpt) + '</pre>';
+  const preview = result.kind === 'documentation' ? '<div class="md-preview">' + renderMarkdown(result.excerpt) + '</div>' : '<pre class="snippet">' + highlightText(result.excerpt, state.query + ' ' + result.title) + '</pre>';
   return '<article class="source-row ' + (selected ? 'selected' : '') + '" data-open="' + esc(result.id) + '" tabindex="0" role="button"><div class="source-icon">' + (result.kind === 'documentation' ? 'W' : 'S') + '</div><div class="result-content"><div class="result-head"><h3>' + esc(result.title) + '</h3><div class="result-path">' + esc(result.path) + '</div></div><div class="result-detail">' + esc(result.detail) + ' · ' + esc(sourceLabel(result.source)) + '</div>' + preview + '<div class="result-actions">' + external + '</div></div></article>';
 }).join('');
 const hasTextSelection = () => Boolean(window.getSelection()?.toString());
@@ -605,7 +665,7 @@ let searchTimer;
 function scheduleSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(() => search(true), 260); }
 function requestPage(value) { if (state.status === 'loading') return; const requested = Number.parseInt(value, 10); if (!Number.isFinite(requested)) return; state.page = Math.min(totalPages(), Math.max(1, requested)); search(false); }
 function search(resetPagination) { if (resetPagination) { state.page = 1; } const searchKey = [state.query, state.source, state.type, state.page, state.pageSize].join('\\u0000'); if (state.status === 'loading' && state.lastSearchKey === searchKey) return; state.lastSearchKey = searchKey; state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; render(); vscode.postMessage({ type: 'search', query: state.query, source: state.source, resultType: state.type, page: state.page, pageSize: state.pageSize }); }
-window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.total = 0; state.totalBySource = {}; render(); } });
+window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'previews') { const previews = message.previews ?? {}; state.results = state.results.map(result => typeof previews[result.id] === 'string' ? { ...result, excerpt: previews[result.id] } : result); render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.total = 0; state.totalBySource = {}; render(); } });
 render();
 </script>
 </body>

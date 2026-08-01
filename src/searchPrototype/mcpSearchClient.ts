@@ -61,6 +61,13 @@ export interface SearchDocument {
 	endLine: number;
 }
 
+export function sourceLinePreview(document: SearchDocument, line: number | undefined): string {
+	const lines = document.content.split(/\r?\n/);
+	const startLine = document.startLine > 0 ? document.startLine : line ?? 1;
+	const lineIndex = Math.max(0, (line ?? startLine) - startLine);
+	return lines[lineIndex] ?? lines[0] ?? '';
+}
+
 export interface McpSearchClientOptions {
 	serverPath: string;
 	indexCache: string;
@@ -507,7 +514,7 @@ function normalizeSymbolHit(source: SearchSource, hit: RecordValue, index: numbe
 		source,
 		kind: 'symbol',
 		title: name,
-		detail: `${kind} · ${qualifiedName}`,
+		detail: kind,
 		path: `${relativePath}:${line}`,
 		excerpt,
 		matchKind: asString(hit.matchKind, 'symbol'),
