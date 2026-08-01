@@ -79,9 +79,11 @@ events. Status polling alone does not present a script-failure warning. When a
 custom NET API operation fails, the gateway first checks the Workbench status
 and native process state. If Workbench is not running, the failure is ignored.
 If it is running, the gateway reads the latest Workbench log and matches the
-generic missing-handler marker for the operation that failed. Only that log
-evidence presents `Workbench scripts are failing.`; an API failure without
-that evidence does not invent a message.
+generic missing-handler marker. A status heartbeat may match any missing
+handler because the failed status call can be a symptom of a broader script
+load failure; a named custom operation may additionally require its own
+handler marker. Only that log evidence presents `Workbench scripts are
+failing.`; an API failure without that evidence does not invent a message.
 
 The diagnostic logs label the two measurable ownership phases as `offline` and
 `workbench-reconciliation`. The event names and nested timings still separate

@@ -16,6 +16,7 @@ import {
 	WorkbenchStatus,
 	WorkbenchValidationResult,
 } from '../gateway/workbenchGateway';
+import { updateWorkbenchFailureNotification } from '../workbenchFailureNotification';
 import {
 	WorkbenchDiagnosticRange,
 	workbenchDiagnosticProjection,
@@ -729,10 +730,13 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		if (!result.ok) {
 			this.integration?.onWorkbenchDisconnected();
 			this.lastStatus = undefined;
+			const diagnosis = await this.gateway.diagnoseNetApiFailure(undefined, result);
+			this.updateScriptsFailureNotification(diagnosis);
 			this.noteFailure(result.failure);
 			this.scheduleProbe(unavailableRetryMs, generation);
 			return;
 		}
+		this.updateScriptsFailureNotification(undefined);
 		const becameConnected = workbenchConnectionStarted(this.lastStatus, result.value);
 		this.lastFailure = undefined;
 		this.lastStatus = result.value;
@@ -809,6 +813,12 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			clearTimeout(this.probeTimer);
 			this.probeTimer = undefined;
 		}
+	}
+
+	private updateScriptsFailureNotification(
+		diagnosis: 'scripts-failing' | undefined,
+	): void {
+		updateWorkbenchFailureNotification(diagnosis);
 	}
 
 	private clearValidationTimer(): void {

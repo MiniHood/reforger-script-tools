@@ -358,9 +358,10 @@ export class WorkbenchGateway {
   }
 
   public async diagnoseNetApiFailure(
-    handler: string,
+    handler?: string,
+    statusResult?: WorkbenchGatewayResult<WorkbenchStatus>,
   ): Promise<WorkbenchNetApiFailureDiagnosis | undefined> {
-    const status = await this.getStatus();
+    const status = statusResult ?? await this.getStatus();
     if (status.ok) {
       if (!status.value.isRunning) {
         return undefined;
@@ -527,10 +528,13 @@ function decodeWorkbenchLogs(value: unknown): WorkbenchGatewayResult<WorkbenchLo
 
 export function workbenchLogReportsMissingHandler(
   lines: readonly string[],
-  handler: string,
+  handler?: string,
 ): boolean {
-  const marker = `Failed to call not existing Net API function '${handler}'`;
-  return lines.some(line => line.includes(marker));
+  const marker = "Failed to call not existing Net API function '";
+  return lines.some(line =>
+    line.includes(marker) &&
+    (handler === undefined || line.includes(`'${handler}'`)),
+  );
 }
 
 function decodeValidation(
