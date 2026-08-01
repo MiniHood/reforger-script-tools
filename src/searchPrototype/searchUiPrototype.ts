@@ -7,8 +7,10 @@ import { discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBr
 import { resolveLanguageServerPath } from '../languageClient/serverPath';
 import {
 	McpSearchClient,
+	searchKindFilters,
 	type SearchDocument,
 	type SearchHit,
+	type SearchSymbolKind,
 	type SearchSource,
 } from './mcpSearchClient';
 
@@ -158,7 +160,7 @@ async function runSearch(
 	active.panel.webview.postMessage({ type: 'loading', requestId });
 	try {
 		const client = await getClient(context, active);
-		const result = await client.search(normalizedQuery, sourcesFor(sourceValue, typeValue), pageSize, page);
+		const result = await client.search(normalizedQuery, sourcesFor(sourceValue), pageSize, page, searchKindsFor(typeValue));
 		if (active.disposed || requestId !== active.requestSequence) {
 			return;
 		}
@@ -290,9 +292,8 @@ async function getClientFromActive(active: ActiveSearch): Promise<McpSearchClien
 }
 
 
-function sourcesFor(value: unknown, typeValue: unknown): SearchSource[] {
-	const sources: SearchSource[] = (() => {
-		switch (value) {
+function sourcesFor(value: unknown): SearchSource[] {
+	switch (value) {
 		case 'workspace':
 			return ['workspace'];
 		case 'gameData':
@@ -301,15 +302,11 @@ function sourcesFor(value: unknown, typeValue: unknown): SearchSource[] {
 			return ['wiki'];
 		default:
 			return ['workspace', 'gameData', 'wiki'];
-		}
-	})();
-	if (typeValue === 'symbol') {
-		return sources.filter(source => source !== 'wiki');
 	}
-	if (typeValue === 'documentation') {
-		return sources.filter(source => source === 'wiki');
-	}
-	return sources;
+}
+
+function searchKindsFor(value: unknown): readonly SearchSymbolKind[] | undefined {
+	return searchKindFilters.find(filter => filter.value === value)?.kinds;
 }
 
 function selectionRange(
@@ -423,9 +420,9 @@ const sources = [
 ];
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const sourceLabel = value => sources.find(source => source.value === value)?.label ?? value;
-const visibleResults = () => state.results.filter(result => state.type === 'all' || result.kind === state.type);
+const visibleResults = () => state.results;
 const sourceButtons = () => sources.map(source => '<button class="' + (state.source === source.value ? 'active' : '') + '" data-source="' + esc(source.value) + '">' + esc(source.label) + '</button>').join('');
-const resultTypes = [{ value: 'all', label: 'All result types' }, { value: 'symbol', label: 'Symbols' }, { value: 'documentation', label: 'Documentation' }];
+const resultTypes = ${JSON.stringify(searchKindFilters)};
 const typeButtons = () => resultTypes.map(type => '<button class="' + (state.type === type.value ? 'active' : '') + '" data-type="' + esc(type.value) + '">' + esc(type.label) + '</button>').join('');
 const pageSizeOptions = [25, 50, 100];
 const totalMatches = () => state.total;

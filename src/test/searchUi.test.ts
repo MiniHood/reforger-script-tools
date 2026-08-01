@@ -1,7 +1,7 @@
 import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { normalizeSearchPage, searchToolFor } from '../searchPrototype/mcpSearchClient';
+import { normalizeSearchPage, searchKindFilters, searchToolFor } from '../searchPrototype/mcpSearchClient';
 
 const searchUiSource = fs.readFileSync(
 	path.join(__dirname, '../../src/searchPrototype/searchUiPrototype.ts'),
@@ -17,6 +17,24 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.strictEqual(searchToolFor('workspace'), 'search_workspace_symbols');
 		assert.strictEqual(searchToolFor('gameData'), 'search_game_data_symbols');
 		assert.strictEqual(searchToolFor('wiki'), 'search_official_wiki');
+	});
+
+	test('defines useful symbol kind filters without a documentation duplicate', () => {
+		assert.deepStrictEqual(searchKindFilters.map(filter => filter.label), [
+			'All results',
+			'Classes',
+			'Functions',
+			'Fields',
+			'Enums',
+			'Other declarations',
+		]);
+		assert.deepStrictEqual(searchKindFilters.find(filter => filter.value === 'function')?.kinds, [
+			'function',
+			'method',
+			'constructor',
+			'destructor',
+		]);
+		assert.doesNotMatch(searchUiSource, /Documentation/);
 	});
 
 	test('maps symbol search handoffs into source-browser rows', () => {
@@ -104,6 +122,8 @@ suite('Reforger search UI MCP mapping', () => {
 
 	test('supports cursor-backed result pages and selectable page sizes', () => {
 		assert.match(searchClientSource, /public async search\([\s\S]*?pageSize: number,[\s\S]*?page: number/);
+		assert.match(searchClientSource, /symbolKinds\?: readonly SearchSymbolKind\[\]/);
+		assert.match(searchClientSource, /kinds: symbolKinds/);
 		assert.match(searchClientSource, /limit: pageSize/);
 		assert.match(searchClientSource, /cursor/);
 		assert.match(searchClientSource, /nextCursor/);
@@ -122,6 +142,8 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /state\.type = element\.dataset\.type; state\.page = 1; search\(true\)/);
 		assert.match(searchUiSource, /resultType: state\.type/);
 		assert.match(searchUiSource, /message\.resultType/);
+		assert.match(searchUiSource, /const resultTypes = \$\{JSON\.stringify\(searchKindFilters\)\};/);
+		assert.match(searchUiSource, /searchKindsFor\(typeValue\)/);
 		assert.match(searchClientSource, /const sourcePageSize = 100;/);
 		assert.match(searchClientSource, /let sourceOffset = 0;/);
 		assert.match(searchClientSource, /this\.searchPageCaches\.clear\(\);/);

@@ -3,6 +3,33 @@ import * as path from 'node:path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 
 export type SearchSource = 'workspace' | 'gameData' | 'wiki';
+export type SearchSymbolKind =
+	| 'class'
+	| 'constructor'
+	| 'destructor'
+	| 'enum'
+	| 'enumMember'
+	| 'field'
+	| 'function'
+	| 'globalField'
+	| 'method'
+	| 'preprocessorMacro'
+	| 'typedef';
+
+export interface SearchKindFilter {
+	value: string;
+	label: string;
+	kinds?: readonly SearchSymbolKind[];
+}
+
+export const searchKindFilters: readonly SearchKindFilter[] = [
+	{ value: 'all', label: 'All results' },
+	{ value: 'class', label: 'Classes', kinds: ['class'] },
+	{ value: 'function', label: 'Functions', kinds: ['function', 'method', 'constructor', 'destructor'] },
+	{ value: 'field', label: 'Fields', kinds: ['field', 'globalField'] },
+	{ value: 'enum', label: 'Enums', kinds: ['enum', 'enumMember'] },
+	{ value: 'other', label: 'Other declarations', kinds: ['typedef', 'preprocessorMacro'] },
+];
 
 export interface SearchHit {
 	id: string;
@@ -87,16 +114,20 @@ export class McpSearchClient {
 		sources: SearchSource[],
 		pageSize: number,
 		page: number,
+		symbolKinds?: readonly SearchSymbolKind[],
 	): Promise<SearchResponse> {
 		await this.start();
 		const normalizedPageSize = Math.min(100, Math.max(1, Number.isFinite(pageSize) ? Math.floor(pageSize) : 25));
 		const requestedPage = Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1);
-		if (sources.length === 0) {
+		const searchableSources = symbolKinds?.length
+			? sources.filter(source => source !== 'wiki')
+			: sources;
+		if (searchableSources.length === 0) {
 			return { results: [], warnings: [], total: 0, page: 1, pageSize: normalizedPageSize };
 		}
-		const responses = await Promise.all(sources.map(async source => {
+		const responses = await Promise.all(searchableSources.map(async source => {
 			try {
-				const value = await this.searchPage(query, source, sourcePageSize, 1);
+				const value = await this.searchPage(query, source, sourcePageSize, 1, symbolKinds);
 				return { source, value, warning: undefined };
 			} catch (error) {
 				return { source, value: undefined, warning: searchErrorMessage(source, error) };
@@ -121,7 +152,7 @@ export class McpSearchClient {
 			const sourceStart = Math.max(0, pageStart - sourceOffset);
 			const sourceEnd = Math.min(sourceTotal, pageEnd - sourceOffset);
 			if (response.value && sourceStart < sourceEnd) {
-				results.push(...await this.sourceRange(query, response.source, sourceStart, sourceEnd, sourceTotal));
+				results.push(...await this.sourceRange(query, response.source, sourceStart, sourceEnd, sourceTotal, symbolKinds));
 			}
 			sourceOffset += sourceTotal;
 		}
@@ -247,11 +278,12 @@ export class McpSearchClient {
 		start: number,
 		end: number,
 		maxResults: number,
+		symbolKinds?: readonly SearchSymbolKind[],
 	): Promise<SearchHit[]> {
 		const results: SearchHit[] = [];
 		let sourceOffset = 0;
 		for (let pageNumber = 1; pageNumber <= Math.max(1, Math.floor(maxResults)); pageNumber += 1) {
-			const page = await this.searchPage(query, source, sourcePageSize, pageNumber);
+			const page = await this.searchPage(query, source, sourcePageSize, pageNumber, symbolKinds);
 			const pageEnd = sourceOffset + page.results.length;
 			const resultStart = Math.max(0, start - sourceOffset);
 			const resultEnd = Math.min(page.results.length, end - sourceOffset);
@@ -271,8 +303,9 @@ export class McpSearchClient {
 		source: SearchSource,
 		pageSize: number,
 		page: number,
+		symbolKinds?: readonly SearchSymbolKind[],
 	): Promise<CachedSearchPage> {
-		const cacheKey = `${source}\u0000${pageSize}\u0000${query}`;
+		const cacheKey = `${source}\u0000${pageSize}\u0000${query}\u0000${symbolKinds?.join(',') ?? ''}`;
 		let pages = this.searchPageCaches.get(cacheKey);
 		if (!pages) {
 			if (this.searchPageCaches.size >= maxSearchPageCaches) {
@@ -295,7 +328,11 @@ export class McpSearchClient {
 			if (pageNumber > 1 && !previousPage?.nextCursor) {
 				return { results: [], total: previousPage?.total ?? 0 };
 			}
-			const argumentsValue: Record<string, unknown> = { query, limit: pageSize };
+			const argumentsValue: Record<string, unknown> = {
+				query,
+				limit: pageSize,
+				...(source !== 'wiki' && symbolKinds?.length ? { kinds: symbolKinds } : {}),
+			};
 			if (previousPage?.nextCursor) {
 				argumentsValue.cursor = previousPage.nextCursor;
 			}
