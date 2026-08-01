@@ -736,7 +736,10 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			this.scheduleProbe(unavailableRetryMs, generation);
 			return;
 		}
-		this.updateScriptsFailureNotification(undefined);
+		const diagnosis = result.value.isRunning
+			? await this.gateway.diagnoseNetApiFailure(undefined, result)
+			: undefined;
+		this.updateScriptsFailureNotification(diagnosis);
 		const becameConnected = workbenchConnectionStarted(this.lastStatus, result.value);
 		this.lastFailure = undefined;
 		this.lastStatus = result.value;

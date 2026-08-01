@@ -56,6 +56,32 @@ suite("Workbench Gateway", () => {
     );
   });
 
+  test("diagnoses a running status from generic log evidence", async () => {
+    const gateway = new WorkbenchGateway({
+      enabled: true,
+      endpoint: { host: "127.0.0.1", port: 5775 },
+    });
+    gateway.readWorkbenchLogs = async () => ({
+      ok: true,
+      value: {
+        source: "workbench",
+        lines: [
+          "NETWORK (E): Failed to call not existing Net API function 'RST_WorkbenchOtherOperation'",
+        ],
+        markers: [],
+        truncated: false,
+      },
+    });
+
+    assert.strictEqual(
+      await gateway.diagnoseNetApiFailure(undefined, {
+        ok: true,
+        value: { isRunning: true, scriptsCompiled: true },
+      }),
+      "scripts-failing",
+    );
+  });
+
   test("gets compiler readiness through the documented NET API framing", async () => {
     const peer = await startNetApiPeer((request) => {
       assert.strictEqual(request.protocolVersion, 1);
