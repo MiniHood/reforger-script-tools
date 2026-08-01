@@ -2,11 +2,12 @@ import * as vscode from 'vscode';
 
 const semanticTokenMarker = /<span data-semantic-token="([A-Za-z][A-Za-z0-9]*)">/g;
 const vscodeColor = /^#[0-9a-fA-F]{3,4}(?:[0-9a-fA-F]{3,4})?$/;
-const hoverSemanticRoles = [
+
+/** Must stay in the same order as the language server's LSP semantic legend. */
+export const semanticTokenTypes = [
 	'class',
 	'enum',
 	'type',
-	'typeParameter',
 	'function',
 	'reforgerField',
 	'variable',
@@ -19,6 +20,7 @@ const hoverSemanticRoles = [
 	'operator',
 	'reforgerPunctuation',
 	'reforgerPreprocessor',
+	'typeParameter',
 ] as const;
 
 export type HoverSemanticForegrounds = Readonly<Record<string, string>>;
@@ -55,7 +57,7 @@ export function hoverSemanticForegrounds(
 	const rules = { ...baseRules, ...themeRules };
 	const foregrounds: Record<string, string> = {};
 
-	for (const role of hoverSemanticRoles) {
+	for (const role of semanticTokenTypes) {
 		const unqualified = semanticForeground(rules[role]);
 		const languageQualified = semanticForeground(rules[`${role}:${languageId}`]);
 		const foreground = languageQualified ?? unqualified;
@@ -104,7 +106,7 @@ export function hoverSemanticPaletteReport(document: vscode.TextDocument): strin
 		'| Hover role | Selector | Resolved foreground |',
 		'| --- | --- | --- |',
 	];
-	for (const role of hoverSemanticRoles) {
+	for (const role of semanticTokenTypes) {
 		lines.push(
 			`| \`${role}\` | \`${role}:${document.languageId}\` | \`${palette.foregrounds[role] ?? '<theme-owned>'}\` |`,
 		);

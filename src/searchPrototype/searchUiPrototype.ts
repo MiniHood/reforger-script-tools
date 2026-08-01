@@ -3,8 +3,10 @@ import * as vscode from 'vscode';
 import { diagnostic, diagnosticsEnabled } from '../diagnostics/diagnostics';
 import { resolveBaseGameIndexCache } from '../gameData/baseGameIndexCache';
 import { searchCommands, searchContext } from '../extensionConfig/search';
+import { provideLanguageServerSemanticTokens } from '../languageClient/languageClient';
 import { discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
 import { resolveLanguageServerPath } from '../languageClient/serverPath';
+import { semanticPreviewForLine, type SemanticPreview } from './semanticPreview';
 import {
 	McpSearchClient,
 	searchKindFilters,
@@ -26,7 +28,14 @@ interface ActiveSearch {
 	client: Promise<McpSearchClient> | undefined;
 	latestResults: Map<string, SearchHit>;
 	requestSequence: number;
+	semanticDocuments: Map<string, Promise<SemanticSourceDocument | undefined>>;
 	disposed: boolean;
+}
+
+interface SemanticSourceDocument {
+	document: vscode.TextDocument;
+	semanticTokens: vscode.SemanticTokens;
+	startLine: number;
 }
 
 export function registerSearchUi(context: vscode.ExtensionContext): void {
@@ -68,6 +77,7 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 		client: undefined,
 		latestResults: new Map(),
 		requestSequence: 0,
+		semanticDocuments: new Map(),
 		disposed: false,
 	};
 	activePanel = panel;
@@ -262,6 +272,7 @@ async function hydrateSymbolPreviews(
 	}
 	const startedAt = Date.now();
 	const previews: Record<string, string> = {};
+	const semanticPreviews: Record<string, SemanticPreview> = {};
 	let nextIndex = 0;
 	const worker = async (): Promise<void> => {
 		while (nextIndex < symbolHits.length) {
@@ -269,6 +280,18 @@ async function hydrateSymbolPreviews(
 			try {
 				const document = await client.read(hit);
 				previews[hit.id] = sourceLinePreview(document, hit.selectionStartLine);
+				const semanticDocument = await semanticSourceDocument(active, client, hit, document);
+				if (semanticDocument && hit.selectionStartLine !== undefined) {
+					const line = Math.max(0, hit.selectionStartLine - semanticDocument.startLine);
+					const semanticPreview = semanticPreviewForLine(
+						semanticDocument.document,
+						semanticDocument.semanticTokens,
+						line,
+					);
+					if (semanticPreview) {
+						semanticPreviews[hit.id] = semanticPreview;
+					}
+				}
 			} catch {
 				// Keep the bounded search excerpt when the optional preview read fails.
 			}
@@ -285,12 +308,68 @@ async function hydrateSymbolPreviews(
 		}
 	}
 	active.panel.webview.postMessage({ type: 'previews', requestId, previews });
+	if (Object.keys(semanticPreviews).length > 0) {
+		active.panel.webview.postMessage({ type: 'semanticPreviews', requestId, previews: semanticPreviews });
+	}
 	diagnostic('searchUi.previewHydrationCompleted', {
 		requestId,
 		requestedCount: symbolHits.length,
 		loadedCount: Object.keys(previews).length,
+		semanticCount: Object.keys(semanticPreviews).length,
 		elapsedMs: Date.now() - startedAt,
 	});
+}
+
+async function semanticSourceDocument(
+	active: ActiveSearch,
+	client: McpSearchClient,
+	hit: SearchHit,
+	boundedDocument: SearchDocument,
+): Promise<SemanticSourceDocument | undefined> {
+	if (hit.source === 'wiki') {
+		return undefined;
+	}
+	const cacheKey = hit.sourceUri ?? `${hit.source}:${String(hit.readInput.relativePath ?? hit.id)}`;
+	const cached = active.semanticDocuments.get(cacheKey);
+	if (cached) {
+		return cached;
+	}
+	const pending = loadSemanticSourceDocument(client, hit, boundedDocument)
+		.catch(() => undefined);
+	active.semanticDocuments.set(cacheKey, pending);
+	return pending;
+}
+
+async function loadSemanticSourceDocument(
+	client: McpSearchClient,
+	hit: SearchHit,
+	boundedDocument: SearchDocument,
+): Promise<SemanticSourceDocument | undefined> {
+	let document: vscode.TextDocument;
+	let startLine = 1;
+	try {
+		const sourcePath = await client.resolveSourcePath(hit);
+		if (sourcePath) {
+			document = await vscode.workspace.openTextDocument(vscode.Uri.file(sourcePath));
+		} else if (hit.sourceUri) {
+			document = await vscode.workspace.openTextDocument(vscode.Uri.parse(hit.sourceUri, true));
+		} else {
+			document = await vscode.workspace.openTextDocument({ content: boundedDocument.content, language: 'enforce' });
+			startLine = boundedDocument.startLine > 0 ? boundedDocument.startLine : hit.selectionStartLine ?? 1;
+		}
+		if (document.languageId !== 'enforce') {
+			document = await vscode.languages.setTextDocumentLanguage(document, 'enforce');
+		}
+	} catch {
+		return undefined;
+	}
+	const cancellation = new vscode.CancellationTokenSource();
+	try {
+		const semanticTokens = await provideLanguageServerSemanticTokens(document, cancellation.token);
+		return semanticTokens ? { document, semanticTokens, startLine } : undefined;
+	} finally {
+		cancellation.dispose();
+	}
 }
 
 async function getClient(
@@ -513,7 +592,7 @@ window.__reforgerSearchVscode.postMessage({ type: 'webviewReady', width: window.
 </script>
 <script nonce="${nonce}">
 const vscode = window.__reforgerSearchVscode;
-const state = { query: '', source: 'all', type: 'all', results: [], warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, totalBySource: {}, lastSearchKey: '' };
+const state = { query: '', source: 'all', type: 'all', results: [], semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, totalBySource: {}, lastSearchKey: '' };
 const sources = [
   { value: 'all', label: 'All sources' },
   { value: 'workspace', label: 'Workspace' },
@@ -587,10 +666,28 @@ const highlightText = (value, query) => {
   }
   return output + esc(value.slice(lastIndex));
 };
+const safeSemanticColor = value => /^#[0-9a-f]{3,8}$/i.test(String(value ?? '')) ? String(value) : '';
+const semanticPreviewText = result => {
+  const preview = state.semanticPreviews[result.id];
+  if (!preview || typeof preview.text !== 'string' || !Array.isArray(preview.tokens)) return highlightText(result.excerpt, state.query + ' ' + result.title);
+  const text = preview.text;
+  const tokens = preview.enabled === false ? [] : preview.tokens.slice().sort((left, right) => left.start - right.start);
+  let output = '';
+  let cursor = 0;
+  tokens.forEach(token => {
+    const start = Math.max(cursor, Math.min(text.length, Number(token.start) || 0));
+    const end = Math.max(start, Math.min(text.length, start + (Number(token.length) || 0)));
+    if (start > cursor) output += highlightText(text.slice(cursor, start), state.query + ' ' + result.title);
+    const color = safeSemanticColor(preview.foregrounds?.[token.role]);
+    output += '<span data-semantic-token="' + esc(token.role) + '"' + (color ? ' style="color:' + esc(color) + ';"' : '') + '>' + highlightText(text.slice(start, end), state.query + ' ' + result.title) + '</span>';
+    cursor = end;
+  });
+  return output + highlightText(text.slice(cursor), state.query + ' ' + result.title);
+};
 const resultRows = () => visibleResults().map(result => {
   const selected = state.selected === result.id;
   const external = result.sourceUrl ? '<button data-external="' + esc(result.id) + '">Open official page</button>' : '';
-  const preview = result.kind === 'documentation' ? '<div class="md-preview">' + renderMarkdown(result.excerpt) + '</div>' : '<pre class="snippet">' + highlightText(result.excerpt, state.query + ' ' + result.title) + '</pre>';
+  const preview = result.kind === 'documentation' ? '<div class="md-preview">' + renderMarkdown(result.excerpt) + '</div>' : '<pre class="snippet">' + semanticPreviewText(result) + '</pre>';
   return '<article class="source-row ' + (selected ? 'selected' : '') + '" data-open="' + esc(result.id) + '" tabindex="0" role="button"><div class="source-icon">' + (result.kind === 'documentation' ? 'W' : 'S') + '</div><div class="result-content"><div class="result-head"><h3>' + esc(result.title) + '</h3><div class="result-path">' + esc(result.path) + '</div></div><div class="result-detail">' + esc(result.detail) + ' · ' + esc(sourceLabel(result.source)) + '</div>' + preview + '<div class="result-actions">' + external + '</div></div></article>';
 }).join('');
 const hasTextSelection = () => Boolean(window.getSelection()?.toString());
@@ -665,7 +762,7 @@ let searchTimer;
 function scheduleSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(() => search(true), 260); }
 function requestPage(value) { if (state.status === 'loading') return; const requested = Number.parseInt(value, 10); if (!Number.isFinite(requested)) return; state.page = Math.min(totalPages(), Math.max(1, requested)); search(false); }
 function search(resetPagination) { if (resetPagination) { state.page = 1; } const searchKey = [state.query, state.source, state.type, state.page, state.pageSize].join('\\u0000'); if (state.status === 'loading' && state.lastSearchKey === searchKey) return; state.lastSearchKey = searchKey; state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; render(); vscode.postMessage({ type: 'search', query: state.query, source: state.source, resultType: state.type, page: state.page, pageSize: state.pageSize }); }
-window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'previews') { const previews = message.previews ?? {}; state.results = state.results.map(result => typeof previews[result.id] === 'string' ? { ...result, excerpt: previews[result.id] } : result); render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.total = 0; state.totalBySource = {}; render(); } });
+window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.semanticPreviews = {}; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'previews') { const previews = message.previews ?? {}; state.results = state.results.map(result => typeof previews[result.id] === 'string' ? { ...result, excerpt: previews[result.id] } : result); render(); } if (message.type === 'semanticPreviews') { state.semanticPreviews = { ...state.semanticPreviews, ...(message.previews ?? {}) }; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.semanticPreviews = {}; state.total = 0; state.totalBySource = {}; render(); } });
 render();
 </script>
 </body>

@@ -2,6 +2,7 @@ import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { formatSearchKind, nearestCachedSearchPage, normalizeSearchPage, searchKindFilters, searchToolFor, sourceLinePreview } from '../searchPrototype/mcpSearchClient';
+import { semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
 
 const searchUiSource = fs.readFileSync(
 	path.join(__dirname, '../../src/searchPrototype/searchUiPrototype.ts'),
@@ -30,6 +31,13 @@ suite('Reforger search UI MCP mapping', () => {
 	test('extracts the authoritative source line for a symbol preview', () => {
 		assert.strictEqual(sourceLinePreview({ content: '    class SCR_Mode\n', startLine: 18, endLine: 18 }, 18), 'class SCR_Mode');
 		assert.strictEqual(sourceLinePreview({ content: 'only line', startLine: 0, endLine: 0 }, 1), 'only line');
+	});
+
+	test('decodes the language server semantic token legend for a preview line', () => {
+		assert.deepStrictEqual(semanticTokenSpansForLine([
+			0, 4, 5, 0, 0,
+			1, 0, 8, 7, 0,
+		], 1), [{ start: 0, length: 8, role: 'enumMember' }]);
 	});
 
 	test('defines useful symbol kind filters without a documentation duplicate', () => {
@@ -126,6 +134,9 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /highlightText\(result\.excerpt, state\.query \+ ' ' \+ result\.title\)/);
 		assert.match(searchUiSource, /message\.type === 'previews'/);
 		assert.match(searchUiSource, /hydrateSymbolPreviews/);
+		assert.match(searchUiSource, /provideLanguageServerSemanticTokens/);
+		assert.match(searchUiSource, /semanticPreviewText/);
+		assert.match(searchUiSource, /message\.type === 'semanticPreviews'/);
 	});
 
 	test('opens result cards while preserving text selection and the Wiki page action', () => {

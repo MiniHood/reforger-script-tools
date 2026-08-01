@@ -97,6 +97,25 @@ let startupTimingSessionStartMs = Date.now();
 let firstDocumentOpenTimingLogged = false;
 let firstSemanticTokenTimingLogged = false;
 
+export async function provideLanguageServerSemanticTokens(
+	document: vscode.TextDocument,
+	token: vscode.CancellationToken,
+): Promise<vscode.SemanticTokens | undefined> {
+	const activeClient = client;
+	if (!activeClient || activeClient.state !== State.Running) {
+		return undefined;
+	}
+	const response = await activeClient.sendRequest<{ data?: number[] }>(
+		'textDocument/semanticTokens/full',
+		{ textDocument: { uri: document.uri.toString() } },
+		token,
+	);
+	if (!Array.isArray(response?.data)) {
+		return undefined;
+	}
+	return new vscode.SemanticTokens(new Uint32Array(response.data));
+}
+
 interface ExternalIndexProgressParams {
   phase: string;
   status?: string;
