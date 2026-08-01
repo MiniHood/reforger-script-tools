@@ -86,7 +86,10 @@ handler marker. Only that log evidence marks the persistent Workbench status as
 `Workbench API inactive` and presents the matching notification; an API
 failure without that evidence does not invent a message. A successful loaded-
 addon graph call clears the state because it proves that bridge handler is
-active again.
+active again. While that inactive state remains and Workbench is still running,
+the existing status cycle retries the loaded-addon graph so a repaired initial
+script load automatically clears the warning and reconciles the index. A
+healthy bridge is not continuously probed or resynchronized.
 
 The diagnostic logs label the two measurable ownership phases as `offline` and
 `workbench-reconciliation`. The event names and nested timings still separate

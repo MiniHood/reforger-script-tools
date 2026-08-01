@@ -11,6 +11,7 @@ import {
 	workbenchTestCommands,
 } from '../extensionConfig/workbench';
 import {
+	shouldRefreshWorkbenchGraph,
 	workbenchConnectionStarted,
 	type WorkbenchCompilerObservation,
 } from '../workbenchNetApi/compiler/workbenchCompiler';
@@ -264,6 +265,18 @@ suite('Workbench compiler validation', () => {
 			),
 			false,
 		);
+	});
+
+	test('refreshes the Workbench graph only on connection or while recovering an inactive bridge', () => {
+		const running = { isRunning: true, scriptsCompiled: true };
+		assert.strictEqual(shouldRefreshWorkbenchGraph(undefined, running, false), true);
+		assert.strictEqual(shouldRefreshWorkbenchGraph(running, running, false), false);
+		assert.strictEqual(shouldRefreshWorkbenchGraph(running, running, true), true);
+		assert.strictEqual(shouldRefreshWorkbenchGraph(
+			running,
+			{ isRunning: false, scriptsCompiled: false },
+			true,
+		), false);
 	});
 
 	test('idle validation saves only the active script before compiling', async function () {

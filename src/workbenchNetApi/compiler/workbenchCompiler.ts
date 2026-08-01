@@ -103,6 +103,15 @@ export function workbenchConnectionStarted(
 	return current.isRunning && previous?.isRunning !== true;
 }
 
+export function shouldRefreshWorkbenchGraph(
+	previous: WorkbenchStatus | undefined,
+	current: WorkbenchStatus,
+	bridgeInactive: boolean,
+): boolean {
+	return workbenchConnectionStarted(previous, current)
+		|| (current.isRunning && bridgeInactive);
+}
+
 interface WorkbenchCompilerFailure {
 	category: WorkbenchGatewayFailureCategory | 'save-failed';
 	recoveryHint: string;
@@ -111,7 +120,7 @@ interface WorkbenchCompilerFailure {
 export function registerWorkbenchCompilerFeatures(
 	context: vscode.ExtensionContext,
 	integration?: WorkbenchIntegrationCoordinator,
-	onWorkbenchConnected?: () => void,
+	onWorkbenchGraphRefreshRequested?: () => void,
 ): void {
 	const startupValidationEnabled = context.extensionMode !== vscode.ExtensionMode.Test;
 	const serverPath = resolveLanguageServerPath(context);
@@ -119,7 +128,7 @@ export function registerWorkbenchCompilerFeatures(
 		startupValidationEnabled,
 		serverPath,
 		integration,
-		onWorkbenchConnected,
+		onWorkbenchGraphRefreshRequested,
 	);
 	controller.start(context.extensionMode);
 	context.subscriptions.push(controller);
@@ -184,7 +193,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		private startupValidationEnabled: boolean,
 		private readonly serverPath: Promise<string | undefined>,
 		private readonly integration?: WorkbenchIntegrationCoordinator,
-		private readonly onWorkbenchConnected?: () => void,
+		private readonly onWorkbenchGraphRefreshRequested?: () => void,
 	) {
 		this.gateway = createGateway(
 			this.configuration,
@@ -750,7 +759,11 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			this.scheduleProbe(unavailableRetryMs, generation);
 			return;
 		}
-		const becameConnected = workbenchConnectionStarted(this.lastStatus, result.value);
+		const refreshWorkbenchGraph = shouldRefreshWorkbenchGraph(
+			this.lastStatus,
+			result.value,
+			this.bridgeInactive,
+		);
 		this.lastFailure = undefined;
 		this.lastStatus = result.value;
 		if (!result.value.isRunning) {
@@ -764,8 +777,8 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			host: this.configuration.host,
 			port: this.configuration.port,
 		});
-		if (becameConnected) {
-			this.onWorkbenchConnected?.();
+		if (refreshWorkbenchGraph) {
+			this.onWorkbenchGraphRefreshRequested?.();
 		}
 		if (this.shouldRequestStartupValidation()) {
 			this.startupValidationAttempted = true;
