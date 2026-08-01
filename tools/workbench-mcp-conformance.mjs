@@ -7,6 +7,7 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { spawn } from "node:child_process";
 import { arch, platform, release } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -170,8 +171,8 @@ const corpusCaseKinds = {
   workbench_add_prefab_resource_component: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
   workbench_remove_prefab_resource_component: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
   workbench_set_prefab_resource_property: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
-  workbench_set_prefab_property: [{ id: "success", kind: "success", dependencies: ["prefabEditEntity"] }, { id: "outside-edit-guard", kind: "guard" }],
-  workbench_set_prefab_component_property: [{ id: "success", kind: "success", dependencies: ["prefabEditEntity"] }, { id: "outside-edit-guard", kind: "guard" }],
+  workbench_set_prefab_property: [{ id: "success", kind: "success", dependencies: ["prefabEditEntity"] }, { id: "outside-edit-guard", kind: "guard", dependencies: [] }],
+  workbench_set_prefab_component_property: [{ id: "success", kind: "success", dependencies: ["prefabEditEntity"] }, { id: "outside-edit-guard", kind: "guard", dependencies: [] }],
   workbench_remove_component: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
   workbench_delete_entity: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
   workbench_restart: [{ id: "success", kind: "success" }],
@@ -221,10 +222,10 @@ const corpusCleanupTools = {
   workbench_rotate_entity: ["workbench_delete_entity"],
   workbench_reparent_entity: ["workbench_delete_entity"],
   workbench_duplicate_entity: ["workbench_delete_entity"],
-  workbench_edit_shape_points: ["workbench_delete_entity"],
+  workbench_edit_shape_points: ["workbench_edit_shape_points"],
   workbench_set_polyline_regular_polygon: ["workbench_delete_entity"],
-  workbench_convert_shape_points: ["workbench_delete_entity"],
-  workbench_transform_shape_points: ["workbench_delete_entity"],
+  workbench_convert_shape_points: [],
+  workbench_transform_shape_points: ["workbench_edit_shape_points"],
   workbench_resample_polyline: ["workbench_delete_entity"],
 };
 
@@ -403,16 +404,19 @@ function inferScenarioFacts(step) {
   const captured = Object.keys(step.capture ?? {});
   const facts = [];
   if (captured.some((name) => /entityId/i.test(name))) facts.push("entity");
+  if (captured.some((name) => /shapeEntityId/i.test(name))) facts.push("shape");
   if (captured.some((name) => /componentId/i.test(name))) facts.push("component");
   if (captured.some((name) => /polylineEntityId|shapePoints/i.test(name))) facts.push("shape");
+  if (captured.some((name) => /windowId/i.test(name))) facts.push("window");
   if (captured.some((name) => /prefabResourceName/i.test(name))) facts.push("prefabResource");
-  if (captured.some((name) => /worldResourceName/i.test(name))) facts.push("canonicalResource");
+  if (captured.some((name) => /ResourceName$/i.test(name))) facts.push("canonicalResource");
   const toolFacts = {
     workbench_install_bridge: "managedBridge",
     workbench_project_context: "projectContext",
     workbench_open_editor: "worldEditor",
     workbench_open_resource: "activeWorld",
     workbench_create_entity: "entity",
+    workbench_create_prefab: "prefabResource",
     workbench_add_component: "component",
     workbench_get_shape_points: "shape",
     workbench_create_generic_prefab: "prefabResource",
@@ -1472,7 +1476,7 @@ export async function runScenario({
         )) {
           const expected = materialize(expectedValue, scenarioContext);
           const actual = readJsonPointer(response, pointer);
-          if (!Object.is(actual, expected)) {
+          if (!isDeepStrictEqual(actual, expected)) {
             reasons.push(
               "expected " + pointer + " to equal " + JSON.stringify(expected),
             );
@@ -1874,9 +1878,10 @@ export async function runWorkbenchCorpus({
               processId: fixtureLaunch.processId,
               projectPath: fixture.manifest.projectPath,
               worldResource: fixture.manifest.expected.worldResource,
-              shapeEntityId: fixture.manifest.expected.shapeEntityId,
               prefabDestination: `Prefabs/McpConformanceEntity-${corpusRunId}.et`,
+              prefabName: `McpConformanceEntity-${corpusRunId}`,
               genericPrefabDestination: `Prefabs/McpConformanceGeneric-${corpusRunId}.et`,
+              genericPrefabName: `McpConformanceGeneric-${corpusRunId}`,
               entityName: `McpConformanceEntity-${corpusRunId}`,
               duplicateName: `McpConformanceDuplicate-${corpusRunId}`,
               polylineName: `McpConformancePolyline-${corpusRunId}`,

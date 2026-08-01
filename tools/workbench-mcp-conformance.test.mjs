@@ -187,6 +187,46 @@ test("treats an expected structured Workbench error as tested behavior", async (
   assert.equal(report.performance[0].failureCount, 0);
 });
 
+test("compares structured pointer oracles by value and infers opaque resource facts", async () => {
+  const report = await runScenario({
+    client: {
+      async callToolTimed() {
+        return {
+          response: {
+            result: {
+              isError: false,
+              structuredContent: {
+                components: [],
+                results: [{ entity: { entityId: "shape-1" }, resourceName: "{GUID}Prefabs/Test.et" }],
+              },
+            },
+          },
+          timing: { durationMs: 1, requestBytes: 10, responseBytes: 20 },
+        };
+      },
+    },
+    name: "structured oracle",
+    steps: [{
+      name: "discover shape",
+      tool: "workbench_search_world_entities",
+      capture: {
+        shapeEntityId: "/result/structuredContent/results/0/entity/entityId",
+        windowId: "/result/structuredContent/results/0/entity/entityId",
+        genericPrefabResourceName: "/result/structuredContent/results/0/resourceName",
+      },
+      expect: {
+        pointers: {
+          "/result/structuredContent/components": [],
+        },
+      },
+    }],
+    includeInvocationMetadata: true,
+  });
+
+  assert.equal(report.ok, true);
+  assert.deepEqual(report.steps[0].facts, ["entity", "shape", "window", "prefabResource", "canonicalResource"]);
+});
+
 test("allows explicitly environment-dependent capabilities to return either result", async () => {
   const report = await runScenario({
     client: {
@@ -592,6 +632,24 @@ test("orders scenario calls into named dependency workflows", () => {
     "save-play-reload",
   ]);
   assert.deepEqual(groups[0].steps.map((step) => step.name), ["status"]);
+});
+
+test("keeps prefab guard cases runnable without a prefab-edit dependency", () => {
+  const plan = buildWorkbenchEndpointPlan([
+    "workbench_set_prefab_property",
+    "workbench_set_prefab_component_property",
+  ]);
+
+  for (const entry of plan) {
+    assert.deepEqual(
+      entry.cases.find((acceptanceCase) => acceptanceCase.id === "success")?.dependencies,
+      ["prefabEditEntity"],
+    );
+    assert.deepEqual(
+      entry.cases.find((acceptanceCase) => acceptanceCase.id === "outside-edit-guard")?.dependencies,
+      [],
+    );
+  }
 });
 
 test("gates workflow calls on captured facts and preserves the blocked branch", async () => {

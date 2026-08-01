@@ -20,7 +20,6 @@ The live runner takes a manifest owned by the test invocation:
   },
   "expected": {
     "worldResource": "McpFixture/Worlds/Conformance.ent",
-    "shapeEntityId": "opaque-shape-entity-id",
     "loadedAddonIds": ["ArmaReforger", "McpFixture"]
   },
   "readiness": {
@@ -52,11 +51,13 @@ does not permit process reuse: the fixture must still launch with
 result. Use this only when first-install bridge consent cannot be supplied to
 the disposable profile by the public MCP contract.
 
-The fixture itself must provide the stable project, world, resource, entity,
-component, layer, prefab, shape, and terrain identities used by the scenario
-files. Those assets are machine- and game-install-specific, so they are
-provisioned outside the repository and identified by the manifest rather than
-checked into the extension source tree.
+The fixture itself must provide the stable project, world, component, layer,
+prefab, shape, and terrain identities used by the scenario files. Entity,
+component, shape, window, resource, and descriptor identities are opaque and
+must be discovered through public MCP responses during each run; they must not
+be hard-coded in the manifest. Those assets are machine- and game-install-
+specific, so they are provisioned outside the repository and identified by the
+manifest only where a canonical resource or world identity is required.
 
 The corpus manifest must provide a distinct, empty `consentGuardProfileRoot`.
 The runner starts a second MCP Runtime against that profile while the owned
@@ -77,7 +78,8 @@ input for the dependency-driven corpus runner and covers the current 63-tool
 Workbench catalogue. The runner supplies the executable endpoint plan from the
 published catalogue, labels each invocation with its role and acceptance case,
 and reports `passed`, `failed`, `blocked`, or `not-run` per endpoint. The input
-uses the fixture's stable world, spline, and component identities, creates
+uses the fixture's stable world and discovers spline and component identities,
+then creates
 disposable scene entities, confirms every preview token in the same MCP
 session, and restores or deletes each scene mutation. Structured expected
 failures remain evidence for their declared guard cases; they cannot replace a

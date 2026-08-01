@@ -142,9 +142,82 @@ contract catalogue
                 -> shape chain
                 -> prefab resource chain
                     -> prefab-edit chain
-                -> save -> play start -> play stop -> reload -> logs
+                -> save -> reload -> logs
+                -> play start -> play stop -> state readback
         -> restart owned process -> verify replacement -> stop replacement
 ```
+
+The following is the executable test map in visual form. Each arrow means the
+downstream workflow consumes a fact produced by the upstream workflow. The
+solid lifecycle path is also the rule for an already-open Workbench: observe
+the exact process through the public launch call, save through the public stop
+call, wait up to 15 seconds for the save acknowledgement, then close that
+process through MCP.
+
+```mermaid
+flowchart TD
+    C[0. Catalogue\n tools/list = 63 endpoints]
+    L[1. Owned process\n launch exact fixture]
+    R[2. Readiness\n status, bridge, project, scripts, editor]
+    W[3. World/read baseline\n resource, world, terrain, trace, selection]
+    E[4. Entity chain\n create, inspect, component, transform, hierarchy]
+    H[5. Shape chain\n points, polygon, conversion, transform, resample]
+    P[6. Prefab resources\n create, inspect, component/property, save]
+    PE[7. Prefab editor\n open edit target, write, save, reopen]
+    S[8. Save/play/reload/logs\n save -> reload -> logs\n play -> stop -> state]
+    X[9. Lifecycle teardown\n restart exact owner -> stop exact replacement]
+
+    C --> L
+    L --> R
+    R --> W
+    W --> E
+    W --> H
+    E --> P
+    P --> PE
+    W --> P
+    W --> S
+    S --> X
+    L --> X
+
+    O[Existing Workbench process] -. observe exact PID .-> L
+    L -. save + <=15s wait .-> X
+    X --> Q[Confirmed exited:true]
+```
+
+### Test groups and dependency boundaries
+
+This table is the short map for planning and diagnosing a run. The endpoint
+counts are generated from `buildWorkbenchEndpointPlan`; the scenario may call
+some endpoints more than once for readback, confirmation, or cleanup.
+
+| Group | Endpoint count | Tests in the group | Requires | Produces / unlocks |
+| --- | ---: | --- | --- | --- |
+| 0. Catalogue | 0 | `tools/list` parity, schema, plan completeness | MCP server | `catalogue` |
+| 1. Owned process | 4 | launch, status, list windows, capture window | `catalogue` | `ownedProcess`, `window`, `connectedWorkbench` |
+| 2. Readiness | 5 | install bridge, project context, script validation, list/open editor | `connectedWorkbench`, `managedBridge`, `projectContext` | `managedBridge`, `projectContext`, `worldEditor` |
+| 3. World/read | 13 | resource discovery/open, state, terrain, trace, layers, viewport, entity search, selection baseline | `managedBridge`, `projectContext`, `worldEditor`, `canonicalResource` | `activeWorld`, canonical resource identities |
+| 4. Entity | 18 | create/inspect, components, properties, rename/move/rotate, duplicate, reparent, selection, delete | `activeWorld`, exact entity/component IDs | `entity`, `component`, `relatedEntities` |
+| 5. Shape | 6 | read/edit points, regular polygon, coordinate conversion, transform, resample | exact shape entity; `activeWorld` for disposable polyline | `shape` |
+| 6. Prefab resources | 8 | create/inspect prefab, component add/remove, property set, save/reopen | `entity` or `activeWorld`; canonical resource IDs | `prefabResource`, saved prefab evidence |
+| 7. Prefab editor | 2 | edit-mode property and component writes, save/reopen readback | `prefabEditEntity` from a public edit-mode workflow | prefab-editor write evidence |
+| 8. Save/play/reload | 5 | save, start play, stop play, reload scripts, read scoped logs | `activeWorld`, `savedWorld`, `managedBridge`, `playSession`, `reloadedRuntime` | `savedWorld`, `playSession`, `reloadedRuntime` |
+| 9. Lifecycle | 2 | restart owned process, stop exact replacement | `ownedProcess`, `savedWorld`, then `replacementProcess` | `replacementProcess`, `exited:true` |
+
+The map distinguishes three different kinds of dependency:
+
+- A **fact dependency** is a prerequisite discovered from a public response,
+  such as an entity ID, window ID, or runtime generation. If it is unavailable,
+  the dependent endpoint is `blocked`.
+- A **readback dependency** proves that a mutation took effect. For example,
+  `workbench_set_entity_properties` is not complete until a subsequent public
+  property read returns the distinct value.
+- A **cleanup dependency** proves that disposable state was removed. For
+  example, entity and component mutations retain cleanup evidence from the
+  confirmed delete/remove operation.
+
+The complete endpoint-by-endpoint version remains in the acceptance matrix
+below; this section is the navigational chart, while the matrix is the
+acceptance contract.
 
 ### Workflow 0: contract catalogue
 
@@ -216,11 +289,15 @@ evidence.
 
 ### Workflow 8: save, play, reload, and logs
 
-Save the world after mutations. Start play only here, where it is an explicit
-target and prerequisite for stop-play. Stop play immediately, verify edit mode
-through state, reload scripts, require a changed compatible runtime generation,
-and read logs scoped to that reload. Play is never used as incidental setup for
-an unrelated endpoint.
+Save the world after mutations. Reload scripts and read the scoped logs while
+the World Editor is in its stable edit state; the reload contract requires a
+changed compatible runtime generation. Play is an independent branch: start it
+only as the explicit target and prerequisite for stop-play, then verify the
+post-stop state. A stop-play acknowledgement does not expose a reliable
+completion marker for the native play teardown, and chaining reload immediately
+after it can leave Workbench unable to dispatch the reload action, so the
+dependency map does not use play as reload setup. Play is never incidental
+setup for an unrelated endpoint.
 
 ### Workflow 9: restart and stop
 

@@ -10,7 +10,6 @@
   },
   "expected": {
     "worldResource": "$McpConformanceFixture:worlds/McpConformance.ent",
-    "shapeEntityId": "opaque-shape-entity-id",
     "loadedAddonIds": ["ArmaReforger", "TestBullshit", "McpConformanceFixture"]
   },
   "readiness": {
