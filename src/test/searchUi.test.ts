@@ -1,5 +1,12 @@
 import * as assert from 'node:assert';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { normalizeSearchPage, searchToolFor } from '../searchPrototype/mcpSearchClient';
+
+const searchUiSource = fs.readFileSync(
+	path.join(__dirname, '../../src/searchPrototype/searchUiPrototype.ts'),
+	'utf8',
+);
 
 suite('Reforger search UI MCP mapping', () => {
 	test('routes each source to its authoritative search tool', () => {
@@ -72,5 +79,13 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.strictEqual(results[0].excerpt, 'Game Master controls the scenario.');
 		assert.strictEqual(results[0].selectionStartLine, 12);
 		assert.strictEqual(results[0].selectionEndLine, 12);
+	});
+
+	test('keeps the full result path above a full-width preview', () => {
+		assert.match(searchUiSource, /\.source-row \{ display: grid; grid-template-columns: 28px minmax\(0, 1fr\);/);
+		assert.doesNotMatch(searchUiSource, /\.source-row \{ display: grid; grid-template-columns: 28px 1fr auto;/);
+		assert.match(searchUiSource, /\.result-head \{ display: flex; justify-content: space-between;/);
+		assert.match(searchUiSource, /\.result-path \{[^}]*overflow-wrap: anywhere;[^}]*text-align: right;/);
+		assert.match(searchUiSource, /<div class="result-head"><h3>/);
 	});
 });

@@ -341,11 +341,14 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .muted { color: var(--muted); }
 .tag { border-radius: 12px; padding: 3px 8px; background: var(--alt); color: var(--muted); font-size: 11px; }
 .source-rows { display: grid; gap: 10px; margin-top: 12px; }
-.source-row { display: grid; grid-template-columns: 28px 1fr auto; gap: 12px; align-items: start; padding: 13px; border: 1px solid var(--border); background: var(--panel); }
+.source-row { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; align-items: start; padding: 13px; border: 1px solid var(--border); background: var(--panel); }
 .source-row.selected { border-color: var(--accent); }
 .source-icon { color: var(--accent); font-weight: 700; text-align: center; }
+.result-content { min-width: 0; }
+.result-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; min-width: 0; }
+.result-head h3 { min-width: 0; margin-bottom: 0; }
 .result-detail, .result-path { display: block; color: var(--muted); font-size: 12px; }
-.result-path { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result-path { max-width: 50%; margin-left: auto; overflow-wrap: anywhere; text-align: right; }
 .snippet { margin: 9px 0 0; padding: 10px; overflow: auto; background: var(--alt); border: 1px solid var(--border); font: 12px/1.5 var(--vscode-editor-font-family); white-space: pre-wrap; }
 .md-preview { margin: 9px 0 0; padding: 10px 12px; overflow: auto; background: var(--alt); border: 1px solid var(--border); line-height: 1.5; }
 .md-preview h1, .md-preview h2, .md-preview h3, .md-preview h4, .md-preview h5, .md-preview h6 { margin: 0 0 7px; font-size: 14px; }
@@ -363,7 +366,7 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .error { padding: 10px 12px; border: 1px solid var(--vscode-inputValidation-errorBorder); color: var(--vscode-errorForeground); background: var(--vscode-inputValidation-errorBackground); }
 .warning { padding: 8px 10px; border-left: 2px solid var(--vscode-editorWarning-foreground); color: var(--muted); }
 .empty { padding: 30px 14px; border: 1px dashed var(--border); color: var(--muted); }
-@media (max-width: 720px) { .shell { padding: 18px 14px 60px; } .layout { grid-template-columns: 1fr; } .toolbar { flex-wrap: wrap; } .toolbar input { flex-basis: 100%; } .source-row { grid-template-columns: 26px 1fr; } .result-path { grid-column: 2; max-width: none; } }
+@media (max-width: 720px) { .shell { padding: 18px 14px 60px; } .layout { grid-template-columns: 1fr; } .toolbar { flex-wrap: wrap; } .toolbar input { flex-basis: 100%; } .source-row { grid-template-columns: 26px 1fr; } .result-head { align-items: flex-start; flex-wrap: wrap; } .result-path { max-width: 100%; margin-left: 0; text-align: left; } }
 </style>
 </head>
 <body>
@@ -432,7 +435,7 @@ const resultRows = () => visibleResults().map(result => {
   const selected = state.selected === result.id;
   const external = result.sourceUrl ? '<button data-external="' + esc(result.id) + '">Open official page</button>' : '';
   const preview = result.kind === 'documentation' ? '<div class="md-preview">' + renderMarkdown(result.excerpt) + '</div>' : '<pre class="snippet">' + esc(result.excerpt) + '</pre>';
-  return '<article class="source-row ' + (selected ? 'selected' : '') + '"><div class="source-icon">' + (result.kind === 'documentation' ? 'W' : 'S') + '</div><div><h3>' + esc(result.title) + '</h3><div class="result-detail">' + esc(result.detail) + ' · ' + esc(sourceLabel(result.source)) + '</div>' + preview + '<div class="result-actions"><button class="open" data-open="' + esc(result.id) + '">Open source</button>' + external + '</div></div><div class="result-path">' + esc(result.path) + '</div></article>';
+  return '<article class="source-row ' + (selected ? 'selected' : '') + '"><div class="source-icon">' + (result.kind === 'documentation' ? 'W' : 'S') + '</div><div class="result-content"><div class="result-head"><h3>' + esc(result.title) + '</h3><div class="result-path">' + esc(result.path) + '</div></div><div class="result-detail">' + esc(result.detail) + ' · ' + esc(sourceLabel(result.source)) + '</div>' + preview + '<div class="result-actions"><button class="open" data-open="' + esc(result.id) + '">Open source</button>' + external + '</div></div></article>';
 }).join('');
 function render() {
   const results = visibleResults();
