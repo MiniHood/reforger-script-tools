@@ -191,7 +191,7 @@ fn run_workbench_api(
                     .map_err(|_| unreachable!())
             }),
         WorkbenchApiCommand::ReadLogs => controller
-            .read_logs("workbench", "latest", None)
+            .read_logs("workbench", "tail", Some(500))
             .and_then(|value| {
                 serde_json::to_value(value)
                     .map(|value| (value, None))
