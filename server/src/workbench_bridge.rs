@@ -26,6 +26,7 @@ pub const BRIDGE_VIEWPORT_CONTEXT_SOURCE: &str = include_str!("../bridge/RST_Wor
 pub const BRIDGE_TRACE_SOURCE: &str = include_str!("../bridge/RST_WorkbenchTrace.c");
 pub const BRIDGE_CLEAR_SELECTION_SOURCE: &str = include_str!("../bridge/RST_WorkbenchClearSelection.c");
 pub const BRIDGE_ENTITY_MUTATION_SOURCE: &str = include_str!("../bridge/RST_WorkbenchEntityMutation.c");
+pub const BRIDGE_HISTORY_SOURCE: &str = include_str!("../bridge/RST_WorkbenchHistory.c");
 pub const BRIDGE_SHAPE_POINTS_SOURCE: &str = include_str!("../bridge/RST_WorkbenchShapePoints.c");
 pub const BRIDGE_SHAPE_GEOMETRY_SOURCE: &str = include_str!("../bridge/RST_WorkbenchShapeGeometry.c");
 pub const BRIDGE_COMPONENTS_SOURCE: &str = include_str!("../bridge/RST_WorkbenchComponents.c");

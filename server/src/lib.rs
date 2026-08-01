@@ -33,4 +33,5 @@ pub mod syntax;
 pub mod type_facts;
 pub mod workbench;
 pub mod workbench_capture;
+pub mod workspace_catalogue;
 mod workbench_bridge;

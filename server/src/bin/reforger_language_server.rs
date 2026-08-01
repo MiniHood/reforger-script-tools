@@ -334,12 +334,16 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
     let mut game_data = GameDataCatalogueConfig { cache_path: None };
     let mut official_wiki_root = None;
     let mut workbench = WorkbenchControllerOptions::default();
+    let mut workspace_scripts = Vec::new();
 
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--index-cache" => game_data.cache_path = Some(path_value(&mut args, "--index-cache")?),
             "--official-wiki-root" => {
                 official_wiki_root = Some(path_value(&mut args, "--official-wiki-root")?)
+            }
+            "--workspace-scripts" => {
+                workspace_scripts.push(path_value(&mut args, "--workspace-scripts")?);
             }
             "--workbench-host" => {
                 workbench.gateway.host = string_value(&mut args, "--workbench-host")?
@@ -376,6 +380,7 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
         game_data,
         official_wiki_root,
         workbench,
+        workspace_scripts,
     })
 }
 
@@ -473,6 +478,29 @@ mod tests {
         assert_eq!(
             options.workbench.profile_directory,
             Some(PathBuf::from("fixture-profile"))
+        );
+    }
+
+    #[test]
+    fn explicit_mcp_mode_accepts_repeatable_workspace_script_roots() {
+        let mode = parse_args_from(
+            [
+                "mcp".to_string(),
+                "--workspace-scripts".to_string(),
+                "addon-a/Scripts".to_string(),
+                "--workspace-scripts".to_string(),
+                "addon-b/Scripts".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("valid MCP arguments");
+
+        let ServerMode::Mcp(options) = mode else {
+            panic!("expected MCP mode");
+        };
+        assert_eq!(
+            options.workspace_scripts,
+            vec![PathBuf::from("addon-a/Scripts"), PathBuf::from("addon-b/Scripts")]
         );
     }
 

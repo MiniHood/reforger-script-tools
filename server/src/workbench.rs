@@ -397,6 +397,37 @@ pub struct WorkbenchEntityPosition {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct WorkbenchEntityTransform {
+    pub position: WorkbenchEntityPosition,
+    pub angles: WorkbenchEntityPosition,
+    pub scale: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchEntityTransformResult {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity: Option<WorkbenchSelectedEntity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transform: Option<WorkbenchEntityTransform>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchHistoryResult {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub operation: String,
+    pub status: String,
+    pub history_available: bool,
+    pub changed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkbenchShapePoints {
     pub bridge_version: String,
     pub protocol_version: u32,
@@ -3023,6 +3054,78 @@ impl WorkbenchController {
             "RST_WorkbenchRotateEntity",
             json!({"entityId":entity_id,"pitch":angles.x,"yaw":angles.y,"roll":angles.z}),
         )
+    }
+
+    pub fn transform_entity(
+        &self,
+        entity_id: &str,
+        transform: WorkbenchEntityTransform,
+    ) -> Result<WorkbenchEntityTransformResult, WorkbenchFailure> {
+        let value = self.gateway.request(
+            json!({
+                "APIFunc": "RST_WorkbenchTransformEntity",
+                "entityId": entity_id,
+                "x": transform.position.x,
+                "y": transform.position.y,
+                "z": transform.position.z,
+                "pitch": transform.angles.x,
+                "yaw": transform.angles.y,
+                "roll": transform.angles.z,
+                "scale": transform.scale,
+            }),
+            self.options.gateway.status_deadline,
+        )?;
+        let raw: RawBridgeEntityTransform = serde_json::from_value(value)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        let entity = parse_optional_world_selection_record(&raw.entity)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        let transform = match (raw.position.as_deref(), raw.angles.as_deref()) {
+            (Some(position), Some(angles)) if raw.scale.is_finite() => Some(
+                WorkbenchEntityTransform {
+                    position: parse_vector_record(position)
+                        .map_err(|_| failure(WorkbenchFailureCode::Protocol))?,
+                    angles: parse_vector_record(angles)
+                        .map_err(|_| failure(WorkbenchFailureCode::Protocol))?,
+                    scale: raw.scale,
+                },
+            ),
+            _ => None,
+        };
+        Ok(WorkbenchEntityTransformResult {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            status: raw.status,
+            entity,
+            transform,
+        })
+    }
+
+    pub fn undo(&self) -> Result<WorkbenchHistoryResult, WorkbenchFailure> {
+        self.history_operation("RST_WorkbenchUndo", "undo")
+    }
+
+    pub fn redo(&self) -> Result<WorkbenchHistoryResult, WorkbenchFailure> {
+        self.history_operation("RST_WorkbenchRedo", "redo")
+    }
+
+    fn history_operation(
+        &self,
+        api_func: &str,
+        operation: &str,
+    ) -> Result<WorkbenchHistoryResult, WorkbenchFailure> {
+        let value = self.gateway.request(
+            json!({"APIFunc": api_func}),
+            self.options.gateway.status_deadline,
+        )?;
+        serde_json::from_value(value)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))
+            .map(|mut result: WorkbenchHistoryResult| {
+                result.operation = operation.to_string();
+                result
+            })
     }
 
     pub fn reparent_entity(
@@ -7340,6 +7443,21 @@ fn parse_optional_world_selection_record(
     Ok(records.pop())
 }
 
+fn parse_vector_record(value: &str) -> Result<WorkbenchEntityPosition, ()> {
+    let values = value
+        .split_whitespace()
+        .map(|part| part.parse::<f32>().map_err(|_| ()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if values.len() != 3 || values.iter().any(|value| !value.is_finite()) {
+        return Err(());
+    }
+    Ok(WorkbenchEntityPosition {
+        x: values[0],
+        y: values[1],
+        z: values[2],
+    })
+}
+
 fn parse_shape_points(value: &str) -> Option<Vec<WorkbenchEntityPosition>> {
     if value.is_empty() {
         return Some(Vec::new());
@@ -7592,6 +7710,19 @@ pub(crate) fn registered_project_files(profile: &Path) -> Result<Vec<PathBuf>, S
         projects.extend(source.lines().filter_map(project_list_file_path));
     }
     Ok(projects)
+}
+
+#[derive(Deserialize)]
+struct RawBridgeEntityTransform {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    status: String,
+    entity: String,
+    position: Option<String>,
+    angles: Option<String>,
+    scale: f32,
 }
 
 /// Returns the installed game's top-level add-on projects through the same
@@ -8448,6 +8579,7 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
             "RST_WorkbenchEntityMutation.c",
             BRIDGE_ENTITY_MUTATION_SOURCE,
         ),
+        ("RST_WorkbenchHistory.c", BRIDGE_HISTORY_SOURCE),
         ("RST_WorkbenchShapePoints.c", BRIDGE_SHAPE_POINTS_SOURCE),
         ("RST_WorkbenchShapeGeometry.c", BRIDGE_SHAPE_GEOMETRY_SOURCE),
         ("RST_WorkbenchComponents.c", BRIDGE_COMPONENTS_SOURCE),
@@ -10635,6 +10767,78 @@ mod tests {
         assert!(super::BRIDGE_ENTITY_MUTATION_SOURCE.contains("api.GetSelectedEntity(i)"));
         assert!(super::BRIDGE_ENTITY_MUTATION_SOURCE.contains("api.GetEditorEntityCount()"));
         assert!(super::BRIDGE_ENTITY_MUTATION_SOURCE.contains("RegV(\"entityId\")"));
+    }
+
+    #[test]
+    fn atomic_entity_transform_sets_all_components_and_returns_readback() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request["APIFunc"], "RST_WorkbenchTransformEntity");
+            assert_eq!(request["entityId"], "0x01 {}");
+            assert_eq!(request["scale"], 2.0);
+            json!({
+                "bridgeVersion":"1.51.0",
+                "protocolVersion":1,
+                "status":"transformed",
+                "entity":"0x01 {}|TestEntity|0|7|10|20|30",
+                "position":"10 20 30",
+                "angles":"4 5 6",
+                "scale":2.0
+            })
+        });
+        let root = test_root("transform-entity");
+        fs::create_dir_all(&root).unwrap();
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+        let result = controller
+            .transform_entity(
+                "0x01 {}",
+                super::WorkbenchEntityTransform {
+                    position: super::WorkbenchEntityPosition { x: 10.0, y: 20.0, z: 30.0 },
+                    angles: super::WorkbenchEntityPosition { x: 4.0, y: 5.0, z: 6.0 },
+                    scale: 2.0,
+                },
+            )
+            .unwrap();
+        assert_eq!(result.status, "transformed");
+        assert_eq!(result.transform.unwrap().scale, 2.0);
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn history_results_preserve_native_availability_and_change_facts() {
+        let (port, peer) = start_peer_sequence(vec![
+            (
+                json!({"APIFunc":"RST_WorkbenchUndo"}),
+                json!({"bridgeVersion":"1.51.0","protocolVersion":1,"operation":"undo","status":"native-api-unavailable","historyAvailable":false,"changed":false}),
+            ),
+            (
+                json!({"APIFunc":"RST_WorkbenchRedo"}),
+                json!({"bridgeVersion":"1.51.0","protocolVersion":1,"operation":"redo","status":"native-api-unavailable","historyAvailable":false,"changed":false}),
+            ),
+        ]);
+        let root = test_root("history-operations");
+        fs::create_dir_all(&root).unwrap();
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+        assert!(!controller.undo().unwrap().history_available);
+        assert!(!controller.redo().unwrap().changed);
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

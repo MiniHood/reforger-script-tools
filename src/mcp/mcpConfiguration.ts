@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { languageClientIndexCache } from '../extensionConfig/languageClient';
 import { mcpCommands, mcpServer } from '../extensionConfig/mcp';
 import { resolveLanguageServerPath } from '../languageClient/serverPath';
+import { discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
 
 export interface McpLaunch {
 	command: string;
@@ -12,6 +13,7 @@ export interface McpLaunch {
 export interface McpLaunchInputs {
 	serverPath: string;
 	indexCache: string;
+	workspaceScripts?: string[];
 }
 
 type ConfigurationFormat = 'generic' | 'codex';
@@ -20,7 +22,12 @@ const genericChoice = 'Generic MCP JSON';
 const codexChoice = 'Codex config.toml';
 
 export function buildMcpLaunchConfiguration(inputs: McpLaunchInputs): McpLaunch {
-	const args = ['mcp', '--index-cache', inputs.indexCache];
+	const args = [
+		'mcp',
+		'--index-cache',
+		inputs.indexCache,
+		...(inputs.workspaceScripts ?? []).flatMap(root => ['--workspace-scripts', root]),
+	];
 	return {
 		command: inputs.serverPath,
 		args,
@@ -71,6 +78,7 @@ export function registerMcpConfigurationCommand(
 					languageClientIndexCache.rootFolder,
 					languageClientIndexCache.baseGameIndexFile,
 				),
+				workspaceScripts: await discoverWorkspaceScriptRoots(),
 			});
 			const configuration = format === 'codex'
 				? renderCodexMcpConfiguration(launch)

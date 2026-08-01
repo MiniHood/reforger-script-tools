@@ -191,9 +191,47 @@ pub fn search(
     catalogue_revision: &str,
     request: GameDataSearchRequest,
 ) -> Result<GameDataSearchPage, GameDataSearchError> {
+    search_with_scope(
+        index,
+        source_line_starts,
+        control,
+        catalogue_revision,
+        request,
+        false,
+    )
+}
+
+/// Search a language-owned workspace index. The result shape intentionally
+/// stays identical to Game Data search so symbol references, pagination, and
+/// downstream inspection remain one protocol.
+pub fn search_workspace(
+    index: &SymbolIndex,
+    source_line_starts: &BTreeMap<SourceFileId, SourceLineStarts>,
+    control: &IndexBuildControl,
+    workspace_revision: &str,
+    request: GameDataSearchRequest,
+) -> Result<GameDataSearchPage, GameDataSearchError> {
+    search_with_scope(
+        index,
+        source_line_starts,
+        control,
+        workspace_revision,
+        request,
+        true,
+    )
+}
+
+fn search_with_scope(
+    index: &SymbolIndex,
+    source_line_starts: &BTreeMap<SourceFileId, SourceLineStarts>,
+    control: &IndexBuildControl,
+    catalogue_revision: &str,
+    request: GameDataSearchRequest,
+    workspace_scope: bool,
+) -> Result<GameDataSearchPage, GameDataSearchError> {
     let query = normalize_query(&request.query)?;
     let kinds = canonical_kinds(request.kinds.as_deref())?;
-    let source_categories = canonical_categories(request.source_categories.as_deref())?;
+    let source_categories = canonical_categories(request.source_categories.as_deref(), workspace_scope)?;
     let owner = request
         .owner
         .as_ref()
@@ -399,7 +437,10 @@ fn canonical_kinds(values: Option<&[String]>) -> Result<Vec<String>, GameDataSea
     }
     Ok(unique.into_iter().collect())
 }
-fn canonical_categories(values: Option<&[String]>) -> Result<Vec<String>, GameDataSearchError> {
+fn canonical_categories(
+    values: Option<&[String]>,
+    workspace_scope: bool,
+) -> Result<Vec<String>, GameDataSearchError> {
     let values = match values {
         Some(values) if values.is_empty() => {
             return Err(GameDataSearchError::InvalidRequest(
@@ -407,18 +448,32 @@ fn canonical_categories(values: Option<&[String]>) -> Result<Vec<String>, GameDa
             ));
         }
         Some(values) => values.to_vec(),
+        None if workspace_scope => vec!["workspace".to_string()],
         None => all_categories().into_iter().map(str::to_string).collect(),
     };
-    let allowed = all_categories();
+    let allowed = if workspace_scope {
+        vec!["workspace"]
+    } else {
+        all_categories()
+    };
     let value_count = values.len();
     let unique = values.into_iter().collect::<BTreeSet<_>>();
     if unique.len() != value_count
         || unique
             .iter()
-            .any(|value| !allowed.contains(&value.as_str()) || value == "workspace")
+            .any(|value| {
+                !allowed.contains(&value.as_str())
+                    || (!workspace_scope && value == "workspace")
+                    || (workspace_scope && value != "workspace")
+            })
     {
+        let message = if workspace_scope {
+            "sourceCategories must contain only the workspace category"
+        } else {
+            "sourceCategories must be unique game-data categories"
+        };
         return Err(GameDataSearchError::InvalidRequest(
-            "sourceCategories must be unique game-data categories",
+            message,
         ));
     }
     Ok(unique.into_iter().collect())

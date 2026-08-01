@@ -35,6 +35,22 @@ suite('MCP configuration', () => {
 		]);
 	});
 
+	test('passes discovered add-on script roots to workspace semantic search', () => {
+		const launch = buildMcpLaunchConfiguration({
+			serverPath: '/extension/reforger_language_server',
+			indexCache: '/storage/index.bin',
+			workspaceScripts: ['/projects/MyAddon/Scripts'],
+		});
+
+		assert.deepStrictEqual(launch.args, [
+			'mcp',
+			'--index-cache',
+			'/storage/index.bin',
+			'--workspace-scripts',
+			'/projects/MyAddon/Scripts',
+		]);
+	});
+
 	test('renders generic JSON and Codex TOML from the same launch', () => {
 		const launch = {
 			command: 'C:\\Extension\\reforger_language_server.exe',

@@ -12,6 +12,7 @@ class RST_WorkbenchEntityMutationRequest : JsonApiStruct
 	float pitch;
 	float yaw;
 	float roll;
+	float scale;
 	int layerId;
 	bool targetIsResource;
 	bool confirm;
@@ -29,6 +30,7 @@ class RST_WorkbenchEntityMutationRequest : JsonApiStruct
 		RegV("pitch");
 		RegV("yaw");
 		RegV("roll");
+		RegV("scale");
 		RegV("layerId");
 		RegV("targetIsResource");
 		RegV("confirm");
@@ -538,6 +540,86 @@ class RST_WorkbenchDeleteEntity : RST_WorkbenchEntityMutationBase
 			response.status = "deleted";
 		else
 			response.status = "mutation-rejected";
+		return response;
+	}
+}
+
+class RST_WorkbenchEntityTransformResponse : JsonApiStruct
+{
+	string bridgeVersion;
+	int protocolVersion;
+	string status;
+	string entity;
+	string position;
+	string angles;
+	float scale;
+
+	void RST_WorkbenchEntityTransformResponse()
+	{
+		RegAll();
+	}
+}
+
+class RST_WorkbenchTransformEntity : RST_WorkbenchEntityMutationBase
+{
+	override JsonApiStruct GetRequest()
+	{
+		return new RST_WorkbenchEntityMutationRequest();
+	}
+
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
+		RST_WorkbenchEntityTransformResponse response = new RST_WorkbenchEntityTransformResponse();
+		response.bridgeVersion = "1.52.12";
+		response.protocolVersion = 1;
+		response.scale = 0;
+		WorldEditor editor = Workbench.GetModule(WorldEditor);
+		if (!editor)
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+		WorldEditorAPI api = editor.GetApi();
+		RST_WorkbenchEntityMutationResponse setupResponse = Response();
+		if (!Setup(api, setupResponse))
+		{
+			response.status = setupResponse.status;
+			return response;
+		}
+		IEntitySource entity = Find(api, r.entityId);
+		if (!entity)
+		{
+			response.status = "entity-not-found";
+			return response;
+		}
+		if (api.IsEntityLayerLockedHierarchy(entity.GetSubScene(), entity.GetLayerID()) || !api.BeginEntityAction("Reforger Script Tools: transform entity"))
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+		bool changed = api.SetVariableValue(entity, null, "coords", string.Format("%1 %2 %3", r.x, r.y, r.z));
+		changed = api.SetVariableValue(entity, null, "angles", string.Format("%1 %2 %3", r.pitch, r.yaw, r.roll)) && changed;
+		changed = api.SetVariableValue(entity, null, "scale", r.scale.ToString()) && changed;
+		api.EndEntityAction("Reforger Script Tools: transform entity");
+		if (!changed)
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+		IEntity runtimeEntity = api.SourceToEntity(entity);
+		if (!runtimeEntity)
+		{
+			response.status = "readback-unavailable";
+			return response;
+		}
+		vector position = runtimeEntity.GetOrigin();
+		vector angles = runtimeEntity.GetAngles();
+		response.entity = entity.GetID().ToString() + "|" + entity.GetClassName() + "|" + entity.GetSubScene().ToString() + "|" + entity.GetLayerID().ToString() + "|" + position[0].ToString() + "|" + position[1].ToString() + "|" + position[2].ToString();
+		response.position = string.Format("%1 %2 %3", position[0], position[1], position[2]);
+		response.angles = string.Format("%1 %2 %3", angles[0], angles[1], angles[2]);
+		response.scale = runtimeEntity.GetScale();
+		response.status = "transformed";
 		return response;
 	}
 }
