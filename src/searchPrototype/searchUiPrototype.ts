@@ -341,7 +341,9 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .muted { color: var(--muted); }
 .tag { border-radius: 12px; padding: 3px 8px; background: var(--alt); color: var(--muted); font-size: 11px; }
 .source-rows { display: grid; gap: 10px; margin-top: 12px; }
-.source-row { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; align-items: start; padding: 13px; border: 1px solid var(--border); background: var(--panel); }
+.source-row { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; align-items: start; padding: 13px; border: 1px solid var(--border); background: var(--panel); cursor: pointer; user-select: text; }
+.source-row:hover { border-color: var(--accent); }
+.source-row:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 .source-row.selected { border-color: var(--accent); }
 .source-icon { color: var(--accent); font-weight: 700; text-align: center; }
 .result-content { min-width: 0; }
@@ -361,7 +363,6 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .md-preview .md-code { margin: 0 0 8px; padding: 8px; overflow: auto; background: var(--panel); font: 12px/1.45 var(--vscode-editor-font-family); white-space: pre-wrap; }
 .result-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .result-actions button { padding: 5px 8px; }
-.open { color: var(--selected-text); background: var(--selected); border-color: transparent !important; }
 .status { margin: 12px 0; color: var(--muted); }
 .error { padding: 10px 12px; border: 1px solid var(--vscode-inputValidation-errorBorder); color: var(--vscode-errorForeground); background: var(--vscode-inputValidation-errorBackground); }
 .warning { padding: 8px 10px; border-left: 2px solid var(--vscode-editorWarning-foreground); color: var(--muted); }
@@ -435,8 +436,15 @@ const resultRows = () => visibleResults().map(result => {
   const selected = state.selected === result.id;
   const external = result.sourceUrl ? '<button data-external="' + esc(result.id) + '">Open official page</button>' : '';
   const preview = result.kind === 'documentation' ? '<div class="md-preview">' + renderMarkdown(result.excerpt) + '</div>' : '<pre class="snippet">' + esc(result.excerpt) + '</pre>';
-  return '<article class="source-row ' + (selected ? 'selected' : '') + '"><div class="source-icon">' + (result.kind === 'documentation' ? 'W' : 'S') + '</div><div class="result-content"><div class="result-head"><h3>' + esc(result.title) + '</h3><div class="result-path">' + esc(result.path) + '</div></div><div class="result-detail">' + esc(result.detail) + ' · ' + esc(sourceLabel(result.source)) + '</div>' + preview + '<div class="result-actions"><button class="open" data-open="' + esc(result.id) + '">Open source</button>' + external + '</div></div></article>';
+  return '<article class="source-row ' + (selected ? 'selected' : '') + '" data-open="' + esc(result.id) + '" tabindex="0" role="button"><div class="source-icon">' + (result.kind === 'documentation' ? 'W' : 'S') + '</div><div class="result-content"><div class="result-head"><h3>' + esc(result.title) + '</h3><div class="result-path">' + esc(result.path) + '</div></div><div class="result-detail">' + esc(result.detail) + ' · ' + esc(sourceLabel(result.source)) + '</div>' + preview + '<div class="result-actions">' + external + '</div></div></article>';
 }).join('');
+const hasTextSelection = () => Boolean(window.getSelection()?.toString());
+const openResult = element => {
+  if (!element.dataset.open || hasTextSelection()) return;
+  state.selected = element.dataset.open;
+  vscode.postMessage({ type: 'open', id: element.dataset.open });
+  render();
+};
 function render() {
   const results = visibleResults();
   const body = state.error ? '<div class="error">' + esc(state.error) + '</div>' : results.length ? '<div class="source-rows">' + resultRows() + '</div>' : '<div class="empty">' + (state.status === 'idle' ? 'Enter a symbol, concept, or documentation term to search.' : 'No results match this search.') + '</div>';
@@ -449,7 +457,10 @@ function render() {
   query.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); search(); } });
   document.querySelectorAll('[data-type]').forEach(element => element.addEventListener('click', () => { state.type = element.dataset.type; render(); }));
   document.querySelectorAll('[data-source]').forEach(element => element.addEventListener('click', () => { state.source = element.dataset.source; search(); }));
-  document.querySelectorAll('[data-open]').forEach(element => element.addEventListener('click', event => { event.stopPropagation(); state.selected = element.dataset.open; vscode.postMessage({ type: 'open', id: element.dataset.open }); render(); }));
+  document.querySelectorAll('[data-open]').forEach(element => {
+    element.addEventListener('click', event => { if (event.target.closest('[data-external]') || hasTextSelection()) return; openResult(element); });
+    element.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openResult(element); } });
+  });
   document.querySelectorAll('[data-external]').forEach(element => element.addEventListener('click', event => { event.stopPropagation(); vscode.postMessage({ type: 'external', id: element.dataset.external }); }));
 }
 let searchTimer;

@@ -88,4 +88,12 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /\.result-path \{[^}]*overflow-wrap: anywhere;[^}]*text-align: right;/);
 		assert.match(searchUiSource, /<div class="result-head"><h3>/);
 	});
+
+	test('opens result cards while preserving text selection and the Wiki page action', () => {
+		assert.match(searchUiSource, /data-open="' \+ esc\(result\.id\) \+ '" tabindex="0" role="button"/);
+		assert.doesNotMatch(searchUiSource, /<button class="open" data-open=/);
+		assert.match(searchUiSource, /const hasTextSelection = \(\) => Boolean\(window\.getSelection\(\)\?\.toString\(\)\);/);
+		assert.match(searchUiSource, /if \(event\.target\.closest\('\[data-external\]'\) \|\| hasTextSelection\(\)\) return;/);
+		assert.match(searchUiSource, /data-external="' \+ esc\(result\.id\) \+ '">Open official page/);
+	});
 });
