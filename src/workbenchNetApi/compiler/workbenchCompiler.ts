@@ -13,6 +13,7 @@ import {
 	WorkbenchCompilerDiagnostic,
 	WorkbenchGateway,
 	WorkbenchGatewayFailureCategory,
+	WorkbenchProcessStatus,
 	WorkbenchStatus,
 	WorkbenchValidationResult,
 } from '../gateway/workbenchGateway';
@@ -38,6 +39,15 @@ type WorkbenchUiPhase =
 	| 'ready'
 	| 'validating'
 	| 'unavailable';
+
+export type WorkbenchStatusNotificationKind =
+	| 'workbench-not-detected'
+	| 'workbench-scripts-failing';
+
+const workbenchStatusNotificationMessages: Record<WorkbenchStatusNotificationKind, string> = {
+	'workbench-not-detected': 'Workbench not detected.',
+	'workbench-scripts-failing': 'Workbench scripts are failing.',
+};
 
 export interface WorkbenchCompilerObservation {
 	phase: WorkbenchUiPhase;
@@ -97,6 +107,19 @@ export function workbenchConnectionStarted(
 	current: WorkbenchStatus,
 ): boolean {
 	return current.isRunning && previous?.isRunning !== true;
+}
+
+export function workbenchStatusNotificationKind(
+	status: WorkbenchStatus | undefined,
+	process: WorkbenchProcessStatus | undefined,
+): WorkbenchStatusNotificationKind | undefined {
+	if (status?.isRunning && !status.scriptsCompiled) {
+		return 'workbench-scripts-failing';
+	}
+	if ((!status || !status.isRunning) && process?.isOpen === false) {
+		return 'workbench-not-detected';
+	}
+	return undefined;
 }
 
 interface WorkbenchCompilerFailure {
@@ -164,6 +187,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private lastOutcome = 'No validation has completed.';
 	private lastFailure: WorkbenchCompilerFailure | undefined;
 	private lastStatus: WorkbenchStatus | undefined;
+	private lastStatusNotification: WorkbenchStatusNotificationKind | undefined;
 	private lastValidationResult: WorkbenchValidationResult | undefined;
 	private lastValidationTiming: ValidationTiming | undefined;
 	private latestValidationOutput = '';
@@ -265,6 +289,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.markDiagnosticsStale('Workbench configuration changed');
 		this.lastFailure = undefined;
 		this.lastStatus = undefined;
+		this.lastStatusNotification = undefined;
 		if (!this.configuration.enabled) {
 			this.setPhase('disabled');
 			return;
@@ -729,10 +754,20 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		if (!result.ok) {
 			this.integration?.onWorkbenchDisconnected();
 			this.lastStatus = undefined;
+			const process = await this.integration?.observeProcessStatus();
+			this.updateStatusNotification(
+				workbenchStatusNotificationKind(undefined, process),
+			);
 			this.noteFailure(result.failure);
 			this.scheduleProbe(unavailableRetryMs, generation);
 			return;
 		}
+		const process = result.value.isRunning
+			? undefined
+			: await this.integration?.observeProcessStatus();
+		this.updateStatusNotification(
+			workbenchStatusNotificationKind(result.value, process),
+		);
 		const becameConnected = workbenchConnectionStarted(this.lastStatus, result.value);
 		this.lastFailure = undefined;
 		this.lastStatus = result.value;
@@ -808,6 +843,18 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		if (this.probeTimer) {
 			clearTimeout(this.probeTimer);
 			this.probeTimer = undefined;
+		}
+	}
+
+	private updateStatusNotification(
+		kind: WorkbenchStatusNotificationKind | undefined,
+	): void {
+		if (kind === this.lastStatusNotification) {
+			return;
+		}
+		this.lastStatusNotification = kind;
+		if (kind) {
+			void vscode.window.showWarningMessage(workbenchStatusNotificationMessages[kind]);
 		}
 	}
 

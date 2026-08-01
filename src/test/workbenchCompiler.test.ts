@@ -12,6 +12,7 @@ import {
 } from '../extensionConfig/workbench';
 import {
 	workbenchConnectionStarted,
+	workbenchStatusNotificationKind,
 	type WorkbenchCompilerObservation,
 } from '../workbenchNetApi/compiler/workbenchCompiler';
 import { startNetApiPeer } from './netApiPeer';
@@ -33,6 +34,44 @@ suite('Workbench compiler validation', () => {
 			}
 			await configuration.update(setting, undefined, vscode.ConfigurationTarget.Global);
 		}
+	});
+
+	test('classifies a missing Workbench process as not detected', () => {
+		assert.strictEqual(
+			workbenchStatusNotificationKind(undefined, { isOpen: false }),
+			'workbench-not-detected',
+		);
+		assert.strictEqual(
+			workbenchStatusNotificationKind(
+				{ isRunning: false, scriptsCompiled: false },
+				{ isOpen: false },
+			),
+			'workbench-not-detected',
+		);
+		assert.strictEqual(
+			workbenchStatusNotificationKind(
+				{ isRunning: false, scriptsCompiled: false },
+				{ isOpen: true },
+			),
+			undefined,
+		);
+	});
+
+	test('classifies a running Workbench with failed scripts separately', () => {
+		assert.strictEqual(
+			workbenchStatusNotificationKind(
+				{ isRunning: true, scriptsCompiled: false },
+				undefined,
+			),
+			'workbench-scripts-failing',
+		);
+		assert.strictEqual(
+			workbenchStatusNotificationKind(
+				{ isRunning: true, scriptsCompiled: true },
+				undefined,
+			),
+			undefined,
+		);
 	});
 
 	test('manual validation publishes compiler diagnostics from the configured endpoint', async () => {

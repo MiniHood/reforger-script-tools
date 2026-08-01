@@ -170,6 +170,14 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 		}
 	}
 
+	public async observeProcessStatus(): Promise<WorkbenchProcessStatus | undefined> {
+		if (this.disposed || !this.enabled) {
+			return undefined;
+		}
+		const result = await this.runtime.processStatus(this.endpoint ?? this.readEndpoint());
+		return result.ok ? result.value : undefined;
+	}
+
 	public whenReady(): Promise<boolean> {
 		return this.ready;
 	}
