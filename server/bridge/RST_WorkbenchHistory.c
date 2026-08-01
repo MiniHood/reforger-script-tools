@@ -31,9 +31,22 @@ class RST_WorkbenchUndo : NetApiHandler
 		response.bridgeVersion = "1.52.12";
 		response.protocolVersion = 1;
 		response.operation = "undo";
-		response.status = "native-api-unavailable";
-		response.historyAvailable = false;
-		response.changed = false;
+		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
+		if (!worldEditor)
+		{
+			response.status = "world-editor-unavailable";
+			response.historyAvailable = false;
+			response.changed = false;
+			return response;
+		}
+		array<string> menuPath = {"Edit", "Undo"};
+		bool accepted = worldEditor.ExecuteAction(menuPath, true);
+		if (accepted)
+			response.status = "invoked";
+		else
+			response.status = "history-unavailable";
+		response.historyAvailable = accepted;
+		response.changed = accepted;
 		return response;
 	}
 }
@@ -51,9 +64,22 @@ class RST_WorkbenchRedo : NetApiHandler
 		response.bridgeVersion = "1.52.12";
 		response.protocolVersion = 1;
 		response.operation = "redo";
-		response.status = "native-api-unavailable";
-		response.historyAvailable = false;
-		response.changed = false;
+		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
+		if (!worldEditor)
+		{
+			response.status = "world-editor-unavailable";
+			response.historyAvailable = false;
+			response.changed = false;
+			return response;
+		}
+		array<string> menuPath = {"Edit", "Redo"};
+		bool accepted = worldEditor.ExecuteAction(menuPath, true);
+		if (accepted)
+			response.status = "invoked";
+		else
+			response.status = "history-unavailable";
+		response.historyAvailable = accepted;
+		response.changed = accepted;
 		return response;
 	}
 }

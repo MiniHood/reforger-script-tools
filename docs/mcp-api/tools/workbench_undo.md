@@ -3,7 +3,7 @@
 
 [Back to the MCP API router](../../mcp-api.md)
 
-Request one native Workbench undo and report whether an undo history entry was actually available. The public Workbench script surface currently reports unavailable when no native undo command is exposed.
+Invoke one native Workbench Edit > Undo action and report whether the live editor accepted it. The Workbench action dispatcher returns false when undo history is unavailable, so historyAvailable and changed are authoritative action facts.
 
 ### Annotations
 

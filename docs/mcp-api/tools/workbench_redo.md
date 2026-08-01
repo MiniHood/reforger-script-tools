@@ -3,7 +3,7 @@
 
 [Back to the MCP API router](../../mcp-api.md)
 
-Request one native Workbench redo and report whether a redo history entry was actually available. The public Workbench script surface currently reports unavailable when no native redo command is exposed.
+Invoke one native Workbench Edit > Redo action and report whether the live editor accepted it. The Workbench action dispatcher returns false when redo history is unavailable, so historyAvailable and changed are authoritative action facts.
 
 ### Annotations
 

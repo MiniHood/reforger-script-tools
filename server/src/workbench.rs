@@ -10817,11 +10817,11 @@ mod tests {
         let (port, peer) = start_peer_sequence(vec![
             (
                 json!({"APIFunc":"RST_WorkbenchUndo"}),
-                json!({"bridgeVersion":"1.51.0","protocolVersion":1,"operation":"undo","status":"native-api-unavailable","historyAvailable":false,"changed":false}),
+                json!({"bridgeVersion":"1.51.0","protocolVersion":1,"operation":"undo","status":"invoked","historyAvailable":true,"changed":true}),
             ),
             (
                 json!({"APIFunc":"RST_WorkbenchRedo"}),
-                json!({"bridgeVersion":"1.51.0","protocolVersion":1,"operation":"redo","status":"native-api-unavailable","historyAvailable":false,"changed":false}),
+                json!({"bridgeVersion":"1.51.0","protocolVersion":1,"operation":"redo","status":"invoked","historyAvailable":true,"changed":true}),
             ),
         ]);
         let root = test_root("history-operations");
@@ -10835,10 +10835,20 @@ mod tests {
             user_directory: Some(root.clone()),
             ..super::WorkbenchControllerOptions::default()
         });
-        assert!(!controller.undo().unwrap().history_available);
-        assert!(!controller.redo().unwrap().changed);
+        assert!(controller.undo().unwrap().history_available);
+        assert!(controller.redo().unwrap().changed);
         peer.join().unwrap();
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn history_bridge_invokes_the_live_game_world_editor_route() {
+        assert!(super::BRIDGE_HISTORY_SOURCE.contains("Workbench.GetModule(WorldEditor)"));
+        assert!(super::BRIDGE_HISTORY_SOURCE.contains("array<string> menuPath = {\"Edit\", \"Undo\"}"));
+        assert!(super::BRIDGE_HISTORY_SOURCE.contains("array<string> menuPath = {\"Edit\", \"Redo\"}"));
+        assert!(super::BRIDGE_HISTORY_SOURCE.contains("worldEditor.ExecuteAction(menuPath, true)"));
+        assert!(super::BRIDGE_HISTORY_SOURCE.contains("response.status = \"history-unavailable\""));
+        assert!(super::BRIDGE_HISTORY_SOURCE.contains("response.status = \"world-editor-unavailable\""));
     }
 
     #[test]
