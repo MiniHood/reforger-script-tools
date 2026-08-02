@@ -294,6 +294,18 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /previewDiagnostics/);
 	});
 
+	test('toggles a top-only two-column result grid without rerunning the search', () => {
+		assert.match(searchUiSource, /resultColumns: 1/);
+		assert.match(searchUiSource, /\.source-rows\.two-column \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+		assert.match(searchUiSource, /const pageControls = \(includeLayoutToggle = false\) =>/);
+		assert.match(searchUiSource, /pageControls\(true\)/);
+		assert.match(searchUiSource, /data-result-layout/);
+		assert.match(searchUiSource, /aria-pressed="' \+ \(state\.resultColumns === 2\) \+ '"/);
+		assert.match(searchUiSource, /state\.resultColumns = state\.resultColumns === 2 \? 1 : 2; render\(false\);/);
+		assert.doesNotMatch(searchUiSource, /data-result-layout[^\n]*search\(/);
+		assert.match(searchUiSource, /resultColumns: state\.resultColumns/);
+	});
+
 	test('publishes raw previews before semantic coloring completes', () => {
 		const rawPhase = searchUiSource.indexOf("const postRawPreview = (id: string): void =>");
 		const rawMessage = searchUiSource.indexOf("type: 'previews',", rawPhase);

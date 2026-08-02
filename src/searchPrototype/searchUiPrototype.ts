@@ -850,6 +850,9 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .addon-chip { max-width: 100%; padding: 3px 6px; border-radius: 10px; background: var(--selected); color: var(--selected-text); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-header { display: flex; justify-content: space-between; align-items: end; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
 .page-controls { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 14px; }
+.layout-toggle { display: inline-grid; grid-template-columns: repeat(2, 5px); grid-template-rows: repeat(2, 5px); gap: 2px; }
+.layout-toggle span { display: block; border: 1px solid currentColor; }
+.page-controls button.active { border-color: var(--accent); color: var(--accent); background: var(--selected); }
 .page-status { display: inline-flex; flex: 0 0 150px; align-items: center; justify-content: flex-end; gap: 6px; white-space: nowrap; }
 .page-arrows { display: inline-flex; gap: 2px; }
 .page-controls button, .page-controls input, .page-controls select { min-height: 28px; }
@@ -861,6 +864,7 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .muted { color: var(--muted); }
 .tag { border-radius: 12px; padding: 3px 8px; background: var(--alt); color: var(--muted); font-size: 11px; }
 .source-rows { display: grid; gap: 10px; margin-top: 12px; }
+.source-rows.two-column { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
 .source-row { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; align-items: start; padding: 13px; border: 1px solid var(--border); background: var(--panel); cursor: pointer; user-select: text; }
 .source-row:hover { border-color: var(--accent); }
 .source-row:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
@@ -888,6 +892,7 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .error { padding: 10px 12px; border: 1px solid var(--vscode-inputValidation-errorBorder); color: var(--vscode-errorForeground); background: var(--vscode-inputValidation-errorBackground); }
 .warning { padding: 8px 10px; border-left: 2px solid var(--vscode-editorWarning-foreground); color: var(--muted); }
 .empty { padding: 30px 14px; border: 1px dashed var(--border); color: var(--muted); }
+@media (max-width: 980px) { .source-rows.two-column { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .shell { padding: 18px 14px 60px; } .layout { grid-template-columns: 1fr; } .toolbar { flex-wrap: wrap; } .toolbar #query { flex-basis: 100%; } .text-options { flex-wrap: wrap; } .source-header { align-items: flex-start; gap: 10px; } .source-row { grid-template-columns: 26px 1fr; } .result-head { align-items: flex-start; flex-wrap: wrap; } .result-path { max-width: 100%; margin-left: 0; text-align: left; } }
 </style>
 </head>
@@ -902,7 +907,7 @@ window.__reforgerSearchVscode.postMessage({ type: 'webviewReady', width: window.
 </script>
 <script nonce="${nonce}">
 const vscode = window.__reforgerSearchVscode;
-const state = { query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, type: 'all', results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, scopeOpen: true, scopeFilter: '', scopeRevision: '', scopeAuthority: '', scopeDiscoveryMs: 0, unavailableScopeIds: [], scopeSources: [{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true }, { id: 'wiki', label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true }], selectedScopeIds: ['workspace', 'wiki'], selectionTouched: false, removedScopeIds: [], uiPerformance: { renderCount: 0, lastRenderMs: 0, searchStartedAt: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
+const state = { query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, type: 'all', resultColumns: 1, results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, scopeOpen: true, scopeFilter: '', scopeRevision: '', scopeAuthority: '', scopeDiscoveryMs: 0, unavailableScopeIds: [], scopeSources: [{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true }, { id: 'wiki', label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true }], selectedScopeIds: ['workspace', 'wiki'], selectionTouched: false, removedScopeIds: [], uiPerformance: { renderCount: 0, lastRenderMs: 0, searchStartedAt: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const sourceLabel = result => result.addonLabel ?? (result.source === 'wiki' ? 'Official Wiki' : result.source === 'workspace' ? 'Workspace' : 'Game Data');
 const visibleResults = () => state.results;
@@ -931,11 +936,12 @@ const pageSizeOptions = [25, 50, 100];
 const maxSearchPages = ${searchLimits.maxPages};
 const totalMatches = () => state.total;
 const totalPages = () => Math.min(maxSearchPages, Math.max(1, Math.ceil(state.total / state.pageSize)));
-const pageControls = () => {
+const pageControls = (includeLayoutToggle = false) => {
   const navigationDisabled = !state.query.trim() || state.status === 'loading';
   const pageTotal = totalPages();
   const sizes = pageSizeOptions.map(size => '<option value="' + size + '"' + (state.pageSize === size ? ' selected' : '') + '>' + size + ' results</option>').join('');
-  return '<div class="page-controls" aria-label="Search result pages"><select data-page-size aria-label="Total results per page"' + (state.status === 'loading' ? ' disabled' : '') + '>' + sizes + '</select><span class="page-status"><span class="muted">Page</span><input data-page-input type="number" min="1" max="' + pageTotal + '" value="' + state.page + '" aria-label="Current result page"' + (navigationDisabled ? ' disabled' : '') + '><span class="muted">of ' + pageTotal + '</span></span><span class="page-arrows"><button type="button" data-page-prev' + (navigationDisabled || state.page <= 1 ? ' disabled' : '') + ' aria-label="Previous page">‹</button><button type="button" data-page-next' + (navigationDisabled || state.page >= pageTotal ? ' disabled' : '') + ' aria-label="Next page">›</button></span></div>';
+  const layoutToggle = includeLayoutToggle ? '<button type="button" data-result-layout class="' + (state.resultColumns === 2 ? 'active' : '') + '" aria-label="Toggle two-column result grid" aria-pressed="' + (state.resultColumns === 2) + '" title="Toggle two-column result grid"><span class="layout-toggle" aria-hidden="true"><span></span><span></span><span></span><span></span></span></button>' : '';
+  return '<div class="page-controls" aria-label="Search result pages"><select data-page-size aria-label="Total results per page"' + (state.status === 'loading' ? ' disabled' : '') + '>' + sizes + '</select><span class="page-status"><span class="muted">Page</span><input data-page-input type="number" min="1" max="' + pageTotal + '" value="' + state.page + '" aria-label="Current result page"' + (navigationDisabled ? ' disabled' : '') + '><span class="muted">of ' + pageTotal + '</span></span><span class="page-arrows"><button type="button" data-page-prev' + (navigationDisabled || state.page <= 1 ? ' disabled' : '') + ' aria-label="Previous page">‹</button><button type="button" data-page-next' + (navigationDisabled || state.page >= pageTotal ? ' disabled' : '') + ' aria-label="Next page">›</button></span>' + layoutToggle + '</div>';
 };
 const inlineMarkdown = value => value
   .replace(/\\\\([*_])/g, '$1')
@@ -1050,6 +1056,7 @@ const captureSearchSnapshot = () => vscode.postMessage({ type: 'debugSnapshot', 
   useRegex: state.useRegex,
   resultType: state.type,
   status: state.status,
+  resultColumns: state.resultColumns,
   requestId: state.requestId,
   page: state.page,
   pageSize: state.pageSize,
@@ -1101,10 +1108,10 @@ const openResult = element => {
 function render(focusQuery = true) {
   const renderStartedAt = performance.now();
   const results = visibleResults();
-  const body = state.error ? '<div class="error">' + esc(state.error) + '</div>' : selectedEligibleScopeIds().length === 0 ? '<div class="empty">No search scopes selected.</div>' : results.length ? '<div class="source-rows">' + resultRows() + '</div>' : '<div class="empty">No results match this search.</div>';
+  const body = state.error ? '<div class="error">' + esc(state.error) + '</div>' : selectedEligibleScopeIds().length === 0 ? '<div class="empty">No search scopes selected.</div>' : results.length ? '<div class="source-rows' + (state.resultColumns === 2 ? ' two-column' : '') + '">' + resultRows() + '</div>' : '<div class="empty">No results match this search.</div>';
   const warnings = state.warnings.map(warning => '<div class="warning">' + esc(warning) + '</div>').join('');
   const bottomPager = state.query.trim() && totalMatches() > 0 ? '<div class="page-bottom">' + pageControls() + '</div>' : '';
-  document.getElementById('app').innerHTML = '<div class="shell"><div class="eyebrow">Source browser · live MCP search</div><h1>Find usage in Reforger</h1><p class="intro">Search the indexed workspace, loaded add-ons, and Official Wiki together. Select a result to open the exact source document and highlight the matching lines.</p><div class="toolbar"><input id="query" value="' + esc(state.query) + '" placeholder="Search a symbol, concept, or phrase..." aria-label="Search query">' + textSearchOptions() + '</div><div class="layout"><aside class="source-rail"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '<div class="group-label">SEARCH MODE</div>' + modeButtons() + (state.mode === 'text' ? '' : '<div class="group-label">RESULT TYPE</div>' + typeButtons()) + '</aside><section><div class="source-header"><div><h2>' + totalMatches() + ' matches</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Showing up to ' + state.pageSize + ' total results') + '</span></div>' + pageControls() + '</div><div class="status">' + (state.status === 'error' ? 'Search failed' : '') + '</div>' + warnings + body + bottomPager + '</section></div></div>';
+  document.getElementById('app').innerHTML = '<div class="shell"><div class="eyebrow">Source browser · live MCP search</div><h1>Find usage in Reforger</h1><p class="intro">Search the indexed workspace, loaded add-ons, and Official Wiki together. Select a result to open the exact source document and highlight the matching lines.</p><div class="toolbar"><input id="query" value="' + esc(state.query) + '" placeholder="Search a symbol, concept, or phrase..." aria-label="Search query">' + textSearchOptions() + '</div><div class="layout"><aside class="source-rail"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '<div class="group-label">SEARCH MODE</div>' + modeButtons() + (state.mode === 'text' ? '' : '<div class="group-label">RESULT TYPE</div>' + typeButtons()) + '</aside><section><div class="source-header"><div><h2>' + totalMatches() + ' matches</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Showing up to ' + state.pageSize + ' total results') + '</span></div>' + pageControls(true) + '</div><div class="status">' + (state.status === 'error' ? 'Search failed' : '') + '</div>' + warnings + body + bottomPager + '</section></div></div>';
   const query = document.getElementById('query');
   if (focusQuery) { query.focus(); query.setSelectionRange(state.query.length, state.query.length); }
   query.addEventListener('input', event => { state.query = event.target.value; scheduleSearch(); });
@@ -1120,6 +1127,7 @@ function render(focusQuery = true) {
   document.querySelectorAll('[data-page-prev]').forEach(element => element.addEventListener('click', () => requestPage(state.page - 1)));
   document.querySelectorAll('[data-page-next]').forEach(element => element.addEventListener('click', () => requestPage(state.page + 1)));
   document.querySelectorAll('[data-page-size]').forEach(element => element.addEventListener('change', event => { state.pageSize = Number(event.target.value); search(true); }));
+  document.querySelectorAll('[data-result-layout]').forEach(element => element.addEventListener('click', () => { state.resultColumns = state.resultColumns === 2 ? 1 : 2; render(false); }));
   document.querySelectorAll('[data-page-input]').forEach(element => {
     element.addEventListener('change', event => requestPage(event.target.value));
     element.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); requestPage(event.target.value); } });
