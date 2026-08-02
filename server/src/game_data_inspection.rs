@@ -1,6 +1,7 @@
 use crate::game_data_search::{
     compact_signature, decode_symbol_ref, documentation_summary, encode_symbol_ref, kind_name,
-    logical_path, owner_name, qualify, ReadSourceInput, SourceLineRange, SourceLineStarts,
+    logical_path, owner_name, qualify, GameDataAddonMap, ReadSourceInput, SourceLineRange,
+    SourceLineStarts,
 };
 use crate::index::{GlobalSymbolId, SourceFileId, SymbolIndex};
 use crate::index_build::IndexBuildControl;
@@ -34,6 +35,7 @@ pub enum GameDataInspectionError {
 #[derive(Debug, Clone)]
 pub struct GameDataSourceReadRequest {
     pub catalogue_revision: String,
+    pub addon_guid: Option<String>,
     pub relative_path: String,
     pub start_line: Option<usize>,
     pub line_count: Option<usize>,
@@ -43,6 +45,10 @@ pub struct GameDataSourceReadRequest {
 #[serde(rename_all = "camelCase")]
 pub struct GameDataInspectionOutput {
     pub catalogue_revision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addon_guid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addon_label: Option<String>,
     pub symbol_ref: String,
     pub name: Option<String>,
     pub kind: String,
@@ -114,17 +120,19 @@ pub struct InspectionMember {
 pub fn inspect(
     index: &SymbolIndex,
     starts: &BTreeMap<SourceFileId, SourceLineStarts>,
+    addon_map: &GameDataAddonMap,
     control: &IndexBuildControl,
     revision: &str,
     symbol_ref: &str,
 ) -> Result<GameDataInspectionOutput, GameDataInspectionError> {
-    let id = resolve_symbol_ref(index, control, revision, symbol_ref)?;
+    let id = resolve_symbol_ref(index, addon_map, control, revision, symbol_ref)?;
     let symbol = index.symbol(id).expect("located symbol");
     let qualified_name = qualify(
         owner_name(index, symbol).as_deref(),
         symbol.name.as_deref().unwrap_or_default(),
     );
     let file = index.file(id.file_id).expect("located file");
+    let addon = addon_map.get(&id.file_id);
     let lines = starts.get(&id.file_id).cloned().unwrap_or_default();
     let raw = symbol
         .doc_comments
@@ -149,6 +157,7 @@ pub fn inspect(
             InspectionMember {
                 symbol_ref: encode_symbol_ref(
                     revision,
+                    addon.map(|identity| identity.guid.as_str()),
                     &logical_path(file),
                     kind_name(member.kind),
                     &qualified,
@@ -175,6 +184,9 @@ pub fn inspect(
             let q = qualify(owner.as_deref(), name);
             Some(encode_symbol_ref(
                 revision,
+                addon_map
+                    .get(&parent.id.file_id)
+                    .map(|identity| identity.guid.as_str()),
                 &logical_path(parent_file),
                 kind_name(parent.kind),
                 &q,
@@ -185,6 +197,8 @@ pub fn inspect(
     let documentation = documentation_display(&symbol.doc_comments);
     Ok(GameDataInspectionOutput {
         catalogue_revision: revision.to_string(),
+        addon_guid: addon.map(|identity| identity.guid.clone()),
+        addon_label: addon.map(|identity| identity.label.clone()),
         symbol_ref: symbol_ref.to_string(),
         name: symbol.name.clone(),
         kind: kind_name(symbol.kind).to_string(),
@@ -223,6 +237,7 @@ pub fn inspect(
         parent_symbol_ref: parent_ref,
         read_source_input: ReadSourceInput {
             catalogue_revision: revision.to_string(),
+            addon_guid: addon.map(|identity| identity.guid.clone()),
             relative_path: logical_path(file),
             start_line: lines.range(symbol.span.start, symbol.span.end).start_line,
         },
@@ -236,6 +251,7 @@ pub fn inspect(
 
 pub(crate) fn resolve_symbol_ref(
     index: &SymbolIndex,
+    addon_map: &GameDataAddonMap,
     control: &IndexBuildControl,
     revision: &str,
     symbol_ref: &str,
@@ -248,7 +264,7 @@ pub(crate) fn resolve_symbol_ref(
     if reference.catalogue_revision != revision {
         return Err(GameDataInspectionError::StaleSymbolRef);
     }
-    for symbol in index.symbols() {
+    for symbol in index.symbol_iter() {
         control
             .check()
             .map_err(|_| GameDataInspectionError::Cancelled)?;
@@ -260,6 +276,10 @@ pub(crate) fn resolve_symbol_ref(
         };
         let qualified = qualify(owner_name(index, symbol).as_deref(), name);
         if logical_path(file) == reference.path
+            && addon_map
+                .get(&symbol.id.file_id)
+                .map(|identity| identity.guid.as_str())
+                == reference.addon_guid.as_deref()
             && kind_name(symbol.kind) == reference.kind
             && qualified == reference.qualified_name
             && symbol.selection_span.start == reference.selection_start
@@ -272,6 +292,7 @@ pub(crate) fn resolve_symbol_ref(
 
 pub fn read_source(
     index: &SymbolIndex,
+    addon_map: &GameDataAddonMap,
     control: &IndexBuildControl,
     revision: &str,
     source_texts: &BTreeMap<SourceFileId, Arc<str>>,
@@ -295,7 +316,13 @@ pub fn read_source(
     let file = index
         .files()
         .iter()
-        .find(|file| logical_path(file) == request.relative_path)
+        .find(|file| {
+            logical_path(file) == request.relative_path
+                && addon_map
+                    .get(&file.id)
+                    .map(|identity| identity.guid.as_str())
+                    == request.addon_guid.as_deref()
+        })
         .ok_or_else(|| {
             GameDataInspectionError::InvalidSource(
                 "relativePath is not in the catalogue".to_string(),
@@ -341,7 +368,7 @@ pub fn read_source(
     };
     let truncated = end < all.len();
     Ok(
-        json!({"catalogueRevision": revision, "relativePath": request.relative_path, "startLine": start, "endLine": end, "content": content, "truncated": truncated, "nextStartLine": truncated.then_some(end + 1)}),
+        json!({"catalogueRevision": revision, "addonGuid": request.addon_guid, "relativePath": request.relative_path, "startLine": start, "endLine": end, "content": content, "truncated": truncated, "nextStartLine": truncated.then_some(end + 1)}),
     )
 }
 

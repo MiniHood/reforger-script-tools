@@ -143,6 +143,12 @@ Inspect one opaque Game Data symbol reference returned by search. Returns only s
     },
     "ReadSourceInput": {
       "properties": {
+        "addonGuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "catalogueRevision": {
           "type": "string"
         },
@@ -181,6 +187,18 @@ Inspect one opaque Game Data symbol reference returned by search. Returns only s
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "addonGuid": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "addonLabel": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "attributes": {
       "items": {
         "type": "string"

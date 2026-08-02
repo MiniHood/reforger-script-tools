@@ -1,4 +1,4 @@
-use crate::index::SymbolIndex;
+use crate::index::{SourceFileId, SymbolIndex};
 use crate::index_build::{
     build_index_from_sources, IndexBuildControl, IndexBuildResult, IndexSourceText,
 };
@@ -26,6 +26,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use url::Url;
 
 pub const BASE_GAME_GUID: &str = "58D0FB3206B6F859";
+pub const ENFUSION_CORE_GUID: &str = "5614BBCCBB55ED1C";
 pub const VIRTUAL_SOURCE_SCHEME: &str = "reforger-pak";
 const MAX_ADDON_INDEX_WORKERS: usize = 4;
 const ADDON_MANIFEST_HEADER_FILE: &str = "manifest-header.json";
@@ -52,6 +53,7 @@ impl AddonScopeAuthority {
 
 pub struct LoadedAddonIndexResult {
     pub index: Arc<SymbolIndex>,
+    pub source_line_starts: BTreeMap<SourceFileId, Vec<usize>>,
     pub scope_authority: AddonScopeAuthority,
     pub summary: RuntimeIndexSummary,
     pub rebuilt_instances: usize,
@@ -63,7 +65,15 @@ pub struct LoadedAddonIndexResult {
     pub workspace_excluded_instances: usize,
     pub timings: LoadedAddonIndexTimings,
     pub instances: Vec<LoadedAddonIndexInstance>,
+    pub unavailable_instances: Vec<UnavailableAddonIndexInstance>,
     pub scope_instances: Vec<LoadedAddonInstanceIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnavailableAddonIndexInstance {
+    pub guid: String,
+    pub display_id: String,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,8 +114,13 @@ pub struct LoadedAddonIndexTimings {
 pub struct LoadedAddonIndexInstance {
     pub guid: String,
     pub display_id: String,
+    pub title: String,
     pub pack_count: usize,
     pub script_count: usize,
+    pub file_start: usize,
+    pub file_count: usize,
+    pub cache_path: PathBuf,
+    pub revision: String,
     pub cache_status: String,
     pub cache_detail: Option<String>,
     pub summary: RuntimeIndexSummary,
@@ -145,12 +160,14 @@ struct CachedAddonDescriptor {
 struct CompletedCachedAddonLoad {
     sequence: usize,
     addon: LoadedAddonSource,
+    cache_path: PathBuf,
     result: Result<Option<GameDataIndexCacheResult>, String>,
 }
 
 struct CompletedCachedManifestLoad {
     sequence: usize,
     manifest: AddonIndexManifestHeader,
+    cache_path: PathBuf,
     result: Result<Option<GameDataIndexCacheResult>, String>,
 }
 
@@ -791,8 +808,10 @@ fn load_or_build_addon_indexes(
         .sum();
     completed.sort_by_key(|task| task.sequence);
     let mut indexes = Vec::with_capacity(completed.len());
+    let mut source_line_starts = BTreeMap::new();
     let mut instances = Vec::with_capacity(completed.len());
     let mut scope_instances = Vec::with_capacity(completed.len());
+    let mut file_start = 0;
     for completed in completed {
         let addon = completed.addon;
         let result = completed.result?;
@@ -805,19 +824,34 @@ fn load_or_build_addon_indexes(
         summary.indexed_symbols += result.summary.indexed_symbols;
         summary.parse_diagnostics += result.summary.parse_diagnostics;
         summary.lossy_files += result.summary.lossy_files;
-        let (pack_count, script_count) = match &result.fingerprint {
+        let (pack_count, script_count, revision) = match &result.fingerprint {
             SourceFingerprint::Addon {
                 pack_count,
                 catalogue_entry_count,
+                artifact_digest,
                 ..
-            } => (*pack_count, *catalogue_entry_count),
+            } => (*pack_count, *catalogue_entry_count, artifact_digest.clone()),
             _ => unreachable!("loaded add-on indexing always has an add-on fingerprint"),
         };
+        let file_count = result.index.files().len();
+        source_line_starts.extend(
+            result
+                .source_line_starts
+                .iter()
+                .map(|(file, starts)| (SourceFileId(file.0 + file_start), starts.clone())),
+        );
         instances.push(LoadedAddonIndexInstance {
             guid: addon.guid.clone(),
             display_id: addon.id.clone(),
+            title: addon.title.clone(),
             pack_count,
             script_count,
+            file_start,
+            file_count,
+            cache_path: storage_root
+                .join(addon_instance_key(&addon.guid, &addon.source_root))
+                .join("symbols.bin"),
+            revision,
             cache_status: result.cache_status.as_str().to_string(),
             cache_detail: result.cache_status.detail().map(str::to_string),
             summary: result.summary.clone(),
@@ -826,10 +860,12 @@ fn load_or_build_addon_indexes(
         });
         scope_instances.push(addon_scope_identity(&addon));
         indexes.push(result.index);
+        file_start += file_count;
     }
     let (index, layer_timings) = SymbolIndex::layered_with_timings(indexes);
     let result = LoadedAddonIndexResult {
         index: Arc::new(index),
+        source_line_starts,
         scope_authority,
         summary,
         rebuilt_instances,
@@ -850,6 +886,7 @@ fn load_or_build_addon_indexes(
             total: total_start.elapsed(),
         },
         instances,
+        unavailable_instances: Vec::new(),
         scope_instances,
     };
     let _ = refresh_cache_catalogue(storage_root);
@@ -868,6 +905,39 @@ pub fn load_cached_loaded_addon_indexes(
     workspace_roots: &[PathBuf],
     control: &IndexBuildControl,
 ) -> Result<LoadedAddonIndexResult, String> {
+    load_cached_loaded_addon_indexes_with_maintenance(
+        inventory_path,
+        storage_root,
+        workspace_roots,
+        control,
+        true,
+    )
+}
+
+/// Reads the exact loaded graph's compatible indexes without pruning,
+/// rebuilding, or otherwise mutating the shared parser-owned cache storage.
+pub fn read_cached_loaded_addon_indexes(
+    inventory_path: &Path,
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+) -> Result<LoadedAddonIndexResult, String> {
+    load_cached_loaded_addon_indexes_with_maintenance(
+        inventory_path,
+        storage_root,
+        workspace_roots,
+        control,
+        false,
+    )
+}
+
+fn load_cached_loaded_addon_indexes_with_maintenance(
+    inventory_path: &Path,
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+    maintain_storage: bool,
+) -> Result<LoadedAddonIndexResult, String> {
     let total_start = Instant::now();
     let graph_start = Instant::now();
     let graph = read_loaded_addon_graph(inventory_path)?;
@@ -880,7 +950,9 @@ pub fn load_cached_loaded_addon_indexes(
     let workspace_root_resolution = workspace_root_start.elapsed();
     let addons = graph.addons;
     let cache_prune_start = Instant::now();
-    prune_unloaded_addon_caches(storage_root, &addons)?;
+    if maintain_storage {
+        prune_unloaded_addon_caches(storage_root, &addons)?;
+    }
     let cache_prune = cache_prune_start.elapsed();
     let mut pending = Vec::with_capacity(addons.len());
     let mut workspace_excluded_instances = 0;
@@ -890,7 +962,9 @@ pub fn load_cached_loaded_addon_indexes(
             .iter()
             .any(|workspace_root| workspace_root.starts_with(&addon.source_root))
         {
-            remove_workspace_addon_cache(storage_root, &addon)?;
+            if maintain_storage {
+                remove_workspace_addon_cache(storage_root, &addon)?;
+            }
             workspace_excluded_instances += 1;
             continue;
         }
@@ -955,6 +1029,7 @@ pub fn load_cached_loaded_addon_indexes(
             let _ = cache_sender.send(CompletedCachedAddonLoad {
                 sequence: descriptor.sequence,
                 addon: descriptor.addon,
+                cache_path: descriptor.cache_path,
                 result,
             });
         }));
@@ -979,12 +1054,21 @@ pub fn load_cached_loaded_addon_indexes(
     let mut loaded_instances = 0;
     let mut missing_instances = 0;
     let mut indexes = Vec::with_capacity(completed.len());
+    let mut source_line_starts = BTreeMap::new();
     let mut instances = Vec::with_capacity(completed.len());
+    let mut unavailable_instances = Vec::new();
     let mut scope_instances = Vec::with_capacity(completed.len());
+    let mut file_start = 0;
     for completed in completed {
         let addon = completed.addon;
+        let cache_path = completed.cache_path;
         let Some(result) = completed.result? else {
             missing_instances += 1;
+            unavailable_instances.push(UnavailableAddonIndexInstance {
+                guid: addon.guid,
+                display_id: addon.id,
+                title: addon.title,
+            });
             continue;
         };
         loaded_instances += 1;
@@ -993,19 +1077,32 @@ pub fn load_cached_loaded_addon_indexes(
         summary.indexed_symbols += result.summary.indexed_symbols;
         summary.parse_diagnostics += result.summary.parse_diagnostics;
         summary.lossy_files += result.summary.lossy_files;
-        let (pack_count, script_count) = match &result.fingerprint {
+        let (pack_count, script_count, revision) = match &result.fingerprint {
             SourceFingerprint::Addon {
                 pack_count,
                 catalogue_entry_count,
+                artifact_digest,
                 ..
-            } => (*pack_count, *catalogue_entry_count),
+            } => (*pack_count, *catalogue_entry_count, artifact_digest.clone()),
             _ => unreachable!("loaded add-on cache always has an add-on fingerprint"),
         };
+        let file_count = result.index.files().len();
+        source_line_starts.extend(
+            result
+                .source_line_starts
+                .iter()
+                .map(|(file, starts)| (SourceFileId(file.0 + file_start), starts.clone())),
+        );
         instances.push(LoadedAddonIndexInstance {
             guid: addon.guid.clone(),
             display_id: addon.id.clone(),
+            title: addon.title.clone(),
             pack_count,
             script_count,
+            file_start,
+            file_count,
+            cache_path,
+            revision,
             cache_status: "optimistic-loaded".to_string(),
             cache_detail: Some("source-validation-pending".to_string()),
             summary: result.summary.clone(),
@@ -1014,10 +1111,12 @@ pub fn load_cached_loaded_addon_indexes(
         });
         scope_instances.push(addon_scope_identity(&addon));
         indexes.push(result.index);
+        file_start += file_count;
     }
     let (index, layer_timings) = SymbolIndex::layered_with_timings(indexes);
     Ok(LoadedAddonIndexResult {
         index: Arc::new(index),
+        source_line_starts,
         scope_authority: AddonScopeAuthority::WorkbenchLoaded,
         summary,
         rebuilt_instances: 0,
@@ -1038,6 +1137,7 @@ pub fn load_cached_loaded_addon_indexes(
             total: total_start.elapsed(),
         },
         instances,
+        unavailable_instances,
         scope_instances,
     })
 }
@@ -1410,6 +1510,7 @@ fn load_cached_indexes_from_storage(
             let _ = cache_sender.send(CompletedCachedManifestLoad {
                 sequence: descriptor.sequence,
                 manifest: descriptor.manifest,
+                cache_path: descriptor.cache_path,
                 result,
             });
         }));
@@ -1434,23 +1535,40 @@ fn load_cached_indexes_from_storage(
     let mut missing_instances = 0;
     let workspace_excluded_instances = 0;
     let mut indexes = Vec::with_capacity(completed.len());
+    let mut source_line_starts = BTreeMap::new();
     let mut instances = Vec::with_capacity(completed.len());
+    let mut unavailable_instances = Vec::new();
     let mut scope_instances = Vec::with_capacity(completed.len());
+    let mut file_start = 0;
     for completed in completed {
         control.check()?;
         let manifest = completed.manifest;
+        let cache_path = completed.cache_path;
         let Some(result) = completed.result? else {
             missing_instances += 1;
+            unavailable_instances.push(UnavailableAddonIndexInstance {
+                guid: manifest.guid,
+                display_id: manifest.display_id.clone(),
+                title: manifest.display_id,
+            });
             continue;
         };
-        let (pack_count, script_count) = match &result.fingerprint {
+        let (pack_count, script_count, revision) = match &result.fingerprint {
             SourceFingerprint::Addon {
                 pack_count,
                 catalogue_entry_count,
+                artifact_digest,
                 ..
-            } => (*pack_count, *catalogue_entry_count),
+            } => (*pack_count, *catalogue_entry_count, artifact_digest.clone()),
             _ => continue,
         };
+        let file_count = result.index.files().len();
+        source_line_starts.extend(
+            result
+                .source_line_starts
+                .iter()
+                .map(|(file, starts)| (SourceFileId(file.0 + file_start), starts.clone())),
+        );
         loaded_instances += 1;
         summary.files += result.summary.files;
         summary.bytes += result.summary.bytes;
@@ -1460,8 +1578,13 @@ fn load_cached_indexes_from_storage(
         instances.push(LoadedAddonIndexInstance {
             guid: manifest.guid.clone(),
             display_id: manifest.display_id.clone(),
+            title: manifest.display_id.clone(),
             pack_count,
             script_count,
+            file_start,
+            file_count,
+            cache_path,
+            revision,
             cache_status: "cached-only".to_string(),
             cache_detail: Some("source-validation-skipped".to_string()),
             summary: result.summary.clone(),
@@ -1470,10 +1593,12 @@ fn load_cached_indexes_from_storage(
         });
         scope_instances.push(manifest_scope_identity(&manifest));
         indexes.push(result.index);
+        file_start += file_count;
     }
     let (index, layer_timings) = SymbolIndex::layered_with_timings(indexes);
     Ok(LoadedAddonIndexResult {
         index: Arc::new(index),
+        source_line_starts,
         scope_authority: if dependency_guids.is_some() {
             AddonScopeAuthority::ProjectDependencies
         } else {
@@ -1498,6 +1623,7 @@ fn load_cached_indexes_from_storage(
             total: total_start.elapsed(),
         },
         instances,
+        unavailable_instances,
         scope_instances,
     })
 }
@@ -1641,6 +1767,7 @@ fn empty_cached_index_result(
 ) -> LoadedAddonIndexResult {
     LoadedAddonIndexResult {
         index: Arc::new(SymbolIndex::layered(Vec::new())),
+        source_line_starts: BTreeMap::new(),
         scope_authority: if dependency_scope {
             AddonScopeAuthority::ProjectDependencies
         } else {
@@ -1657,6 +1784,7 @@ fn empty_cached_index_result(
             ..Default::default()
         },
         instances: Vec::new(),
+        unavailable_instances: Vec::new(),
         scope_instances: Vec::new(),
     }
 }
@@ -4089,6 +4217,7 @@ mod tests {
             load_all_cached_addon_indexes(&storage, &[], &IndexBuildControl::default()).unwrap();
         assert_eq!(result.loaded_instances, 1);
         assert_eq!(result.missing_instances, 1);
+        assert_eq!(result.unavailable_instances.len(), 1);
         assert_eq!(result.summary.files, 1);
 
         let _ = fs::remove_dir_all(root);
@@ -4147,6 +4276,27 @@ mod tests {
             2
         );
         assert!(storage.join(ADDON_CACHE_CATALOGUE_FILE).is_file());
+        let readonly_loose_cache = storage
+            .join(addon_instance_key(
+                "2222222222222222",
+                &fs::canonicalize(&loose).unwrap(),
+            ))
+            .join("symbols.bin");
+        let stale_cache = storage.join("stale-instance");
+        fs::create_dir_all(&stale_cache).unwrap();
+        fs::write(stale_cache.join("keep.txt"), "read only").unwrap();
+        let readonly = read_cached_loaded_addon_indexes(
+            &graph,
+            &storage,
+            &[loose.join("scripts")],
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+        assert_eq!(readonly.loaded_instances, 1);
+        assert_eq!(readonly.workspace_excluded_instances, 1);
+        assert!(readonly_loose_cache.is_file());
+        assert!(stale_cache.join("keep.txt").is_file());
+        fs::remove_dir_all(stale_cache).unwrap();
         let manifests = fs::read_dir(&storage)
             .unwrap()
             .filter_map(Result::ok)
@@ -4195,6 +4345,12 @@ mod tests {
         .unwrap();
         assert_eq!(identity_checked.loaded_instances, 1);
         assert_eq!(identity_checked.missing_instances, 1);
+        assert_eq!(identity_checked.unavailable_instances.len(), 1);
+        assert_eq!(
+            identity_checked.unavailable_instances[0].guid,
+            "2222222222222222"
+        );
+        assert_eq!(identity_checked.unavailable_instances[0].title, "Loose");
         fs::write(&loose_cache, loose_cache_bytes).unwrap();
         for (path, bytes) in manifests {
             fs::write(path, bytes).unwrap();

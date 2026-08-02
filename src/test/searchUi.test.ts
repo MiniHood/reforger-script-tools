@@ -131,23 +131,41 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchClientSource, /search_game_data_text/);
 		assert.match(searchClientSource, /paginationMode: paginationModeFor\(mode, sources\)/);
 		assert.match(searchClientSource, /mode === 'semantic'[\s\S]*sources\.filter\(source => source !== 'wiki'\)/);
-		assert.match(searchUiSource, /sources\.filter\(source => source\.value !== 'wiki' \|\| state\.mode === 'text'\)/);
-		assert.match(searchUiSource, /state\.mode === 'semantic' && state\.source === 'wiki'/);
+		assert.match(searchUiSource, /state\.scopeSources\.filter\(source => source\.kind !== 'wiki' \|\| state\.mode === 'text'\)/);
+		assert.match(searchUiSource, /selectedEligibleScopeIds\(\)/);
 	});
 
-	test('hosts switchable hard-coded add-on selector prototypes inside Search In', () => {
-		assert.match(searchUiSource, /const prototypeVariants = \[\{ key: 'A', name: 'Compact menu' \}, \{ key: 'B', name: 'Inline checklist' \}, \{ key: 'C', name: 'Selected chips' \}\]/);
-		assert.match(searchUiSource, /const addonPrototypeSources = \[/);
-		assert.match(searchUiSource, /value: 'workspace', label: 'Workspace', detail: 'Live'/);
-		assert.match(searchUiSource, /label: 'Arma Reforger', detail: '5,776 scripts'/);
-		assert.match(searchUiSource, /data-addon-choice/);
-		assert.match(searchUiSource, /Prototype only — these selections do not filter search results yet\./);
-		assert.match(searchUiSource, /addonScopePrototype\(\) \+ sourceButtons\(\)/);
-		assert.match(searchUiSource, /data-prototype-previous/);
-		assert.match(searchUiSource, /data-prototype-next/);
-		assert.match(searchUiSource, /url\.searchParams\.set\('addonVariant', next\.key\)/);
-		assert.match(searchUiSource, /addonPrototypeSelected: state\.addonPrototypeSelected/);
-		assert.match(searchUiSource, /addonPrototypeSelected: jsonField/);
+	test('uses discovered loaded add-ons as the production Search Scope', () => {
+		assert.match(searchClientSource, /public async discoverScope\(\): Promise<SearchScopeDiscovery>/);
+		assert.match(searchClientSource, /this\.callTool\('game_data_status', \{\}\)/);
+		assert.match(searchClientSource, /defaultSelected: addon\.defaultSelected === true/);
+		assert.doesNotMatch(searchClientSource, /baseGameScopeId|enfusionCoreScopeId/);
+		assert.match(searchUiSource, /const searchScope = \(\) =>/);
+		assert.match(searchUiSource, /data-scope-choice/);
+		assert.match(searchUiSource, /data-scope-all/);
+		assert.match(searchUiSource, /data-scope-refresh/);
+		assert.match(searchUiSource, /message\.type === 'refreshScope'/);
+		assert.match(searchUiSource, /async function refreshSearchScope/);
+		assert.match(searchUiSource, /active\.client = undefined/);
+		assert.match(searchUiSource, /\(await previousClient\)\.dispose\(\)/);
+		assert.match(searchUiSource, /Select all/);
+		assert.match(searchUiSource, /Unselect all/);
+		assert.match(searchUiSource, /selectedScopeIds/);
+		assert.match(searchUiSource, /selectionTouched/);
+		assert.match(searchUiSource, /message\.type === 'scope'/);
+		assert.match(searchUiSource, /nextSources\.filter\(source => source\.defaultSelected\)/);
+		assert.match(searchUiSource, /selected\.length > 3/);
+		assert.match(searchUiSource, /' more<\/span>'/);
+		assert.doesNotMatch(searchUiSource, /prototypeVariants/);
+		assert.doesNotMatch(searchUiSource, /addonPrototypeSources/);
+		assert.doesNotMatch(searchUiSource, /SEARCH IN/);
+		assert.match(searchUiSource, /No search scopes selected\./);
+		assert.match(searchUiSource, /scopeDiscoveryMs/);
+		assert.match(searchUiSource, /entry\.addonTotals = jsonField\(source\.addonTotals\)/);
+		assert.match(searchUiSource, /readMsByAddon/);
+		assert.match(searchUiSource, /readFailuresByAddon/);
+		assert.match(searchUiSource, /unavailableScopeIds/);
+		assert.match(searchClientSource, /unavailableScopeIds/);
 	});
 
 	test('maps symbol search handoffs into source-browser rows', () => {
@@ -214,6 +232,33 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.strictEqual(results[0].excerpt, 'Game Master controls the scenario.');
 		assert.strictEqual(results[0].selectionStartLine, 12);
 		assert.strictEqual(results[0].selectionEndLine, 12);
+	});
+
+	test('preserves add-on identity in game-data rows and source handoffs', () => {
+		const results = normalizeSearchPage('gameData', {
+			results: [{
+				name: 'SCR_AddonClass',
+				kind: 'class',
+				qualifiedName: 'SCR_AddonClass',
+				signature: 'class SCR_AddonClass',
+				relativePath: 'Scripts/SCR_AddonClass.c',
+				declarationRange: { startLine: 7 },
+				symbolRef: 'sr2:addon-symbol',
+				addonGuid: 'A1B2C3D4E5F60718',
+				addonLabel: 'Example Add-on',
+				readSourceInput: {
+					catalogueRevision: 'gd2:revision',
+					addonGuid: 'A1B2C3D4E5F60718',
+					relativePath: 'Scripts/SCR_AddonClass.c',
+					startLine: 7,
+				},
+			}],
+		});
+
+		assert.strictEqual(results[0].addonGuid, 'A1B2C3D4E5F60718');
+		assert.strictEqual(results[0].addonLabel, 'Example Add-on');
+		assert.strictEqual(results[0].readInput.addonGuid, 'A1B2C3D4E5F60718');
+		assert.match(results[0].id, /A1B2C3D4E5F60718/);
 	});
 
 	test('keeps the full result path above a full-width preview', () => {

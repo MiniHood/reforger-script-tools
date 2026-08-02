@@ -49,6 +49,7 @@ impl SourceLineStarts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameDataSearchRequest {
     pub query: String,
+    pub addon_guids: Option<Vec<String>>,
     pub kinds: Option<Vec<String>>,
     pub owner: Option<String>,
     pub source_categories: Option<Vec<String>>,
@@ -61,6 +62,7 @@ impl GameDataSearchRequest {
     pub fn new(query: impl Into<String>) -> Self {
         Self {
             query: query.into(),
+            addon_guids: None,
             kinds: None,
             owner: None,
             source_categories: None,
@@ -79,6 +81,7 @@ pub struct GameDataSearchPage {
     pub applied_filters: AppliedFilters,
     pub returned: usize,
     pub total: usize,
+    pub totals_by_addon: BTreeMap<String, usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
     pub results: Vec<GameDataSearchHit>,
@@ -87,6 +90,7 @@ pub struct GameDataSearchPage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AppliedFilters {
+    pub addon_guids: Vec<String>,
     pub kinds: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
@@ -97,6 +101,10 @@ pub struct AppliedFilters {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GameDataSearchHit {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addon_guid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addon_label: Option<String>,
     pub symbol_ref: String,
     pub name: String,
     pub kind: String,
@@ -109,7 +117,9 @@ pub struct GameDataSearchHit {
     pub source_category: String,
     pub relative_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(description = "Optional editor-client source identity. Treat as opaque; do not construct or use it as an MCP source-read input.")]
+    #[schemars(
+        description = "Optional editor-client source identity. Treat as opaque; do not construct or use it as an MCP source-read input."
+    )]
     pub source_uri: Option<String>,
     pub declaration_range: SourceLineRange,
     pub selection_range: SourceLineRange,
@@ -133,6 +143,8 @@ pub struct InspectInput {
 #[serde(rename_all = "camelCase")]
 pub struct ReadSourceInput {
     pub catalogue_revision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addon_guid: Option<String>,
     pub relative_path: String,
     pub start_line: usize,
 }
@@ -164,7 +176,17 @@ struct Candidate {
     kind: String,
     path: String,
     position: usize,
+    addon_guid: Option<String>,
+    addon_label: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameDataAddonIdentity {
+    pub guid: String,
+    pub label: String,
+}
+
+pub type GameDataAddonMap = BTreeMap<SourceFileId, GameDataAddonIdentity>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -175,6 +197,7 @@ struct Cursor {
     kinds: Vec<String>,
     owner: Option<String>,
     source_categories: Vec<String>,
+    addon_guids: Vec<String>,
     offset: usize,
 }
 
@@ -183,6 +206,7 @@ struct Cursor {
 pub(crate) struct SymbolReference {
     version: u8,
     pub(crate) catalogue_revision: String,
+    pub(crate) addon_guid: Option<String>,
     pub(crate) path: String,
     pub(crate) kind: String,
     pub(crate) qualified_name: String,
@@ -196,9 +220,37 @@ pub fn search(
     catalogue_revision: &str,
     request: GameDataSearchRequest,
 ) -> Result<GameDataSearchPage, GameDataSearchError> {
+    let identity = GameDataAddonIdentity {
+        guid: crate::addon_sources::BASE_GAME_GUID.to_string(),
+        label: "Arma Reforger".to_string(),
+    };
+    let addon_map = index
+        .files()
+        .iter()
+        .map(|file| (file.id, identity.clone()))
+        .collect();
+    search_scoped(
+        index,
+        source_line_starts,
+        &addon_map,
+        control,
+        catalogue_revision,
+        request,
+    )
+}
+
+pub fn search_scoped(
+    index: &SymbolIndex,
+    source_line_starts: &BTreeMap<SourceFileId, SourceLineStarts>,
+    addon_map: &GameDataAddonMap,
+    control: &IndexBuildControl,
+    catalogue_revision: &str,
+    request: GameDataSearchRequest,
+) -> Result<GameDataSearchPage, GameDataSearchError> {
     search_with_scope(
         index,
         source_line_starts,
+        addon_map,
         control,
         catalogue_revision,
         request,
@@ -216,9 +268,11 @@ pub fn search_workspace(
     workspace_revision: &str,
     request: GameDataSearchRequest,
 ) -> Result<GameDataSearchPage, GameDataSearchError> {
+    let addon_map = GameDataAddonMap::new();
     search_with_scope(
         index,
         source_line_starts,
+        &addon_map,
         control,
         workspace_revision,
         request,
@@ -229,6 +283,7 @@ pub fn search_workspace(
 fn search_with_scope(
     index: &SymbolIndex,
     source_line_starts: &BTreeMap<SourceFileId, SourceLineStarts>,
+    addon_map: &GameDataAddonMap,
     control: &IndexBuildControl,
     catalogue_revision: &str,
     request: GameDataSearchRequest,
@@ -236,7 +291,10 @@ fn search_with_scope(
 ) -> Result<GameDataSearchPage, GameDataSearchError> {
     let query = normalize_query(&request.query)?;
     let kinds = canonical_kinds(request.kinds.as_deref())?;
-    let source_categories = canonical_categories(request.source_categories.as_deref(), workspace_scope)?;
+    let source_categories =
+        canonical_categories(request.source_categories.as_deref(), workspace_scope)?;
+    let addon_guids =
+        canonical_addon_guids(request.addon_guids.as_deref(), addon_map, workspace_scope)?;
     let owner = request
         .owner
         .as_ref()
@@ -278,6 +336,7 @@ fn search_with_scope(
             || cursor.kinds != kinds
             || cursor.owner != owner
             || cursor.source_categories != source_categories
+            || cursor.addon_guids != addon_guids
         {
             return Err(GameDataSearchError::InvalidCursor);
         }
@@ -288,13 +347,19 @@ fn search_with_scope(
         .unwrap_or(0);
     let query_folded = query.to_lowercase();
     let mut candidates = Vec::new();
-    for symbol in index.symbols() {
+    for symbol in index.symbol_iter() {
         control
             .check()
             .map_err(|_| GameDataSearchError::Cancelled)?;
         let Some(file) = index.file(symbol.id.file_id) else {
             continue;
         };
+        let addon = addon_map.get(&symbol.id.file_id);
+        if !workspace_scope
+            && addon.is_none_or(|identity| addon_guids.binary_search(&identity.guid).is_err())
+        {
+            continue;
+        }
         let Some(name) = symbol.name.as_deref() else {
             continue;
         };
@@ -332,6 +397,8 @@ fn search_with_scope(
             kind,
             path: logical_path(file),
             position: symbol.span.start,
+            addon_guid: addon.map(|identity| identity.guid.clone()),
+            addon_label: addon.map(|identity| identity.label.clone()),
         });
     }
     control
@@ -343,6 +410,7 @@ fn search_with_scope(
             &left.qualified_name,
             &left.kind,
             &left.path,
+            &left.addon_guid,
             left.position,
         )
             .cmp(&(
@@ -350,10 +418,17 @@ fn search_with_scope(
                 &right.qualified_name,
                 &right.kind,
                 &right.path,
+                &right.addon_guid,
                 right.position,
             ))
     });
     let total = candidates.len();
+    let mut totals_by_addon = BTreeMap::new();
+    for candidate in &candidates {
+        if let Some(guid) = &candidate.addon_guid {
+            *totals_by_addon.entry(guid.clone()).or_insert(0) += 1;
+        }
+    }
     let page_candidates = candidates
         .into_iter()
         .skip(offset)
@@ -362,12 +437,13 @@ fn search_with_scope(
     let returned = page_candidates.len();
     let next_cursor = (offset + returned < total).then(|| {
         encode_cursor(&Cursor {
-            version: 1,
+            version: 2,
             catalogue_revision: catalogue_revision.to_string(),
             query: query.clone(),
             kinds: kinds.clone(),
             owner: owner.clone(),
             source_categories: source_categories.clone(),
+            addon_guids: addon_guids.clone(),
             offset: offset + returned,
         })
     });
@@ -392,10 +468,12 @@ fn search_with_scope(
             kinds,
             owner,
             source_categories,
+            addon_guids,
             limit,
         },
         returned,
         total,
+        totals_by_addon,
         next_cursor,
         results,
     };
@@ -408,12 +486,13 @@ fn search_with_scope(
         page.results.pop();
         page.returned = page.results.len();
         page.next_cursor = Some(encode_cursor(&Cursor {
-            version: 1,
+            version: 2,
             catalogue_revision: page.catalogue_revision.clone(),
             query: page.query.clone(),
             kinds: page.applied_filters.kinds.clone(),
             owner: page.applied_filters.owner.clone(),
             source_categories: page.applied_filters.source_categories.clone(),
+            addon_guids: page.applied_filters.addon_guids.clone(),
             offset: offset + page.returned,
         }));
     }
@@ -480,24 +559,64 @@ fn canonical_categories(
     let value_count = values.len();
     let unique = values.into_iter().collect::<BTreeSet<_>>();
     if unique.len() != value_count
-        || unique
-            .iter()
-            .any(|value| {
-                !allowed.contains(&value.as_str())
-                    || (!workspace_scope && value == "workspace")
-                    || (workspace_scope && value != "workspace")
-            })
+        || unique.iter().any(|value| {
+            !allowed.contains(&value.as_str())
+                || (!workspace_scope && value == "workspace")
+                || (workspace_scope && value != "workspace")
+        })
     {
         let message = if workspace_scope {
             "sourceCategories must contain only the workspace category"
         } else {
             "sourceCategories must be unique game-data categories"
         };
-        return Err(GameDataSearchError::InvalidRequest(
-            message,
-        ));
+        return Err(GameDataSearchError::InvalidRequest(message));
     }
     Ok(unique.into_iter().collect())
+}
+
+fn canonical_addon_guids(
+    values: Option<&[String]>,
+    addon_map: &GameDataAddonMap,
+    workspace_scope: bool,
+) -> Result<Vec<String>, GameDataSearchError> {
+    if workspace_scope {
+        if values.is_some() {
+            return Err(GameDataSearchError::InvalidRequest(
+                "addonGuids is supported only for Game Data search",
+            ));
+        }
+        return Ok(Vec::new());
+    }
+    let available = addon_map
+        .values()
+        .map(|identity| identity.guid.clone())
+        .collect::<BTreeSet<_>>();
+    let Some(values) = values else {
+        return Ok(available.into_iter().collect());
+    };
+    if values.is_empty() {
+        return Err(GameDataSearchError::InvalidRequest(
+            "addonGuids must be non-empty when provided",
+        ));
+    }
+    let mut canonical = Vec::with_capacity(values.len());
+    let mut unique = BTreeSet::new();
+    for value in values {
+        let guid = value.to_ascii_uppercase();
+        if guid.len() != 16
+            || !guid.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || !unique.insert(guid.clone())
+            || !available.contains(&guid)
+        {
+            return Err(GameDataSearchError::InvalidRequest(
+                "addonGuids must contain unique loaded 16-character hexadecimal GUIDs",
+            ));
+        }
+        canonical.push(guid);
+    }
+    canonical.sort();
+    Ok(canonical)
 }
 fn default_kinds() -> Vec<&'static str> {
     vec![
@@ -639,6 +758,7 @@ fn project_hit(
     let selection_range = line_starts.range(symbol.selection_span.start, symbol.selection_span.end);
     let symbol_ref = encode_symbol_ref(
         revision,
+        candidate.addon_guid.as_deref(),
         &candidate.path,
         &candidate.kind,
         &candidate.qualified_name,
@@ -660,10 +780,13 @@ fn project_hit(
         },
         read_source_input: ReadSourceInput {
             catalogue_revision: revision.to_string(),
+            addon_guid: candidate.addon_guid.clone(),
             relative_path: source_path,
             start_line: declaration_range.start_line,
         },
         symbol_ref,
+        addon_guid: candidate.addon_guid,
+        addon_label: candidate.addon_label,
         name: bounded_search_text(symbol.name.clone().unwrap_or_default()),
         kind: candidate.kind,
         qualified_name: bounded_search_text(candidate.qualified_name),
@@ -725,16 +848,18 @@ fn line_for_offset(starts: &[usize], offset: usize) -> usize {
 }
 pub(crate) fn encode_symbol_ref(
     revision: &str,
+    addon_guid: Option<&str>,
     path: &str,
     kind: &str,
     qualified_name: &str,
     selection_start: usize,
 ) -> String {
     format!(
-        "sr1:{}",
+        "sr2:{}",
         hex(&serde_json::to_vec(&SymbolReference {
-            version: 1,
+            version: 2,
             catalogue_revision: revision.to_string(),
+            addon_guid: addon_guid.map(str::to_string),
             path: path.to_string(),
             kind: kind.to_string(),
             qualified_name: qualified_name.to_string(),
@@ -744,12 +869,12 @@ pub(crate) fn encode_symbol_ref(
     )
 }
 pub(crate) fn decode_symbol_ref(value: &str) -> Option<SymbolReference> {
-    let encoded = value.strip_prefix("sr1:")?;
+    let encoded = value.strip_prefix("sr2:")?;
     if value.len() > MAX_CURSOR_BYTES || encoded.is_empty() {
         return None;
     }
     let reference = serde_json::from_slice::<SymbolReference>(&unhex(encoded)?).ok()?;
-    (reference.version == 1
+    (reference.version == 2
         && !reference.catalogue_revision.is_empty()
         && !reference.path.is_empty()
         && !reference.kind.is_empty()
@@ -766,7 +891,7 @@ fn decode_cursor(value: &str) -> Result<Cursor, GameDataSearchError> {
     let bytes = unhex(value).ok_or(GameDataSearchError::InvalidCursor)?;
     let cursor =
         serde_json::from_slice::<Cursor>(&bytes).map_err(|_| GameDataSearchError::InvalidCursor)?;
-    (cursor.version == 1)
+    (cursor.version == 2)
         .then_some(cursor)
         .ok_or(GameDataSearchError::InvalidCursor)
 }

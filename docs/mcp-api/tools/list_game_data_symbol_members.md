@@ -134,6 +134,12 @@ List every direct member of one revision-bound Game Data symbol with semantic-ki
     },
     "ReadSourceInput": {
       "properties": {
+        "addonGuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "catalogueRevision": {
           "type": "string"
         },

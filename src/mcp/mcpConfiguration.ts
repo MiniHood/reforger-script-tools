@@ -1,6 +1,8 @@
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { mcpCommands, mcpServer } from '../extensionConfig/mcp';
-import { resolveBaseGameIndexCache } from '../gameData/baseGameIndexCache';
+import { gameDataStorage } from '../extensionConfig/gameData';
+import { languageClientIndexCache } from '../extensionConfig/languageClient';
 import { resolveLanguageServerPath } from '../languageClient/serverPath';
 import { discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
 
@@ -11,7 +13,8 @@ export interface McpLaunch {
 
 export interface McpLaunchInputs {
 	serverPath: string;
-	indexCache: string;
+	addonSourceInventory: string;
+	addonIndexStorage: string;
 	workspaceScripts?: string[];
 }
 
@@ -23,8 +26,10 @@ const codexChoice = 'Codex config.toml';
 export function buildMcpLaunchConfiguration(inputs: McpLaunchInputs): McpLaunch {
 	const args = [
 		'mcp',
-		'--index-cache',
-		inputs.indexCache,
+		'--addon-source-inventory',
+		inputs.addonSourceInventory,
+		'--addon-index-storage',
+		inputs.addonIndexStorage,
 		...(inputs.workspaceScripts ?? []).flatMap(root => ['--workspace-scripts', root]),
 	];
 	return {
@@ -72,7 +77,15 @@ export function registerMcpConfigurationCommand(
 			}
 			const launch = buildMcpLaunchConfiguration({
 				serverPath,
-				indexCache: await resolveBaseGameIndexCache(context.globalStorageUri.fsPath),
+				addonSourceInventory: path.join(
+					context.globalStorageUri.fsPath,
+					gameDataStorage.rootFolder,
+					gameDataStorage.inventoryFile,
+				),
+				addonIndexStorage: path.join(
+					context.globalStorageUri.fsPath,
+					languageClientIndexCache.rootFolder,
+				),
 				workspaceScripts: await discoverWorkspaceScriptRoots(),
 			});
 			const configuration = format === 'codex'

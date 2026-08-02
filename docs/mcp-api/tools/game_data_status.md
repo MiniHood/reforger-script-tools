@@ -3,7 +3,7 @@
 
 [Back to the MCP API router](../../mcp-api.md)
 
-Load and report the parser-owned Reforger Game Data Catalogue cache. Use this first when Game Data availability or coverage is uncertain. Returns the immutable catalogue revision, source provenance, semantic coverage and counts, cache outcome, bounded timings, limits, warnings, and recovery guidance without physical paths; it does not inspect source inputs, parse, rebuild, write the cache, or search symbols.
+Load and report the parser-owned Reforger Game Data catalogue for the exact current add-on scope. Use this first when Game Data availability, coverage, or selectable add-on GUIDs are uncertain. The addons array is the bounded discovery surface for search_game_data_symbols and search_game_data_text; copy its addonGuid values into those searches. Returns immutable catalogue and scope revisions, scope authority, semantic coverage and counts, bounded timings, warnings, and recovery guidance without physical paths; it does not inspect source inputs, parse, rebuild, write cache storage, or search symbols.
 
 ### Annotations
 
@@ -15,7 +15,7 @@ Load and report the parser-owned Reforger Game Data Catalogue cache. Use this fi
 }
 ```
 
-The first call loads the parser-owned derived Game Data cache; it does not inspect source inputs, parse, rebuild, or write that cache.
+The first call reads the parser-owned indexes selected by the exact current add-on scope; it does not inspect source inputs, parse, rebuild, or mutate cache storage.
 
 ### Input schema
 
@@ -46,6 +46,44 @@ The first call loads the parser-owned derived Game Data cache; it does not inspe
         "localpack"
       ],
       "type": "string"
+    },
+    "GameDataAddonStatus": {
+      "additionalProperties": false,
+      "properties": {
+        "addonGuid": {
+          "description": "Canonical uppercase GUID used as the public search-scope ID.",
+          "type": "string"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "defaultSelected": {
+          "type": "boolean"
+        },
+        "displayId": {
+          "type": "string"
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "scriptCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "addonGuid",
+        "displayId",
+        "title",
+        "scriptCount",
+        "available",
+        "pinned",
+        "defaultSelected"
+      ],
+      "type": "object"
     },
     "GameDataAuthorities": {
       "additionalProperties": false,
@@ -290,6 +328,13 @@ The first call loads the parser-owned derived Game Data cache; it does not inspe
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "addons": {
+      "description": "Loaded add-ons that may be selected with addonGuids in Game Data symbol or text search. Entries with available=false are diagnostic only.",
+      "items": {
+        "$ref": "#/$defs/GameDataAddonStatus"
+      },
+      "type": "array"
+    },
     "authorities": {
       "$ref": "#/$defs/GameDataAuthorities"
     },
@@ -327,6 +372,20 @@ The first call loads the parser-owned derived Game Data cache; it does not inspe
       },
       "type": "array"
     },
+    "scopeAuthority": {
+      "description": "Authority that selected the current add-on scope, such as the live Workbench graph or a labelled provisional dependency scope.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "scopeRevision": {
+      "description": "Opaque revision for the exact selectable add-on scope. Copy it from status; do not construct it.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "source": {
       "$ref": "#/$defs/GameDataSourceStatus"
     },
@@ -342,6 +401,7 @@ The first call loads the parser-owned derived Game Data cache; it does not inspe
   },
   "required": [
     "available",
+    "addons",
     "authorities",
     "source",
     "coverage",

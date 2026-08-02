@@ -123,6 +123,12 @@ Query parser-published bounded semantic relationships for one revision-bound Gam
     },
     "ReadSourceInput": {
       "properties": {
+        "addonGuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "catalogueRevision": {
           "type": "string"
         },

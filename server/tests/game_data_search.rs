@@ -1,6 +1,10 @@
 use reforger_language_server::game_data_catalogue::{GameDataCatalogue, GameDataCatalogueConfig};
 use reforger_language_server::game_data_inspection::GameDataSourceReadRequest;
-use reforger_language_server::game_data_search::{search, GameDataSearchRequest, SourceLineStarts};
+use reforger_language_server::game_data_search::{
+    search, search_scoped, GameDataAddonIdentity, GameDataAddonMap, GameDataSearchRequest,
+    SourceLineStarts,
+};
+use reforger_language_server::index::SymbolIndex;
 use reforger_language_server::index_build::{
     build_index, IndexBuildConfig, IndexBuildControl, IndexSourceRoot,
 };
@@ -11,6 +15,109 @@ use reforger_language_server::model::{SourceKind, SOURCE_PRIORITY_GAME_DATA};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+
+#[test]
+fn scoped_search_qualifies_colliding_paths_and_references_by_addon_guid() {
+    let fixture = TempFixture::new("scoped-collision");
+    let left_root = fixture.path.join("Left");
+    let right_root = fixture.path.join("Right");
+    for root in [&left_root, &right_root] {
+        fs::create_dir_all(root.join("Game")).expect("create scripts");
+        fs::write(root.join("Game/Same.c"), "class Shared {}\n").expect("write source");
+    }
+    let build = |root: &PathBuf| {
+        build_index(&IndexBuildConfig {
+            roots: vec![IndexSourceRoot::new(
+                root,
+                SourceKind::GameData,
+                SOURCE_PRIORITY_GAME_DATA,
+            )],
+        })
+        .expect("index")
+        .index
+    };
+    let index = SymbolIndex::layered([build(&left_root), build(&right_root)]);
+    let lines = line_starts(&index);
+    let file_ids = index.files().iter().map(|file| file.id).collect::<Vec<_>>();
+    assert_eq!(file_ids.len(), 2);
+    let mut addons = GameDataAddonMap::new();
+    addons.insert(
+        file_ids[0],
+        GameDataAddonIdentity {
+            guid: "AAAAAAAAAAAAAAAA".to_string(),
+            label: "Left".to_string(),
+        },
+    );
+    addons.insert(
+        file_ids[1],
+        GameDataAddonIdentity {
+            guid: "BBBBBBBBBBBBBBBB".to_string(),
+            label: "Right".to_string(),
+        },
+    );
+    let mut left_request = GameDataSearchRequest::new("Shared");
+    left_request.addon_guids = Some(vec!["aaaaaaaaaaaaaaaa".to_string()]);
+    let left = search_scoped(
+        &index,
+        &lines,
+        &addons,
+        &IndexBuildControl::default(),
+        "gd2:test",
+        left_request,
+    )
+    .expect("left search");
+    let mut right_request = GameDataSearchRequest::new("Shared");
+    right_request.addon_guids = Some(vec!["BBBBBBBBBBBBBBBB".to_string()]);
+    let right = search_scoped(
+        &index,
+        &lines,
+        &addons,
+        &IndexBuildControl::default(),
+        "gd2:test",
+        right_request,
+    )
+    .expect("right search");
+
+    assert_eq!(left.total, 1);
+    assert_eq!(
+        left.results[0].addon_guid.as_deref(),
+        Some("AAAAAAAAAAAAAAAA")
+    );
+    assert_eq!(
+        left.results[0].read_source_input.addon_guid.as_deref(),
+        Some("AAAAAAAAAAAAAAAA")
+    );
+    assert_eq!(
+        right.results[0].addon_guid.as_deref(),
+        Some("BBBBBBBBBBBBBBBB")
+    );
+    assert_ne!(left.results[0].symbol_ref, right.results[0].symbol_ref);
+
+    let mut all_request = GameDataSearchRequest::new("Shared");
+    all_request.limit = Some(1);
+    let all = search_scoped(
+        &index,
+        &lines,
+        &addons,
+        &IndexBuildControl::default(),
+        "gd2:test",
+        all_request,
+    )
+    .expect("all add-ons search");
+    let mut changed_scope = GameDataSearchRequest::new("Shared");
+    changed_scope.limit = Some(1);
+    changed_scope.addon_guids = Some(vec!["AAAAAAAAAAAAAAAA".to_string()]);
+    changed_scope.cursor = all.next_cursor;
+    assert!(search_scoped(
+        &index,
+        &lines,
+        &addons,
+        &IndexBuildControl::default(),
+        "gd2:test",
+        changed_scope,
+    )
+    .is_err());
+}
 
 #[test]
 fn search_ranks_exact_names_before_other_semantic_matches() {
@@ -186,6 +293,7 @@ fn catalogue_search_keeps_source_lines_from_its_initialized_snapshot() {
     .expect("create cache fixture");
     let catalogue = GameDataCatalogue::new(GameDataCatalogueConfig {
         cache_path: Some(cache_path),
+        ..GameDataCatalogueConfig::default()
     });
     catalogue
         .status(&IndexBuildControl::default())
@@ -217,6 +325,7 @@ fn catalogue_source_read_returns_the_authoritative_source_line() {
     .expect("create cache fixture");
     let catalogue = GameDataCatalogue::new(GameDataCatalogueConfig {
         cache_path: Some(cache_path),
+        ..GameDataCatalogueConfig::default()
     });
     let revision = catalogue
         .status(&IndexBuildControl::default())
@@ -235,6 +344,7 @@ fn catalogue_source_read_returns_the_authoritative_source_line() {
             &IndexBuildControl::default(),
             GameDataSourceReadRequest {
                 catalogue_revision: revision,
+                addon_guid: input.addon_guid.clone(),
                 relative_path: input.relative_path.clone(),
                 start_line: Some(input.start_line),
                 line_count: Some(1),

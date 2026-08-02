@@ -1,4 +1,7 @@
-use crate::addon_sources::{read_cached_virtual_source, read_cached_virtual_sources};
+use crate::addon_sources::{
+    read_cached_loaded_addon_indexes, read_cached_virtual_source, read_cached_virtual_sources,
+    LoadedAddonIndexInstance, LoadedAddonIndexResult, BASE_GAME_GUID, ENFUSION_CORE_GUID,
+};
 use crate::game_data_inspection::{
     inspect, read_source as read_source_evidence, GameDataInspectionError,
     GameDataInspectionOutput, GameDataSourceReadRequest,
@@ -9,7 +12,8 @@ use crate::game_data_research::{
     GameDataResearchError,
 };
 use crate::game_data_search::{
-    search, GameDataSearchError, GameDataSearchPage, GameDataSearchRequest, SourceLineStarts,
+    search_scoped, GameDataAddonIdentity, GameDataAddonMap, GameDataSearchError,
+    GameDataSearchPage, GameDataSearchRequest, SourceLineStarts,
 };
 use crate::index::{SourceFileId, SymbolIndex};
 use crate::index_build::{IndexBuildControl, INDEX_BUILD_CANCELLED};
@@ -24,7 +28,8 @@ use crate::text_search::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,9 +39,12 @@ use std::time::{Duration, Instant};
 pub const GAME_DATA_INITIALIZATION_DEADLINE_MS: u64 = 120_000;
 pub const MAX_STRUCTURED_RESULT_BYTES: usize = 256 * 1024;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GameDataCatalogueConfig {
     pub cache_path: Option<PathBuf>,
+    pub addon_source_inventory: Option<PathBuf>,
+    pub addon_index_storage: Option<PathBuf>,
+    pub workspace_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -44,7 +52,7 @@ pub struct GameDataCatalogue {
     config: GameDataCatalogueConfig,
     state: Mutex<Option<GameDataCatalogueState>>,
     text_search_cache:
-        Mutex<BTreeMap<(String, String, TextSearchOptions), Arc<TextSearchResultSet>>>,
+        Mutex<BTreeMap<(String, String, TextSearchOptions, Vec<String>), Arc<TextSearchResultSet>>>,
     initialized: AtomicBool,
     #[cfg(all(feature = "test-hooks", debug_assertions))]
     panic_once: std::sync::atomic::AtomicBool,
@@ -56,6 +64,8 @@ struct GameDataCatalogueState {
     // Ticket #17 adds semantic queries over this exact immutable index.
     index: Option<Arc<SymbolIndex>>,
     source_line_starts: Arc<BTreeMap<SourceFileId, SourceLineStarts>>,
+    addon_map: Arc<GameDataAddonMap>,
+    addon_instances: Arc<Vec<LoadedAddonIndexInstance>>,
 }
 
 impl GameDataCatalogue {
@@ -115,10 +125,12 @@ impl GameDataCatalogue {
             .clone()
             .ok_or(GameDataCatalogueSearchError::Unavailable)?;
         let source_line_starts = snapshot.source_line_starts.clone();
+        let addon_map = snapshot.addon_map.clone();
         drop(state);
-        search(
+        search_scoped(
             &index,
             &source_line_starts,
+            &addon_map,
             control,
             status
                 .catalogue_revision
@@ -146,17 +158,6 @@ impl GameDataCatalogue {
             .catalogue_revision
             .clone()
             .ok_or(GameDataCatalogueTextSearchError::Unavailable)?;
-        let cache_key = (revision.clone(), request.query.clone(), request.options);
-        if let Some(result_set) = self
-            .text_search_cache
-            .lock()
-            .unwrap()
-            .get(&cache_key)
-            .cloned()
-        {
-            return page_text(&result_set, control, request)
-                .map_err(GameDataCatalogueTextSearchError::TextSearch);
-        }
         let state = self
             .lock_state(control)
             .map_err(GameDataCatalogueTextSearchError::Initialization)?;
@@ -167,32 +168,50 @@ impl GameDataCatalogue {
             .index
             .clone()
             .ok_or(GameDataCatalogueTextSearchError::Unavailable)?;
-        let cache_path = if index
-            .files()
-            .iter()
-            .any(|file| file.metadata.virtual_source.is_some())
-        {
-            Some(
-                resolve_current_index_pointer(
-                    self.config
-                        .cache_path
-                        .as_ref()
-                        .ok_or(GameDataCatalogueTextSearchError::Unavailable)?,
-                )
-                .map_err(GameDataCatalogueTextSearchError::Initialization)?,
-            )
-        } else {
-            None
-        };
+        let addon_map = snapshot.addon_map.clone();
+        let addon_instances = snapshot.addon_instances.clone();
         drop(state);
-
+        let addon_guids = canonical_catalogue_guids(request.addon_guids.as_deref(), &addon_map)
+            .map_err(|message| {
+                GameDataCatalogueTextSearchError::TextSearch(TextSearchError::InvalidRequest(
+                    message,
+                ))
+            })?;
+        let mut request = request;
+        request.addon_guids = Some(addon_guids.clone());
+        let cache_key = (
+            revision.clone(),
+            request.query.clone(),
+            request.options,
+            addon_guids.clone(),
+        );
+        if let Some(result_set) = self
+            .text_search_cache
+            .lock()
+            .unwrap()
+            .get(&cache_key)
+            .cloned()
+        {
+            return page_text(&result_set, control, request)
+                .map_err(GameDataCatalogueTextSearchError::TextSearch);
+        }
         let mut sources = Vec::new();
-        let mut virtual_sources = Vec::new();
+        let mut virtual_sources = BTreeMap::<String, Vec<(String, String, String)>>::new();
         let mut source_read_failures = 0;
+        let mut source_read_failures_by_addon = BTreeMap::<String, usize>::new();
+        let mut source_read_time_by_addon = BTreeMap::<String, Duration>::new();
+        let mut files_considered = 0;
         for file in index.files() {
             control.check().map_err(|_| {
                 GameDataCatalogueTextSearchError::TextSearch(TextSearchError::Cancelled)
             })?;
+            let Some(addon) = addon_map.get(&file.id) else {
+                continue;
+            };
+            if addon_guids.binary_search(&addon.guid).is_err() {
+                continue;
+            }
+            files_considered += 1;
             let Some(relative_path) = file
                 .metadata
                 .relative_path
@@ -203,9 +222,17 @@ impl GameDataCatalogue {
                 continue;
             };
             if let Some(virtual_source) = &file.metadata.virtual_source {
-                virtual_sources.push((relative_path, virtual_source.uri.clone()));
+                virtual_sources
+                    .entry(addon.guid.clone())
+                    .or_default()
+                    .push((
+                        relative_path,
+                        virtual_source.uri.clone(),
+                        addon.label.clone(),
+                    ));
                 continue;
             }
+            let read_started = Instant::now();
             let source = if let Some(path) = &file.metadata.absolute_path {
                 fs::read(path)
                     .ok()
@@ -213,23 +240,34 @@ impl GameDataCatalogue {
             } else {
                 None
             };
+            *source_read_time_by_addon
+                .entry(addon.guid.clone())
+                .or_insert(Duration::ZERO) += read_started.elapsed();
             let Some(source) = source else {
                 source_read_failures += 1;
+                *source_read_failures_by_addon
+                    .entry(addon.guid.clone())
+                    .or_insert(0) += 1;
                 continue;
             };
             sources.push(TextSource {
                 relative_path,
+                addon_guid: Some(addon.guid.clone()),
+                addon_label: Some(addon.label.clone()),
                 content: Arc::<str>::from(source),
             });
         }
-        if !virtual_sources.is_empty() {
-            let cache_path = cache_path
-                .as_ref()
-                .ok_or(GameDataCatalogueTextSearchError::Unavailable)?;
-            let uris = virtual_sources
+        for (guid, addon_sources) in virtual_sources {
+            let cache_path = addon_instances
                 .iter()
-                .map(|(_, uri)| uri.clone())
+                .find(|instance| instance.guid.eq_ignore_ascii_case(&guid))
+                .map(|instance| instance.cache_path.as_path())
+                .ok_or(GameDataCatalogueTextSearchError::Unavailable)?;
+            let uris = addon_sources
+                .iter()
+                .map(|(_, uri, _)| uri.clone())
                 .collect::<Vec<_>>();
+            let read_started = Instant::now();
             let batch =
                 read_cached_virtual_sources(&uris, cache_path, control).map_err(|error| {
                     if error == INDEX_BUILD_CANCELLED {
@@ -238,23 +276,39 @@ impl GameDataCatalogue {
                         GameDataCatalogueTextSearchError::Initialization(error)
                     }
                 })?;
-            for ((relative_path, _), source) in
-                virtual_sources.into_iter().zip(batch.sources.into_iter())
+            *source_read_time_by_addon
+                .entry(guid.clone())
+                .or_insert(Duration::ZERO) += read_started.elapsed();
+            for ((relative_path, _, addon_label), source) in
+                addon_sources.into_iter().zip(batch.sources.into_iter())
             {
                 match source {
                     Ok(source) => sources.push(TextSource {
                         relative_path,
+                        addon_guid: Some(guid.clone()),
+                        addon_label: Some(addon_label),
                         content: Arc::<str>::from(source),
                     }),
-                    Err(_) => source_read_failures += 1,
+                    Err(_) => {
+                        source_read_failures += 1;
+                        *source_read_failures_by_addon
+                            .entry(guid.clone())
+                            .or_insert(0) += 1;
+                    }
                 }
             }
         }
+        let source_read_ms_by_addon = source_read_time_by_addon
+            .into_iter()
+            .map(|(guid, elapsed)| (guid, duration_ms(elapsed)))
+            .collect();
         let result_set = scan_text(
             TextSearchCorpus {
-                files_considered: index.files().len(),
+                files_considered,
                 sources,
                 source_read_failures,
+                source_read_failures_by_addon,
+                source_read_ms_by_addon,
             },
             control,
             &revision,
@@ -298,8 +352,9 @@ impl GameDataCatalogue {
             .clone()
             .ok_or(GameDataInspectionError::Unavailable)?;
         let starts = snapshot.source_line_starts.clone();
+        let addon_map = snapshot.addon_map.clone();
         drop(state);
-        inspect(&index, &starts, control, revision, &symbol_ref)
+        inspect(&index, &starts, &addon_map, control, revision, &symbol_ref)
     }
 
     pub fn search_examples(
@@ -317,8 +372,8 @@ impl GameDataCatalogue {
         control: &IndexBuildControl,
         request: GameDataMemberRequest,
     ) -> Result<GameDataMemberPage, GameDataCatalogueResearchError> {
-        let (revision, index, starts) = self.research_snapshot(control)?;
-        list_members(&index, &starts, control, &revision, request)
+        let (revision, index, starts, addon_map) = self.research_snapshot(control)?;
+        list_members(&index, &starts, &addon_map, control, &revision, request)
             .map_err(GameDataCatalogueResearchError::Research)
     }
 
@@ -354,13 +409,18 @@ impl GameDataCatalogue {
             .index
             .clone()
             .ok_or(GameDataInspectionError::Unavailable)?;
+        let addon_map = snapshot.addon_map.clone();
+        let addon_instances = snapshot.addon_instances.clone();
         let (source_file_id, virtual_source, absolute_path) = index
             .files()
             .iter()
             .find(|file| {
                 file.metadata.relative_path.as_ref().is_some_and(|path| {
                     path.to_string_lossy().replace('\\', "/") == request.relative_path
-                })
+                }) && addon_map
+                    .get(&file.id)
+                    .map(|identity| identity.guid.as_str())
+                    == request.addon_guid.as_deref()
             })
             .map(|file| {
                 (
@@ -376,13 +436,15 @@ impl GameDataCatalogue {
             })?;
         drop(state);
         let source = if let Some(virtual_source) = &virtual_source {
-            let cache_path = resolve_current_index_pointer(
-                self.config
-                    .cache_path
-                    .as_ref()
-                    .ok_or(GameDataInspectionError::Unavailable)?,
-            )
-            .map_err(GameDataInspectionError::Initialization)?;
+            let cache_path = addon_instances
+                .iter()
+                .find(|instance| {
+                    instance
+                        .guid
+                        .eq_ignore_ascii_case(&virtual_source.addon_guid)
+                })
+                .map(|instance| instance.cache_path.as_path())
+                .ok_or(GameDataInspectionError::Unavailable)?;
             read_cached_virtual_source(&virtual_source.uri, &cache_path).map_err(|error| {
                 GameDataInspectionError::SourceReadFailed(format!(
                     "Failed to read Game Data source {}: {error}",
@@ -402,7 +464,14 @@ impl GameDataCatalogue {
         };
         let mut source_texts = BTreeMap::new();
         source_texts.insert(source_file_id, Arc::<str>::from(source));
-        read_source_evidence(&index, control, revision, &source_texts, request)
+        read_source_evidence(
+            &index,
+            &addon_map,
+            control,
+            revision,
+            &source_texts,
+            request,
+        )
     }
 
     fn research_snapshot(
@@ -413,6 +482,7 @@ impl GameDataCatalogue {
             String,
             Arc<SymbolIndex>,
             Arc<BTreeMap<SourceFileId, SourceLineStarts>>,
+            Arc<GameDataAddonMap>,
         ),
         GameDataCatalogueResearchError,
     > {
@@ -437,6 +507,7 @@ impl GameDataCatalogue {
                 .clone()
                 .ok_or(GameDataCatalogueResearchError::Unavailable)?,
             snapshot.source_line_starts.clone(),
+            snapshot.addon_map.clone(),
         ))
     }
 
@@ -541,6 +612,20 @@ pub struct GameDataStatus {
     pub available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub catalogue_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Opaque revision for the exact selectable add-on scope. Copy it from status; do not construct it."
+    )]
+    pub scope_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Authority that selected the current add-on scope, such as the live Workbench graph or a labelled provisional dependency scope."
+    )]
+    pub scope_authority: Option<String>,
+    #[schemars(
+        description = "Loaded add-ons that may be selected with addonGuids in Game Data symbol or text search. Entries with available=false are diagnostic only."
+    )]
+    pub addons: Vec<GameDataAddonStatus>,
     pub authorities: GameDataAuthorities,
     pub source: GameDataSourceStatus,
     pub coverage: GameDataCoverage,
@@ -551,6 +636,19 @@ pub struct GameDataStatus {
     pub limits: GameDataLimits,
     pub warnings: Vec<GameDataNotice>,
     pub recovery: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GameDataAddonStatus {
+    #[schemars(description = "Canonical uppercase GUID used as the public search-scope ID.")]
+    pub addon_guid: String,
+    pub display_id: String,
+    pub title: String,
+    pub script_count: usize,
+    pub available: bool,
+    pub pinned: bool,
+    pub default_selected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -660,6 +758,36 @@ fn initialize_catalogue(
     control.check()?;
     let started = Instant::now();
     let source = source_status(None);
+    match (&config.addon_source_inventory, &config.addon_index_storage) {
+        (Some(inventory), Some(storage)) => {
+            let loaded = read_cached_loaded_addon_indexes(
+                inventory,
+                storage,
+                &config.workspace_roots,
+                control,
+            )?;
+            if loaded.loaded_instances == 0 {
+                return Ok(unavailable_state(
+                    source,
+                    started.elapsed(),
+                    "game_data_addon_scope_unavailable",
+                    "No compatible indexed add-ons are available in the current Workbench scope.",
+                    "Activate the language server so it publishes the loaded add-on indexes, then restart MCP.",
+                ));
+            }
+            return Ok(ready_layered_state(loaded));
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            return Ok(unavailable_state(
+                source,
+                started.elapsed(),
+                "game_data_addon_scope_not_configured",
+                "The loaded add-on inventory and index storage must be configured together.",
+                "Regenerate the MCP configuration from the extension.",
+            ));
+        }
+        (None, None) => {}
+    }
     let Some(cache_path) = config.cache_path.clone() else {
         return Ok(unavailable_state(
             source,
@@ -674,7 +802,7 @@ fn initialize_catalogue(
     let result = load_game_data_index_cache_with_control(&cache_path, control);
 
     match result {
-        Ok(Some(result)) => Ok(ready_state(result)),
+        Ok(Some(result)) => Ok(ready_state(result, cache_path)),
         Ok(None) => Ok(unavailable_state(
             source,
             started.elapsed(),
@@ -731,7 +859,83 @@ fn resolve_current_index_pointer(path: &Path) -> Result<PathBuf, String> {
         .join(relative))
 }
 
-fn ready_state(result: GameDataIndexCacheResult) -> GameDataCatalogueState {
+fn ready_layered_state(result: LoadedAddonIndexResult) -> GameDataCatalogueState {
+    let scope_revision = layered_scope_revision(&result.instances, &result.scope_instances);
+    let mut warnings = catalogue_warnings(&result.summary);
+    if result.missing_instances > 0 {
+        warnings.push(GameDataNotice {
+            code: "addon_indexes_missing".to_string(),
+            message: format!(
+                "{} loaded add-ons do not have a compatible searchable index yet.",
+                result.missing_instances
+            ),
+        });
+    }
+    let addon_map = addon_map(&result.instances);
+    let mut addons = result
+        .instances
+        .iter()
+        .filter(|instance| instance.script_count > 0)
+        .map(addon_status)
+        .collect::<Vec<_>>();
+    addons.extend(
+        result
+            .unavailable_instances
+            .iter()
+            .map(|instance| GameDataAddonStatus {
+                addon_guid: instance.guid.to_ascii_uppercase(),
+                display_id: instance.display_id.clone(),
+                title: instance.title.clone(),
+                script_count: 0,
+                available: false,
+                pinned: false,
+                default_selected: false,
+            }),
+    );
+    addons.sort_by(|left, right| {
+        addon_status_rank(&left.addon_guid)
+            .cmp(&addon_status_rank(&right.addon_guid))
+            .then_with(|| left.title.cmp(&right.title))
+            .then_with(|| left.addon_guid.cmp(&right.addon_guid))
+    });
+    let source_line_starts = result
+        .source_line_starts
+        .into_iter()
+        .map(|(file, starts)| (file, SourceLineStarts::from_cached_starts(starts)))
+        .collect();
+    let status = GameDataStatus {
+        available: !addons.is_empty(),
+        catalogue_revision: Some(scope_revision.clone()),
+        scope_revision: Some(scope_revision),
+        scope_authority: Some(result.scope_authority.as_str().to_string()),
+        addons,
+        authorities: authorities(),
+        source: source_status(None),
+        coverage: coverage(&result.summary),
+        counts: counts(&result.index),
+        cache: None,
+        timings_ms: GameDataTimingsMs {
+            cache_file_read: duration_ms(result.timings.index_load_or_build),
+            total: duration_ms(result.timings.total),
+            ..GameDataTimingsMs::default()
+        },
+        limits: limits(),
+        warnings,
+        recovery: vec![
+            "Activate the language server to refresh the loaded add-on indexes, then restart MCP."
+                .to_string(),
+        ],
+    };
+    GameDataCatalogueState {
+        status,
+        index: Some(result.index),
+        source_line_starts: Arc::new(source_line_starts),
+        addon_map: Arc::new(addon_map),
+        addon_instances: Arc::new(result.instances),
+    }
+}
+
+fn ready_state(result: GameDataIndexCacheResult, cache_path: PathBuf) -> GameDataCatalogueState {
     let mut warnings = Vec::new();
     if result.summary.parse_diagnostics > 0 {
         warnings.push(GameDataNotice {
@@ -756,6 +960,17 @@ fn ready_state(result: GameDataIndexCacheResult) -> GameDataCatalogueState {
     let status = GameDataStatus {
         available: true,
         catalogue_revision: Some(format!("gd1:{}", result.catalogue_digest)),
+        scope_revision: Some(format!("gd1:{}", result.catalogue_digest)),
+        scope_authority: Some("legacy-base-cache".to_string()),
+        addons: vec![GameDataAddonStatus {
+            addon_guid: BASE_GAME_GUID.to_string(),
+            display_id: "ArmaReforger".to_string(),
+            title: "Arma Reforger".to_string(),
+            script_count: result.summary.files,
+            available: true,
+            pinned: true,
+            default_selected: true,
+        }],
         authorities: authorities(),
         source,
         coverage: coverage(&result.summary),
@@ -775,10 +990,39 @@ fn ready_state(result: GameDataIndexCacheResult) -> GameDataCatalogueState {
         .into_iter()
         .map(|(file, starts)| (file, SourceLineStarts::from_cached_starts(starts)))
         .collect();
+    let file_count = result.index.files().len();
+    let addon_identity = GameDataAddonIdentity {
+        guid: BASE_GAME_GUID.to_string(),
+        label: "Arma Reforger".to_string(),
+    };
+    let addon_map = result
+        .index
+        .files()
+        .iter()
+        .map(|file| (file.id, addon_identity.clone()))
+        .collect();
+    let instance = LoadedAddonIndexInstance {
+        guid: BASE_GAME_GUID.to_string(),
+        display_id: "ArmaReforger".to_string(),
+        title: "Arma Reforger".to_string(),
+        pack_count: 0,
+        script_count: result.summary.files,
+        file_start: 0,
+        file_count,
+        cache_path,
+        revision: result.catalogue_digest.clone(),
+        cache_status: result.cache_status.as_str().to_string(),
+        cache_detail: result.cache_status.detail().map(str::to_string),
+        summary: result.summary.clone(),
+        timings: result.timings,
+        cache_file_bytes: result.cache_file_bytes,
+    };
     GameDataCatalogueState {
         status,
         index: Some(Arc::new(result.index)),
         source_line_starts: Arc::new(source_line_starts),
+        addon_map: Arc::new(addon_map),
+        addon_instances: Arc::new(vec![instance]),
     }
 }
 
@@ -793,6 +1037,9 @@ fn unavailable_state(
         status: GameDataStatus {
             available: false,
             catalogue_revision: None,
+            scope_revision: None,
+            scope_authority: None,
+            addons: Vec::new(),
             authorities: authorities(),
             source,
             coverage: GameDataCoverage::default(),
@@ -811,7 +1058,111 @@ fn unavailable_state(
         },
         index: None,
         source_line_starts: Arc::new(BTreeMap::new()),
+        addon_map: Arc::new(BTreeMap::new()),
+        addon_instances: Arc::new(Vec::new()),
     }
+}
+
+fn catalogue_warnings(summary: &RuntimeIndexSummary) -> Vec<GameDataNotice> {
+    let mut warnings = Vec::new();
+    if summary.parse_diagnostics > 0 {
+        warnings.push(GameDataNotice {
+            code: "parse_diagnostics_present".to_string(),
+            message: format!(
+                "{} parser diagnostics were recorded while building the catalogue.",
+                summary.parse_diagnostics
+            ),
+        });
+    }
+    if summary.lossy_files > 0 {
+        warnings.push(GameDataNotice {
+            code: "lossy_files_present".to_string(),
+            message: format!(
+                "{} source files required lossy UTF-8 decoding.",
+                summary.lossy_files
+            ),
+        });
+    }
+    warnings
+}
+
+fn layered_scope_revision(
+    instances: &[LoadedAddonIndexInstance],
+    identities: &[crate::addon_sources::LoadedAddonInstanceIdentity],
+) -> String {
+    let mut digest = Sha256::new();
+    for (instance, identity) in instances.iter().zip(identities) {
+        digest.update(instance.guid.as_bytes());
+        digest.update([0]);
+        digest.update(identity.source_root.to_string_lossy().as_bytes());
+        digest.update([0]);
+        digest.update(instance.revision.as_bytes());
+        digest.update([0xff]);
+    }
+    format!("gd2:{:x}", digest.finalize())
+}
+
+fn addon_status_rank(guid: &str) -> u8 {
+    match guid {
+        BASE_GAME_GUID => 0,
+        ENFUSION_CORE_GUID => 1,
+        _ => 2,
+    }
+}
+
+fn addon_map(instances: &[LoadedAddonIndexInstance]) -> GameDataAddonMap {
+    let mut map = GameDataAddonMap::new();
+    for instance in instances {
+        let identity = GameDataAddonIdentity {
+            guid: instance.guid.to_ascii_uppercase(),
+            label: instance.title.clone(),
+        };
+        for file in instance.file_start..instance.file_start + instance.file_count {
+            map.insert(SourceFileId(file), identity.clone());
+        }
+    }
+    map
+}
+
+fn addon_status(instance: &LoadedAddonIndexInstance) -> GameDataAddonStatus {
+    let guid = instance.guid.to_ascii_uppercase();
+    GameDataAddonStatus {
+        addon_guid: guid.clone(),
+        display_id: instance.display_id.clone(),
+        title: instance.title.clone(),
+        script_count: instance.script_count,
+        available: true,
+        pinned: matches!(guid.as_str(), BASE_GAME_GUID | ENFUSION_CORE_GUID),
+        default_selected: matches!(guid.as_str(), BASE_GAME_GUID | ENFUSION_CORE_GUID),
+    }
+}
+
+fn canonical_catalogue_guids(
+    requested: Option<&[String]>,
+    addon_map: &GameDataAddonMap,
+) -> Result<Vec<String>, &'static str> {
+    let available = addon_map
+        .values()
+        .map(|identity| identity.guid.clone())
+        .collect::<BTreeSet<_>>();
+    let Some(requested) = requested else {
+        return Ok(available.into_iter().collect());
+    };
+    if requested.is_empty() {
+        return Err("addonGuids must be non-empty when provided");
+    }
+    let mut selected = BTreeSet::new();
+    for value in requested {
+        let guid = value.to_ascii_uppercase();
+        if guid.len() != 16
+            || !guid.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || !selected.insert(guid.clone())
+            || !available.contains(&guid)
+        {
+            return Err("addonGuids must contain unique loaded 16-character hexadecimal GUIDs");
+        }
+    }
+    Ok(selected.into_iter().collect())
 }
 
 fn source_status(fingerprint: Option<&SourceFingerprint>) -> GameDataSourceStatus {
@@ -847,7 +1198,7 @@ fn counts(index: &SymbolIndex) -> GameDataCounts {
             .entry(file.metadata.category.as_str().to_string())
             .or_insert(0) += 1;
     }
-    for symbol in index.symbols() {
+    for symbol in index.symbol_iter() {
         *symbols_by_kind
             .entry(symbol_kind_name(symbol.kind).to_string())
             .or_insert(0) += 1;
@@ -862,6 +1213,45 @@ fn counts(index: &SymbolIndex) -> GameDataCounts {
         symbols_by_kind,
         files_by_source_category,
         symbols_by_source_category,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::addon_sources::LoadedAddonInstanceIdentity;
+
+    #[test]
+    fn scope_revision_changes_with_exact_instance_root() {
+        let instance = LoadedAddonIndexInstance {
+            guid: BASE_GAME_GUID.to_string(),
+            display_id: "ArmaReforger".to_string(),
+            title: "Arma Reforger".to_string(),
+            pack_count: 1,
+            script_count: 1,
+            file_start: 0,
+            file_count: 1,
+            cache_path: PathBuf::from("cache/symbols.bin"),
+            revision: "same-content".to_string(),
+            cache_status: "loaded".to_string(),
+            cache_detail: None,
+            summary: RuntimeIndexSummary::default(),
+            timings: IndexCacheTimings::default(),
+            cache_file_bytes: None,
+        };
+        let left = LoadedAddonInstanceIdentity {
+            guid: BASE_GAME_GUID.to_string(),
+            source_root: PathBuf::from("left"),
+        };
+        let right = LoadedAddonInstanceIdentity {
+            guid: BASE_GAME_GUID.to_string(),
+            source_root: PathBuf::from("right"),
+        };
+
+        assert_ne!(
+            layered_scope_revision(std::slice::from_ref(&instance), &[left]),
+            layered_scope_revision(&[instance], &[right]),
+        );
     }
 }
 

@@ -331,7 +331,7 @@ fn parse_lsp_args(mut args: impl Iterator<Item = String>) -> Result<LspServerOpt
 }
 
 fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOptions, String> {
-    let mut game_data = GameDataCatalogueConfig { cache_path: None };
+    let mut game_data = GameDataCatalogueConfig::default();
     let mut official_wiki_root = None;
     let mut workbench = WorkbenchControllerOptions::default();
     let mut workspace_scripts = Vec::new();
@@ -339,6 +339,14 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--index-cache" => game_data.cache_path = Some(path_value(&mut args, "--index-cache")?),
+            "--addon-source-inventory" => {
+                game_data.addon_source_inventory =
+                    Some(path_value(&mut args, "--addon-source-inventory")?)
+            }
+            "--addon-index-storage" => {
+                game_data.addon_index_storage =
+                    Some(path_value(&mut args, "--addon-index-storage")?)
+            }
             "--official-wiki-root" => {
                 official_wiki_root = Some(path_value(&mut args, "--official-wiki-root")?)
             }
@@ -376,6 +384,7 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
         }
     }
 
+    game_data.workspace_roots = workspace_scripts.clone();
     Ok(McpServerOptions {
         game_data,
         official_wiki_root,
@@ -400,7 +409,7 @@ fn string_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<S
 
 fn print_help() {
     println!(
-        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server mcp-api-bundle\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|read-logs|integration-status|bootstrap-integration|maintain-integration|process-status|launch-default|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --index-cache <path>\n  --workspace-scripts <path> (repeatable)\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <test/development override>"
+        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server mcp-api-bundle\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|read-logs|integration-status|bootstrap-integration|maintain-integration|process-status|launch-default|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --index-cache <legacy single-cache path>\n  --workspace-scripts <path> (repeatable)\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <test/development override>"
     );
 }
 
@@ -445,6 +454,39 @@ mod tests {
         assert_eq!(
             options.game_data.cache_path,
             Some(PathBuf::from("cache.bin"))
+        );
+    }
+
+    #[test]
+    fn explicit_mcp_mode_accepts_the_loaded_addon_scope_inputs() {
+        let mode = parse_args_from(
+            [
+                "mcp".to_string(),
+                "--addon-source-inventory".to_string(),
+                "graph.json".to_string(),
+                "--addon-index-storage".to_string(),
+                "addon-indexes".to_string(),
+                "--workspace-scripts".to_string(),
+                "Scripts".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("valid MCP arguments");
+
+        let ServerMode::Mcp(options) = mode else {
+            panic!("expected MCP mode");
+        };
+        assert_eq!(
+            options.game_data.addon_source_inventory,
+            Some(PathBuf::from("graph.json"))
+        );
+        assert_eq!(
+            options.game_data.addon_index_storage,
+            Some(PathBuf::from("addon-indexes"))
+        );
+        assert_eq!(
+            options.game_data.workspace_roots,
+            vec![PathBuf::from("Scripts")]
         );
     }
 
@@ -500,7 +542,10 @@ mod tests {
         };
         assert_eq!(
             options.workspace_scripts,
-            vec![PathBuf::from("addon-a/Scripts"), PathBuf::from("addon-b/Scripts")]
+            vec![
+                PathBuf::from("addon-a/Scripts"),
+                PathBuf::from("addon-b/Scripts")
+            ]
         );
     }
 

@@ -157,6 +157,19 @@ The packaged executable also has an independent MCP mode. An MCP client starts
 its own local `stdio` process; it neither attaches to the editor-owned LSP nor
 requires VS Code to remain running. LSP and MCP reuse the same Rust language
 and evidence modules, so they do not establish competing semantic authorities.
+The MCP process consumes the persisted loaded-add-on inventory and parser-owned
+per-instance index storage. It reconstructs the same GUID-qualified layered
+catalogue without scanning for add-ons or starting one process per add-on.
+`game_data_status` publishes the currently available scope; Game Data symbol
+and text searches accept a set of loaded add-on GUIDs, and every returned
+source handoff retains its add-on GUID so colliding logical paths remain
+unambiguous. Workspace remains a separate live source, while Official Wiki is
+eligible only for explicit text search in the editor UI.
+The retired single-cache `--index-cache` startup remains only as a temporary
+compatibility route for existing direct MCP clients and integration fixtures.
+Remove it when those fixtures and supported external launch configurations all
+supply the loaded-scope inventory and add-on index-storage inputs; extension-
+generated launch configurations already use only the loaded-scope route.
 The generated [MCP API Reference](mcp-api.md) routes to the exact generated
 per-tool contracts that project the public tool interface.
 The [MCP Runtime guide](mcp-runtime.md) explains its process lifecycle,

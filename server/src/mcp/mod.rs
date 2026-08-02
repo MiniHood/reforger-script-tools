@@ -205,7 +205,7 @@ Use this guide to choose a tool family and establish the minimum live context. F
 - Do not use Workbench tools for static declarations or documentation, and do not use static evidence as proof of live editor state.
 - When a valid call returns a structured failure, follow its `recovery` and `retryable` fields instead of guessing another tool or parameter.
 "#;
-const GAME_DATA_STATUS_DESCRIPTION: &str = "Load and report the parser-owned Reforger Game Data Catalogue cache. Use this first when Game Data availability or coverage is uncertain. Returns the immutable catalogue revision, source provenance, semantic coverage and counts, cache outcome, bounded timings, limits, warnings, and recovery guidance without physical paths; it does not inspect source inputs, parse, rebuild, write the cache, or search symbols.";
+const GAME_DATA_STATUS_DESCRIPTION: &str = "Load and report the parser-owned Reforger Game Data catalogue for the exact current add-on scope. Use this first when Game Data availability, coverage, or selectable add-on GUIDs are uncertain. The addons array is the bounded discovery surface for search_game_data_symbols and search_game_data_text; copy its addonGuid values into those searches. Returns immutable catalogue and scope revisions, scope authority, semantic coverage and counts, bounded timings, warnings, and recovery guidance without physical paths; it does not inspect source inputs, parse, rebuild, write cache storage, or search symbols.";
 const SEARCH_GAME_DATA_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the immutable Reforger Game Data Catalogue. Results are ranked deterministically and contain opaque revision-bound symbol references plus ready-to-copy inspection and source-read inputs; this is not a source-text search. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry.";
 const SEARCH_WORKSPACE_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the configured user add-on workspace index. Results use the same language-owned symbol references, deterministic pagination, and inspection handoffs as Game Data search; the index is built once per MCP process from --workspace-scripts roots. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry. Identifier-prefix queries ending in `_` (for example, `SCR_`) match declared symbol names only, not containing names, signatures, or types.";
 const SEARCH_GAME_DATA_TEXT_DESCRIPTION: &str = "Explicit bounded full-text search over readable Reforger Game Data source files. Matching is a case-insensitive literal substring by default; optional case-sensitive, whole-word, and regular-expression modes are explicit. Comments, strings, expressions, and local-variable uses are included; this is not fuzzy, semantic, or Wiki search. Results are deterministic, revision-bound, paged with an opaque cursor, and carry exact source ranges, a line excerpt, and a ready-to-copy readSourceInput. This scan is intentionally on demand and may take seconds across the corpus; use semantic search for declarations. Do not use this tool to infer live Workbench state.";
@@ -1018,6 +1018,11 @@ struct McpGameDataSearchInput {
     #[schemars(length(min = 1, max = 256))]
     query: String,
     #[schemars(length(min = 1))]
+    #[schemars(
+        description = "Canonical loaded add-on GUIDs returned by game_data_status. Omit to search every available add-on; an empty list is invalid."
+    )]
+    addon_guids: Option<Vec<String>>,
+    #[schemars(length(min = 1))]
     kinds: Option<Vec<String>>,
     #[schemars(length(min = 1, max = 256))]
     owner: Option<String>,
@@ -1049,6 +1054,28 @@ struct McpWorkspaceSearchInput {
 struct McpTextSearchInput {
     #[schemars(length(min = 1, max = 256))]
     query: String,
+    #[serde(default)]
+    match_case: bool,
+    #[serde(default)]
+    match_whole_word: bool,
+    #[serde(default)]
+    use_regex: bool,
+    #[schemars(range(min = 1, max = 100))]
+    limit: Option<usize>,
+    #[schemars(length(max = 2048))]
+    cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpGameDataTextSearchInput {
+    #[schemars(length(min = 1, max = 256))]
+    query: String,
+    #[schemars(length(min = 1))]
+    #[schemars(
+        description = "Canonical loaded add-on GUIDs returned by game_data_status. Omit to search every available add-on; an empty list is invalid."
+    )]
+    addon_guids: Option<Vec<String>>,
     #[serde(default)]
     match_case: bool,
     #[serde(default)]
@@ -1112,6 +1139,22 @@ struct McpGameDataRelationshipInput {
 struct McpGameDataSourceInput {
     #[schemars(length(min = 1, max = 256))]
     catalogue_revision: String,
+    #[schemars(length(min = 16, max = 16))]
+    #[schemars(
+        description = "Exact add-on GUID copied from a Game Data search or inspection readSourceInput handoff."
+    )]
+    addon_guid: String,
+    #[schemars(length(min = 1, max = 2048))]
+    relative_path: String,
+    start_line: Option<usize>,
+    line_count: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkspaceSourceInput {
+    #[schemars(length(min = 1, max = 256))]
+    catalogue_revision: String,
     #[schemars(length(min = 1, max = 2048))]
     relative_path: String,
     start_line: Option<usize>,
@@ -1156,10 +1199,25 @@ struct McpSourceReadOutputSchema {
     next_start_line: Option<usize>,
 }
 
+#[derive(JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct McpGameDataSourceReadOutputSchema {
+    catalogue_revision: String,
+    addon_guid: String,
+    relative_path: String,
+    start_line: usize,
+    end_line: usize,
+    content: String,
+    truncated: bool,
+    next_start_line: Option<usize>,
+}
+
 impl From<McpGameDataSearchInput> for GameDataSearchRequest {
     fn from(input: McpGameDataSearchInput) -> Self {
         Self {
             query: input.query,
+            addon_guids: input.addon_guids,
             kinds: input.kinds,
             owner: input.owner,
             source_categories: input.source_categories,
@@ -2290,6 +2348,7 @@ impl ReforgerMcpServer {
                 .workspace_text_search(
                     TextSearchRequest {
                         query: input.query,
+                        addon_guids: None,
                         options: TextSearchOptions {
                             match_case: input.match_case,
                             match_whole_word: input.match_whole_word,
@@ -2316,6 +2375,7 @@ impl ReforgerMcpServer {
                 .workspace_search(
                     GameDataSearchRequest {
                         query: input.query,
+                        addon_guids: None,
                         kinds: input.kinds,
                         owner: None,
                         source_categories: Some(vec!["workspace".to_string()]),
@@ -2346,7 +2406,7 @@ impl ReforgerMcpServer {
                 .await;
         }
         if request.name == READ_WORKSPACE_SOURCE_TOOL_NAME {
-            let input = serde_json::from_value::<McpGameDataSourceInput>(Value::Object(
+            let input = serde_json::from_value::<McpWorkspaceSourceInput>(Value::Object(
                 request.arguments.unwrap_or_default(),
             ))
             .map_err(|error| {
@@ -2359,6 +2419,7 @@ impl ReforgerMcpServer {
                 .read_workspace_source(
                     GameDataSourceReadRequest {
                         catalogue_revision: input.catalogue_revision,
+                        addon_guid: None,
                         relative_path: input.relative_path,
                         start_line: input.start_line,
                         line_count: input.line_count,
@@ -3913,6 +3974,7 @@ impl ReforgerMcpServer {
                 .read_game_data_source(
                     GameDataSourceReadRequest {
                         catalogue_revision: input.catalogue_revision,
+                        addon_guid: Some(input.addon_guid),
                         relative_path: input.relative_path,
                         start_line: input.start_line,
                         line_count: input.line_count,
@@ -3945,7 +4007,7 @@ impl ReforgerMcpServer {
                     None,
                 ));
             }
-            let input = serde_json::from_value::<McpTextSearchInput>(Value::Object(
+            let input = serde_json::from_value::<McpGameDataTextSearchInput>(Value::Object(
                 request.arguments.unwrap_or_default(),
             ))
             .map_err(|error| {
@@ -3958,6 +4020,7 @@ impl ReforgerMcpServer {
                 .search_game_data_text(
                     TextSearchRequest {
                         query: input.query,
+                        addon_guids: input.addon_guids,
                         options: TextSearchOptions {
                             match_case: input.match_case,
                             match_whole_word: input.match_whole_word,
@@ -4960,7 +5023,7 @@ When a valid tool request cannot complete, every tool family returns a structure
 {description}\n\n\
 ### Annotations\n\n\
 ```json\n{annotations}\n```\n\n\
-The first call loads the parser-owned derived Game Data cache; it does not inspect source inputs, parse, rebuild, or write that cache.\n\n\
+The first call reads the parser-owned indexes selected by the exact current add-on scope; it does not inspect source inputs, parse, rebuild, or mutate cache storage.\n\n\
 ### Input schema\n\n\
 ```json\n{input_schema}\n```\n\n\
 ### Output schema\n\n\
@@ -5375,7 +5438,7 @@ fn search_game_data_text_tool() -> Tool {
         empty_object_schema(),
     )
     .with_title("Search Game Data text")
-    .with_input_schema::<McpTextSearchInput>()
+    .with_input_schema::<McpGameDataTextSearchInput>()
     .with_output_schema::<TextSearchPage>()
     .with_annotations(
         ToolAnnotations::with_title("Search Game Data text")
@@ -5406,6 +5469,7 @@ fn search_workspace_symbols_tool() -> Tool {
     strip_rust_numeric_formats(Arc::make_mut(&mut tool.input_schema));
     if let Some(output_schema) = tool.output_schema.as_mut() {
         strip_rust_numeric_formats(Arc::make_mut(output_schema));
+        strip_workspace_addon_identity(Arc::make_mut(output_schema));
     }
     tool
 }
@@ -5427,41 +5491,54 @@ fn search_workspace_text_tool() -> Tool {
     strip_rust_numeric_formats(Arc::make_mut(&mut tool.input_schema));
     if let Some(output_schema) = tool.output_schema.as_mut() {
         strip_rust_numeric_formats(Arc::make_mut(output_schema));
+        strip_workspace_addon_identity(Arc::make_mut(output_schema));
     }
     tool
 }
 
 fn inspect_workspace_symbol_tool() -> Tool {
-    workbench_input_tool::<McpGameDataInspectInput, GameDataInspectionOutput>(
+    let mut tool = workbench_input_tool::<McpGameDataInspectInput, GameDataInspectionOutput>(
         INSPECT_WORKSPACE_SYMBOL_TOOL_NAME,
         INSPECT_WORKSPACE_SYMBOL_DESCRIPTION,
         "Inspect workspace symbol",
         ToolAnnotations::with_title("Inspect workspace symbol")
             .read_only(true)
             .open_world(false),
-    )
+    );
+    if let Some(output_schema) = tool.output_schema.as_mut() {
+        strip_workspace_addon_identity(Arc::make_mut(output_schema));
+    }
+    tool
 }
 
 fn list_workspace_symbol_members_tool() -> Tool {
-    workbench_input_tool::<McpGameDataMemberInput, GameDataMemberPage>(
+    let mut tool = workbench_input_tool::<McpGameDataMemberInput, GameDataMemberPage>(
         LIST_WORKSPACE_SYMBOL_MEMBERS_TOOL_NAME,
         LIST_WORKSPACE_SYMBOL_MEMBERS_DESCRIPTION,
         "List workspace symbol members",
         ToolAnnotations::with_title("List workspace symbol members")
             .read_only(true)
             .open_world(false),
-    )
+    );
+    if let Some(output_schema) = tool.output_schema.as_mut() {
+        strip_workspace_addon_identity(Arc::make_mut(output_schema));
+    }
+    tool
 }
 
 fn query_workspace_symbol_relationships_tool() -> Tool {
-    workbench_input_tool::<McpGameDataRelationshipInput, GameDataRelationshipPage>(
+    let mut tool = workbench_input_tool::<McpGameDataRelationshipInput, GameDataRelationshipPage>(
         QUERY_WORKSPACE_SYMBOL_RELATIONSHIPS_TOOL_NAME,
         QUERY_WORKSPACE_SYMBOL_RELATIONSHIPS_DESCRIPTION,
         "Query workspace symbol relationships",
         ToolAnnotations::with_title("Query workspace symbol relationships")
             .read_only(true)
             .open_world(false),
-    )
+    );
+    if let Some(output_schema) = tool.output_schema.as_mut() {
+        strip_workspace_addon_identity(Arc::make_mut(output_schema));
+    }
+    tool
 }
 
 fn search_game_data_examples_tool() -> Tool {
@@ -5556,7 +5633,7 @@ fn read_game_data_source_tool() -> Tool {
     )
     .with_title("Read Game Data source")
     .with_input_schema::<McpGameDataSourceInput>()
-    .with_output_schema::<McpSourceReadOutputSchema>()
+    .with_output_schema::<McpGameDataSourceReadOutputSchema>()
     .with_annotations(
         ToolAnnotations::with_title("Read Game Data source")
             .read_only(true)
@@ -5576,7 +5653,7 @@ fn read_workspace_source_tool() -> Tool {
         empty_object_schema(),
     )
     .with_title("Read workspace source")
-    .with_input_schema::<McpGameDataSourceInput>()
+    .with_input_schema::<McpWorkspaceSourceInput>()
     .with_output_schema::<McpSourceReadOutputSchema>()
     .with_annotations(
         ToolAnnotations::with_title("Read workspace source")
@@ -5586,6 +5663,7 @@ fn read_workspace_source_tool() -> Tool {
     strip_rust_numeric_formats(Arc::make_mut(&mut tool.input_schema));
     if let Some(output_schema) = tool.output_schema.as_mut() {
         strip_rust_numeric_formats(Arc::make_mut(output_schema));
+        strip_workspace_addon_identity(Arc::make_mut(output_schema));
     }
     tool
 }
@@ -6497,6 +6575,45 @@ fn strip_rust_numeric_formats(schema: &mut Map<String, Value>) {
     }
 }
 
+fn strip_workspace_addon_identity(schema: &mut Map<String, Value>) {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.remove("addonGuid");
+        properties.remove("addonGuids");
+        properties.remove("addonLabel");
+        properties.remove("totalsByAddon");
+        properties.remove("sourceReadFailuresByAddon");
+        properties.remove("sourceReadMsByAddon");
+    }
+    if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
+        required.retain(|value| {
+            !matches!(
+                value.as_str(),
+                Some(
+                    "addonGuid"
+                        | "addonGuids"
+                        | "addonLabel"
+                        | "totalsByAddon"
+                        | "sourceReadFailuresByAddon"
+                        | "sourceReadMsByAddon"
+                )
+            )
+        });
+    }
+    for value in schema.values_mut() {
+        match value {
+            Value::Object(nested) => strip_workspace_addon_identity(nested),
+            Value::Array(items) => {
+                for item in items {
+                    if let Value::Object(nested) = item {
+                        strip_workspace_addon_identity(nested);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn empty_object_schema() -> Map<String, Value> {
     json!({
         "type": "object",
@@ -6566,7 +6683,9 @@ fn tool_failure(
 mod tests {
     use super::{
         capture_tool_result, game_data_status_tool, inspect_game_data_symbol_tool,
-        regular_polygon_points, render_api_contracts, render_api_reference, tool_error,
+        read_game_data_source_tool, read_workspace_source_tool, regular_polygon_points,
+        render_api_contracts, render_api_reference, search_game_data_symbols_tool,
+        search_workspace_symbols_tool, search_workspace_text_tool, tool_error,
         workbench_add_component_tool, workbench_capture_window_tool,
         workbench_convert_shape_points_tool, workbench_create_prefab_tool,
         workbench_duplicate_entity_tool, workbench_edit_spline_tool,
@@ -6940,6 +7059,48 @@ mod tests {
             !reference.contains("\"format\": \"uint"),
             "public JSON Schema must not expose Rust-only integer format hints"
         );
+    }
+
+    #[test]
+    fn addon_identity_is_exposed_only_by_game_data_tool_schemas() {
+        let game_search = serde_json::to_value(
+            search_game_data_symbols_tool()
+                .output_schema
+                .expect("game search output schema"),
+        )
+        .unwrap()
+        .to_string();
+        let workspace_search = serde_json::to_value(
+            search_workspace_symbols_tool()
+                .output_schema
+                .expect("workspace search output schema"),
+        )
+        .unwrap()
+        .to_string();
+        assert!(game_search.contains("addonGuid"));
+        assert!(!workspace_search.contains("addonGuid"));
+        assert!(!workspace_search.contains("addonLabel"));
+        assert!(!workspace_search.contains("totalsByAddon"));
+
+        let workspace_text = serde_json::to_value(
+            search_workspace_text_tool()
+                .output_schema
+                .expect("workspace text output schema"),
+        )
+        .unwrap()
+        .to_string();
+        assert!(!workspace_text.contains("totalsByAddon"));
+        assert!(!workspace_text.contains("sourceReadFailuresByAddon"));
+        assert!(!workspace_text.contains("sourceReadMsByAddon"));
+
+        let game_read = serde_json::to_value(read_game_data_source_tool().input_schema)
+            .unwrap()
+            .to_string();
+        let workspace_read = serde_json::to_value(read_workspace_source_tool().input_schema)
+            .unwrap()
+            .to_string();
+        assert!(game_read.contains("addonGuid"));
+        assert!(!workspace_read.contains("addonGuid"));
     }
 
     #[test]

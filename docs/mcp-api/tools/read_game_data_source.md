@@ -12,6 +12,12 @@ Read bounded verbatim source evidence from an exact logical Game Data path retur
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "addonGuid": {
+      "description": "Exact add-on GUID copied from a Game Data search or inspection readSourceInput handoff.",
+      "maxLength": 16,
+      "minLength": 16,
+      "type": "string"
+    },
     "catalogueRevision": {
       "maxLength": 256,
       "minLength": 1,
@@ -39,6 +45,7 @@ Read bounded verbatim source evidence from an exact logical Game Data path retur
   },
   "required": [
     "catalogueRevision",
+    "addonGuid",
     "relativePath"
   ],
   "type": "object"
@@ -51,6 +58,9 @@ Read bounded verbatim source evidence from an exact logical Game Data path retur
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "addonGuid": {
+      "type": "string"
+    },
     "catalogueRevision": {
       "type": "string"
     },
@@ -81,6 +91,7 @@ Read bounded verbatim source evidence from an exact logical Game Data path retur
   },
   "required": [
     "catalogueRevision",
+    "addonGuid",
     "relativePath",
     "startLine",
     "endLine",

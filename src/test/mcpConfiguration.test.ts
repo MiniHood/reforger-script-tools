@@ -9,43 +9,52 @@ suite('MCP configuration', () => {
 	test('builds a stable launch independent of a running VS Code process', () => {
 		const launch = buildMcpLaunchConfiguration({
 			serverPath: 'C:\\Extensions\\reforger_language_server.exe',
-			indexCache: 'C:\\Storage\\addon-indexes\\58D0FB3206B6F859\\symbols.bin',
+			addonSourceInventory: 'C:\\Storage\\addon-sources\\workbench-graph-v1.json',
+			addonIndexStorage: 'C:\\Storage\\addon-indexes',
 		});
 
 		assert.deepStrictEqual(launch, {
 			command: 'C:\\Extensions\\reforger_language_server.exe',
 			args: [
 				'mcp',
-				'--index-cache',
-				'C:\\Storage\\addon-indexes\\58D0FB3206B6F859\\symbols.bin',
+				'--addon-source-inventory',
+				'C:\\Storage\\addon-sources\\workbench-graph-v1.json',
+				'--addon-index-storage',
+				'C:\\Storage\\addon-indexes',
 			],
 		});
 	});
 
-	test('uses only the parser-owned Game Data index cache', () => {
+	test('uses the authoritative loaded add-on inventory and parser-owned index storage', () => {
 		const launch = buildMcpLaunchConfiguration({
 			serverPath: '/extension/reforger_language_server',
-			indexCache: '/storage/addon-indexes/58D0FB3206B6F859/symbols.bin',
+			addonSourceInventory: '/storage/addon-sources/workbench-graph-v1.json',
+			addonIndexStorage: '/storage/addon-indexes',
 		});
 
 		assert.deepStrictEqual(launch.args, [
 			'mcp',
-			'--index-cache',
-			'/storage/addon-indexes/58D0FB3206B6F859/symbols.bin',
+			'--addon-source-inventory',
+			'/storage/addon-sources/workbench-graph-v1.json',
+			'--addon-index-storage',
+			'/storage/addon-indexes',
 		]);
 	});
 
 	test('passes discovered add-on script roots to workspace semantic search', () => {
 		const launch = buildMcpLaunchConfiguration({
 			serverPath: '/extension/reforger_language_server',
-			indexCache: '/storage/index.bin',
+			addonSourceInventory: '/storage/graph.json',
+			addonIndexStorage: '/storage/addon-indexes',
 			workspaceScripts: ['/projects/MyAddon/Scripts'],
 		});
 
 		assert.deepStrictEqual(launch.args, [
 			'mcp',
-			'--index-cache',
-			'/storage/index.bin',
+			'--addon-source-inventory',
+			'/storage/graph.json',
+			'--addon-index-storage',
+			'/storage/addon-indexes',
 			'--workspace-scripts',
 			'/projects/MyAddon/Scripts',
 		]);
@@ -75,11 +84,13 @@ suite('MCP configuration', () => {
 	test('regenerates configuration with the current packaged runtime after an extension upgrade', () => {
 		const previous = renderCodexMcpConfiguration(buildMcpLaunchConfiguration({
 			serverPath: 'C:\\Users\\Gray\\.vscode\\extensions\\burn0ut7.reforger-script-tools-1.0.1\\dist\\server\\win32-x64\\reforger_language_server.exe',
-			indexCache: 'C:\\Storage\\index-cache.bin',
+			addonSourceInventory: 'C:\\Storage\\graph.json',
+			addonIndexStorage: 'C:\\Storage\\addon-indexes',
 		}));
 		const current = renderCodexMcpConfiguration(buildMcpLaunchConfiguration({
 			serverPath: 'C:\\Users\\Gray\\.vscode\\extensions\\burn0ut7.reforger-script-tools-1.0.2\\dist\\server\\win32-x64\\reforger_language_server.exe',
-			indexCache: 'C:\\Storage\\index-cache.bin',
+			addonSourceInventory: 'C:\\Storage\\graph.json',
+			addonIndexStorage: 'C:\\Storage\\addon-indexes',
 		}));
 
 		assert.doesNotMatch(current, /1\.0\.1/);

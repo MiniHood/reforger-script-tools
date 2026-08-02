@@ -7,8 +7,8 @@ use crate::game_data_research::{
     GameDataRelationshipPage, GameDataRelationshipRequest, GameDataResearchError,
 };
 use crate::game_data_search::{
-    search_workspace, GameDataSearchError, GameDataSearchPage, GameDataSearchRequest,
-    SourceLineStarts,
+    search_workspace, GameDataAddonMap, GameDataSearchError, GameDataSearchPage,
+    GameDataSearchRequest, SourceLineStarts,
 };
 use crate::index::{SourceFileId, SymbolIndex};
 use crate::index_build::{
@@ -120,6 +120,8 @@ impl WorkspaceCatalogue {
                 let content = snapshot.sources.get(&file.id)?.clone();
                 Some(TextSource {
                     relative_path,
+                    addon_guid: None,
+                    addon_label: None,
                     content,
                 })
             })
@@ -129,6 +131,7 @@ impl WorkspaceCatalogue {
                 files_considered: snapshot.index.files().len(),
                 sources,
                 source_read_failures: 0,
+                ..TextSearchCorpus::default()
             },
             control,
             &snapshot.revision,
@@ -157,6 +160,7 @@ impl WorkspaceCatalogue {
         inspect(
             &snapshot.index,
             &snapshot.starts,
+            &GameDataAddonMap::new(),
             control,
             &snapshot.revision,
             symbol_ref,
@@ -172,6 +176,7 @@ impl WorkspaceCatalogue {
         let snapshot = self.snapshot(control)?;
         read_source(
             &snapshot.index,
+            &GameDataAddonMap::new(),
             control,
             &snapshot.revision,
             &snapshot.sources,
@@ -189,6 +194,7 @@ impl WorkspaceCatalogue {
         list_members(
             &snapshot.index,
             &snapshot.starts,
+            &GameDataAddonMap::new(),
             control,
             &snapshot.revision,
             request,
@@ -322,6 +328,7 @@ mod tests {
                 &control,
                 TextSearchRequest {
                     query: "void Run".to_string(),
+                    addon_guids: None,
                     options: TextSearchOptions::default(),
                     limit: Some(10),
                     cursor: None,

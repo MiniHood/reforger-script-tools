@@ -22,6 +22,17 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "addonGuids": {
+      "description": "Canonical loaded add-on GUIDs returned by game_data_status. Omit to search every available add-on; an empty list is invalid.",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": [
+        "array",
+        "null"
+      ]
+    },
     "cursor": {
       "maxLength": 2048,
       "type": [
@@ -92,6 +103,12 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
   "$defs": {
     "AppliedFilters": {
       "properties": {
+        "addonGuids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "kinds": {
           "items": {
             "type": "string"
@@ -116,6 +133,7 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
         }
       },
       "required": [
+        "addonGuids",
         "kinds",
         "sourceCategories",
         "limit"
@@ -124,6 +142,18 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
     },
     "GameDataSearchHit": {
       "properties": {
+        "addonGuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "addonLabel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "declarationRange": {
           "$ref": "#/$defs/SourceLineRange"
         },
@@ -209,6 +239,12 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
     },
     "ReadSourceInput": {
       "properties": {
+        "addonGuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "catalogueRevision": {
           "type": "string"
         },
@@ -275,6 +311,13 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
     "total": {
       "minimum": 0,
       "type": "integer"
+    },
+    "totalsByAddon": {
+      "additionalProperties": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "type": "object"
     }
   },
   "required": [
@@ -283,6 +326,7 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
     "appliedFilters",
     "returned",
     "total",
+    "totalsByAddon",
     "results"
   ],
   "type": "object"

@@ -77,8 +77,14 @@ offset order before scanning. Individual navigation remains a one-entry lazy
 read; full-text search does not repeat navigation-time PAC inspection for every
 script. The matcher uses case-insensitive literal substrings by default and
 accepts explicit match-case, whole-word, and regular-expression options. Those
-options are part of both the bounded result-cache identity and opaque paging
-cursor, so pages from different matching modes cannot be combined.
+options and the selected add-on GUIDs are part of both the bounded result-cache
+identity and opaque paging cursor, so pages from different matching modes or
+scopes cannot be combined. Semantic Game Data search follows the same scope
+identity: candidates are filtered by loaded add-on GUID before ranking, opaque
+symbol references include that GUID, and Game Data source reads require the
+returned GUID for every handoff so path uniqueness is never assumed. Layered
+queries iterate the immutable child
+indexes directly rather than relying on an eagerly flattened symbol allocation.
 The later authoritative Workbench graph validates the exact packed and loose
 sources and atomically replaces only changed instances. Unchanged validation
 inspects bounded PAC catalogues and hashes only selected compressed script

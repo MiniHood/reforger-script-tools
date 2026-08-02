@@ -5,9 +5,8 @@ use super::{
     ServerEventSender,
 };
 use crate::addon_sources::{
-    load_all_cached_addon_indexes,
-    load_cached_loaded_addon_indexes, load_or_build_dependency_addon_indexes,
-    load_or_build_loaded_addon_indexes,
+    load_all_cached_addon_indexes, load_cached_loaded_addon_indexes,
+    load_or_build_dependency_addon_indexes, load_or_build_loaded_addon_indexes,
     loaded_addon_sources_are_current, loaded_workbench_graph_matches_scope, AddonScopeAuthority,
     LoadedAddonIndexResult, LoadedAddonInstanceIdentity,
 };
@@ -571,11 +570,10 @@ impl ExternalIndexHandle {
         let indexed = Arc::new(build_workspace_file_index(&root, &normalized_path, &text));
         let symbol_count = indexed.contribution.symbols.len();
         let parse_diagnostics = indexed.parse_diagnostics;
-        self.workspace_sender()
-            .submit(WorkspaceChange {
-                path: normalized_path,
-                replacement: Some(indexed),
-            })?;
+        self.workspace_sender().submit(WorkspaceChange {
+            path: normalized_path,
+            replacement: Some(indexed),
+        })?;
         Ok(Some((symbol_count, parse_diagnostics)))
     }
 
@@ -584,19 +582,19 @@ impl ExternalIndexHandle {
             return None;
         }
         let normalized_path = normalize_workspace_path(path);
-        Some(self
-            .workspace_sender()
-            .submit(WorkspaceChange {
-                path: normalized_path,
-                replacement: None,
-            })
-            .is_ok())
+        Some(
+            self.workspace_sender()
+                .submit(WorkspaceChange {
+                    path: normalized_path,
+                    replacement: None,
+                })
+                .is_ok(),
+        )
     }
 
     fn workspace_sender(&self) -> &WorkspaceUpdateSender {
-        self.workspace_updates.get_or_init(|| {
-            start_workspace_update_worker(self.state.clone(), None)
-        })
+        self.workspace_updates
+            .get_or_init(|| start_workspace_update_worker(self.state.clone(), None))
     }
 
     fn accept_workspace_sequence(&self, path: &Path, sequence: u64) -> bool {
@@ -612,7 +610,6 @@ impl ExternalIndexHandle {
         state.workspace_last_sequences.insert(key, sequence);
         true
     }
-
 }
 
 fn publish_loaded_addon_result(
@@ -660,9 +657,7 @@ pub(crate) fn start_external_index(
     event_sender: Option<ServerEventSender>,
 ) -> ExternalIndexHandle {
     let can_load_game_data = match options.external_index_mode {
-        ExternalIndexMode::All => {
-            options.addon_index_storage.is_some()
-        }
+        ExternalIndexMode::All => options.addon_index_storage.is_some(),
         ExternalIndexMode::Loaded => {
             options.addon_source_inventory.is_some() || !options.dependency_project_files.is_empty()
         }
@@ -709,7 +704,10 @@ pub(crate) fn start_external_index(
     }));
     let workspace_updates = Arc::new(OnceLock::new());
     workspace_updates
-        .set(start_workspace_update_worker(state.clone(), event_sender.clone()))
+        .set(start_workspace_update_worker(
+            state.clone(),
+            event_sender.clone(),
+        ))
         .expect("workspace update worker is initialized once");
     let handle = ExternalIndexHandle {
         control: control.clone(),
@@ -773,13 +771,11 @@ fn start_workspace_update_worker(
         }),
     };
     let worker_queue = sender.clone();
-    thread::spawn(move || {
-        loop {
-            let changes = worker_queue.take_batch();
-            if publish_workspace_changes(&state, &changes) {
-                if let Some(sender) = &event_sender {
-                    let _ = sender.send(ServerEvent::ExternalIndexChanged);
-                }
+    thread::spawn(move || loop {
+        let changes = worker_queue.take_batch();
+        if publish_workspace_changes(&state, &changes) {
+            if let Some(sender) = &event_sender {
+                let _ = sender.send(ServerEvent::ExternalIndexChanged);
             }
         }
     });
@@ -922,6 +918,7 @@ fn log_loaded_addon_index_diagnostics(logger: &LspLogger, result: &LoadedAddonIn
 fn empty_loaded_addon_index_result() -> LoadedAddonIndexResult {
     LoadedAddonIndexResult {
         index: Arc::new(SymbolIndex::layered(Vec::new())),
+        source_line_starts: BTreeMap::new(),
         scope_authority: crate::addon_sources::AddonScopeAuthority::WorkbenchLoaded,
         summary: RuntimeIndexSummary::default(),
         rebuilt_instances: 0,
@@ -930,6 +927,7 @@ fn empty_loaded_addon_index_result() -> LoadedAddonIndexResult {
         workspace_excluded_instances: 0,
         timings: Default::default(),
         instances: Vec::new(),
+        unavailable_instances: Vec::new(),
         scope_instances: Vec::new(),
     }
 }
@@ -1041,40 +1039,40 @@ fn run_external_index_thread(
             ))
         }
         ExternalIndexMode::Loaded if addon_source_inventory.is_none() => None,
-        ExternalIndexMode::Loaded => {
-            addon_source_inventory.map(|inventory_path| {
-                for phase in ["inventory-load-start", "pac-inspect-start"] {
-                    if let Some(sender) = &event_sender {
-                        let _ = sender.send(ServerEvent::ExternalIndexProgress {
-                            phase: phase.to_string(),
-                        });
-                    }
-                }
-                let result = addon_index_storage
-                    .ok_or_else(|| "add-on index storage is unavailable".to_string())
-                    .and_then(|storage| load_or_build_loaded_addon_indexes(
-                        &inventory_path,
-                        &storage,
-                        &workspace_roots,
-                        &control,
-                    ));
+        ExternalIndexMode::Loaded => addon_source_inventory.map(|inventory_path| {
+            for phase in ["inventory-load-start", "pac-inspect-start"] {
                 if let Some(sender) = &event_sender {
-                    for phase in ["inventory-load-end", "pac-inspect-end"] {
-                        let _ = sender.send(ServerEvent::ExternalIndexProgress {
-                            phase: phase.to_string(),
-                        });
-                    }
-                    let phase = match &result {
-                        Ok(result) => index_phase(result.scope_authority),
-                        Err(_) => "addon-cache-failed",
-                    };
                     let _ = sender.send(ServerEvent::ExternalIndexProgress {
                         phase: phase.to_string(),
                     });
                 }
-                result
-            })
-        }
+            }
+            let result = addon_index_storage
+                .ok_or_else(|| "add-on index storage is unavailable".to_string())
+                .and_then(|storage| {
+                    load_or_build_loaded_addon_indexes(
+                        &inventory_path,
+                        &storage,
+                        &workspace_roots,
+                        &control,
+                    )
+                });
+            if let Some(sender) = &event_sender {
+                for phase in ["inventory-load-end", "pac-inspect-end"] {
+                    let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                        phase: phase.to_string(),
+                    });
+                }
+                let phase = match &result {
+                    Ok(result) => index_phase(result.scope_authority),
+                    Err(_) => "addon-cache-failed",
+                };
+                let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                    phase: phase.to_string(),
+                });
+            }
+            result
+        }),
     };
     let has_game_data_source = game_data_result.is_some();
     let game_data_ready_ms = game_data_start.elapsed().as_millis();

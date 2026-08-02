@@ -2,8 +2,8 @@ use crate::ast::{AstSourceFile, Expression};
 use crate::game_data_inspection::{resolve_symbol_ref, GameDataInspectionError};
 use crate::game_data_search::{
     compact_signature, documentation_summary, encode_symbol_ref, kind_name, logical_path,
-    owner_name, qualify, ReadSourceInput, SourceLineRange, SourceLineStarts, MAX_CURSOR_BYTES,
-    MAX_LIMIT,
+    owner_name, qualify, GameDataAddonMap, ReadSourceInput, SourceLineRange, SourceLineStarts,
+    MAX_CURSOR_BYTES, MAX_LIMIT,
 };
 use crate::index::{GlobalSymbolId, SourceFileId, SymbolIndex};
 use crate::index_build::IndexBuildControl;
@@ -440,7 +440,7 @@ pub fn search_examples(
     )?;
     let example_topic = example_topic(&topic, subtopic.as_deref())?;
     let mut indexed_names = BTreeSet::new();
-    for (position, symbol) in index.symbols().iter().enumerate() {
+    for (position, symbol) in index.symbol_iter().enumerate() {
         if position % 128 == 0 {
             check_research_control(control)?;
         }
@@ -576,11 +576,12 @@ pub fn search_examples(
 pub fn list_members(
     index: &SymbolIndex,
     starts: &BTreeMap<SourceFileId, SourceLineStarts>,
+    addon_map: &GameDataAddonMap,
     control: &IndexBuildControl,
     revision: &str,
     request: GameDataMemberRequest,
 ) -> Result<GameDataMemberPage, GameDataResearchError> {
-    let owner = resolve_symbol_ref(index, control, revision, &request.symbol_ref)
+    let owner = resolve_symbol_ref(index, addon_map, control, revision, &request.symbol_ref)
         .map_err(GameDataResearchError::Inspection)?;
     let kinds = canonical_member_kinds(request.kinds.as_deref())?;
     let limit = request.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
@@ -621,7 +622,7 @@ pub fn list_members(
     });
     let results = selected
         .into_iter()
-        .map(|(id, symbol)| project_member(index, starts, revision, id, symbol))
+        .map(|(id, symbol)| project_member(index, starts, addon_map, revision, id, symbol))
         .collect();
     Ok(GameDataMemberPage {
         source: "language-engine".to_string(),
@@ -643,8 +644,14 @@ pub fn query_relationships(
     revision: &str,
     request: GameDataRelationshipRequest,
 ) -> Result<GameDataRelationshipPage, GameDataResearchError> {
-    let target = resolve_symbol_ref(index, control, revision, &request.symbol_ref)
-        .map_err(GameDataResearchError::Inspection)?;
+    let target = resolve_symbol_ref(
+        index,
+        &GameDataAddonMap::new(),
+        control,
+        revision,
+        &request.symbol_ref,
+    )
+    .map_err(GameDataResearchError::Inspection)?;
     let kinds = canonical_relationship_kinds(request.relationship_kinds.as_deref())?;
     let limit = request.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let offset = cursor_offset(
@@ -713,6 +720,7 @@ pub fn query_relationships(
 fn project_member(
     index: &SymbolIndex,
     starts: &BTreeMap<SourceFileId, SourceLineStarts>,
+    addon_map: &GameDataAddonMap,
     revision: &str,
     id: GlobalSymbolId,
     symbol: &crate::index::IndexedSymbol,
@@ -724,6 +732,9 @@ fn project_member(
     let lines = starts.get(&id.file_id).cloned().unwrap_or_default();
     let symbol_ref = encode_symbol_ref(
         revision,
+        addon_map
+            .get(&id.file_id)
+            .map(|identity| identity.guid.as_str()),
         &path,
         kind_name(symbol.kind),
         &qualified_name,
@@ -735,6 +746,9 @@ fn project_member(
         },
         read_source_input: ReadSourceInput {
             catalogue_revision: revision.to_string(),
+            addon_guid: addon_map
+                .get(&id.file_id)
+                .map(|identity| identity.guid.clone()),
             relative_path: path.clone(),
             start_line: lines.range(symbol.span.start, symbol.span.end).start_line,
         },
@@ -788,7 +802,7 @@ fn collect_structural_relationships(
             let Some(name) = symbol.name.as_deref() else {
                 return Ok(());
             };
-            for candidate in index.symbols() {
+            for candidate in index.symbol_iter() {
                 check_research_control(control)?;
                 if candidate.kind != SymbolKind::Class
                     || candidate.detail.base_type.as_deref() != Some(name)
@@ -839,7 +853,7 @@ fn collect_override_relationships(
         || (requested.iter().any(|kind| kind == "implementation")
             && target_symbol.callable_form != Some(crate::model::CallableForm::Implementation))
     {
-        for candidate in index.symbols() {
+        for candidate in index.symbol_iter() {
             check_research_control(control)?;
             if candidate.kind != SymbolKind::Method
                 || candidate.name.as_deref() != Some(target_name)
@@ -988,6 +1002,7 @@ fn collect_resolved_usages(
                     evidence: resolution.reason.as_str().to_string(),
                     read_source_input: ReadSourceInput {
                         catalogue_revision: revision.to_string(),
+                        addon_guid: None,
                         relative_path: path.clone(),
                         start_line: range.start_line,
                     },
@@ -1097,8 +1112,7 @@ fn map_local_symbol(
 
 fn containing_callable(index: &SymbolIndex, span: TextSpan) -> Option<GlobalSymbolId> {
     index
-        .symbols()
-        .iter()
+        .symbol_iter()
         .filter(|symbol| {
             matches!(
                 symbol.kind,
@@ -1132,6 +1146,7 @@ fn project_declaration_relationship(
         relationship_kind: relationship_kind.to_string(),
         symbol_ref: Some(encode_symbol_ref(
             revision,
+            None,
             &path,
             kind_name(symbol.kind),
             &qualified,
@@ -1150,6 +1165,7 @@ fn project_declaration_relationship(
         evidence: evidence.to_string(),
         read_source_input: ReadSourceInput {
             catalogue_revision: revision.to_string(),
+            addon_guid: None,
             relative_path: path,
             start_line: range.start_line,
         },
@@ -1710,6 +1726,7 @@ mod tests {
             evidence: "test".to_string(),
             read_source_input: ReadSourceInput {
                 catalogue_revision: "gd1:test".to_string(),
+                addon_guid: None,
                 relative_path: "Game/example.c".to_string(),
                 start_line: 1,
             },

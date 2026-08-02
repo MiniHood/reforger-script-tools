@@ -22,6 +22,17 @@ Explicit bounded full-text search over readable Reforger Game Data source files.
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "addonGuids": {
+      "description": "Canonical loaded add-on GUIDs returned by game_data_status. Omit to search every available add-on; an empty list is invalid.",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": [
+        "array",
+        "null"
+      ]
+    },
     "cursor": {
       "maxLength": 2048,
       "type": [
@@ -96,6 +107,12 @@ Explicit bounded full-text search over readable Reforger Game Data source files.
     },
     "TextReadInput": {
       "properties": {
+        "addonGuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "catalogueRevision": {
           "type": "string"
         },
@@ -116,6 +133,18 @@ Explicit bounded full-text search over readable Reforger Game Data source files.
     },
     "TextSearchHit": {
       "properties": {
+        "addonGuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "addonLabel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "excerpt": {
           "type": "string"
         },
@@ -166,6 +195,20 @@ Explicit bounded full-text search over readable Reforger Game Data source files.
         "sourceReadFailures": {
           "minimum": 0,
           "type": "integer"
+        },
+        "sourceReadFailuresByAddon": {
+          "additionalProperties": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "sourceReadMsByAddon": {
+          "additionalProperties": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "object"
         }
       },
       "required": [
@@ -173,6 +216,8 @@ Explicit bounded full-text search over readable Reforger Game Data source files.
         "filesRead",
         "filesWithMatches",
         "sourceReadFailures",
+        "sourceReadFailuresByAddon",
+        "sourceReadMsByAddon",
         "matchesFound",
         "scanMs"
       ],
@@ -181,6 +226,12 @@ Explicit bounded full-text search over readable Reforger Game Data source files.
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "addonGuids": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "catalogueRevision": {
       "type": "string"
     },
@@ -210,6 +261,13 @@ Explicit bounded full-text search over readable Reforger Game Data source files.
       "minimum": 0,
       "type": "integer"
     },
+    "totalsByAddon": {
+      "additionalProperties": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "type": "object"
+    },
     "truncated": {
       "type": "boolean"
     }
@@ -217,8 +275,10 @@ Explicit bounded full-text search over readable Reforger Game Data source files.
   "required": [
     "catalogueRevision",
     "query",
+    "addonGuids",
     "returned",
     "total",
+    "totalsByAddon",
     "truncated",
     "stats",
     "results"

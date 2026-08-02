@@ -6,6 +6,25 @@ import { searchLimits } from '../extensionConfig/search';
 
 export type SearchSource = 'workspace' | 'gameData' | 'wiki';
 export type SearchMode = 'semantic' | 'text';
+export const workspaceScopeId = 'workspace';
+export const wikiScopeId = 'wiki';
+
+export interface SearchScopeSource {
+	id: string;
+	label: string;
+	detail: string;
+	kind: 'workspace' | 'addon' | 'wiki';
+	pinned: boolean;
+	defaultSelected: boolean;
+}
+
+export interface SearchScopeDiscovery {
+	scopeRevision?: string;
+	scopeAuthority?: string;
+	discoveryMs: number;
+	unavailableScopeIds: string[];
+	sources: SearchScopeSource[];
+}
 export interface TextSearchOptions {
 	matchCase: boolean;
 	matchWholeWord: boolean;
@@ -58,6 +77,8 @@ export interface SearchHit {
 	selectionStartLine?: number;
 	selectionEndLine?: number;
 	readInput: Record<string, unknown>;
+	addonGuid?: string;
+	addonLabel?: string;
 	textMatchStart?: number;
 	textMatchLength?: number;
 }
@@ -83,6 +104,7 @@ export interface SearchSourcePerformance {
 	firstPage: number | undefined;
 	lastPage: number | undefined;
 	cacheSize: number;
+	addonTotals?: Record<string, number>;
 	textStats?: Record<string, unknown>;
 }
 
@@ -99,6 +121,8 @@ export interface SearchPerformance {
 	pageSize: number;
 	sourcePageSize: number;
 	sources: SearchSourcePerformance[];
+	selectedScopeIds: string[];
+	addonGuids: string[];
 }
 
 export interface SearchDocument {
@@ -205,7 +229,8 @@ export function sourceMatchRange(text: string, title: string): SourceMatchRange 
 
 export interface McpSearchClientOptions {
 	serverPath: string;
-	indexCache: string;
+	addonSourceInventory: string;
+	addonIndexStorage: string;
 	workspaceScripts: string[];
 	officialWikiRoot: string;
 }
@@ -241,6 +266,7 @@ interface CachedSearchPage {
 	total: number;
 	nextCursor?: string;
 	stats?: Record<string, unknown>;
+	addonTotals?: Record<string, number>;
 }
 
 interface SearchPerformanceTrace {
@@ -301,6 +327,8 @@ function finishSearchPerformance(
 	sources: readonly SearchSource[],
 	mode: SearchMode,
 	textOptions: TextSearchOptions,
+	selectedScopeIds: readonly string[],
+	addonGuids: readonly string[],
 ): SearchPerformance {
 	return {
 		totalMs: performance.now() - trace.startedAt,
@@ -315,6 +343,8 @@ function finishSearchPerformance(
 		pageSize,
 		sourcePageSize,
 		sources: sources.map(source => sourcePerformanceFor(trace, source)),
+		selectedScopeIds: [...selectedScopeIds],
+		addonGuids: [...addonGuids],
 	};
 }
 
@@ -330,7 +360,7 @@ export class McpSearchClient {
 
 	public async search(
 		query: string,
-		sources: SearchSource[],
+		selectedScopeIds: string[],
 		pageSize: number,
 		page: number,
 		symbolKinds?: readonly SearchSymbolKind[],
@@ -342,18 +372,28 @@ export class McpSearchClient {
 		trace.startupMs = performance.now() - trace.startedAt;
 		const normalizedPageSize = Math.min(100, Math.max(1, Number.isFinite(pageSize) ? Math.floor(pageSize) : 25));
 		const requestedPage = Math.min(maxSearchPages, Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1));
+		const normalizedScopes = [...new Set(selectedScopeIds)];
+		const addonGuids = normalizedScopes
+			.filter(value => /^[0-9a-f]{16}$/i.test(value))
+			.map(value => value.toUpperCase())
+			.sort();
+		const sources: SearchSource[] = [
+			...(normalizedScopes.includes(workspaceScopeId) ? ['workspace' as const] : []),
+			...(addonGuids.length > 0 ? ['gameData' as const] : []),
+			...(normalizedScopes.includes(wikiScopeId) ? ['wiki' as const] : []),
+		];
 		const searchableSources = mode === 'semantic'
 			? sources.filter(source => source !== 'wiki')
 			: sources;
 		if (searchableSources.length === 0) {
-			return { results: [], warnings: [], total: 0, totalBySource: {}, page: 1, pageSize: normalizedPageSize, performance: finishSearchPerformance(trace, 1, normalizedPageSize, [], mode, textOptions) };
+			return { results: [], warnings: [], total: 0, totalBySource: {}, page: 1, pageSize: normalizedPageSize, performance: finishSearchPerformance(trace, 1, normalizedPageSize, [], mode, textOptions, normalizedScopes, addonGuids) };
 		}
 		const initialSearchStartedAt = performance.now();
 		const responses = await Promise.all(searchableSources.map(async source => {
 			const sourceTrace = sourcePerformanceFor(trace, source);
 			const startedAt = performance.now();
 			try {
-				const value = await this.searchPage(query, source, sourcePageSize, 1, symbolKinds, trace, mode, textOptions);
+				const value = await this.searchPage(query, source, sourcePageSize, 1, addonGuids, symbolKinds, trace, mode, textOptions);
 				if (value.stats) {
 					sourceTrace.textStats = value.stats;
 				}
@@ -392,7 +432,7 @@ export class McpSearchClient {
 			const sourceStart = Math.max(0, pageStart - sourceOffset);
 			const sourceEnd = Math.min(sourceTotal, pageEnd - sourceOffset);
 			if (response.value && sourceStart < sourceEnd) {
-				results.push(...await this.sourceRange(query, response.source, sourceStart, sourceEnd, symbolKinds, trace, mode, textOptions));
+				results.push(...await this.sourceRange(query, response.source, sourceStart, sourceEnd, addonGuids, symbolKinds, trace, mode, textOptions));
 			}
 			sourceOffset += sourceTotal;
 		}
@@ -405,7 +445,47 @@ export class McpSearchClient {
 			totalBySource,
 			page: normalizedPage,
 			pageSize: normalizedPageSize,
-			performance: finishSearchPerformance(trace, requestedPage, normalizedPageSize, searchableSources, mode, textOptions),
+			performance: finishSearchPerformance(trace, requestedPage, normalizedPageSize, searchableSources, mode, textOptions, normalizedScopes, addonGuids),
+		};
+	}
+
+	public async discoverScope(): Promise<SearchScopeDiscovery> {
+		const startedAt = performance.now();
+		await this.start();
+		const status = asRecord(await this.callTool('game_data_status', {}));
+		const addons = Array.isArray(status.addons) ? status.addons : [];
+		const unavailableScopeIds = addons.flatMap(value => {
+			const addon = asRecord(value);
+			const id = asString(addon.addonGuid, '').toUpperCase();
+			return /^[0-9A-F]{16}$/.test(id) && addon.available === false ? [id] : [];
+		});
+		const addonSources = addons.flatMap(value => {
+			const addon = asRecord(value);
+			const id = asString(addon.addonGuid, '').toUpperCase();
+			if (!/^[0-9A-F]{16}$/.test(id) || addon.available === false) {
+				return [];
+			}
+			const title = asString(addon.title, asString(addon.displayId, id));
+			const scriptCount = asNumber(addon.scriptCount, 0);
+			return [{
+				id,
+				label: title,
+				detail: `${scriptCount.toLocaleString()} scripts`,
+				kind: 'addon' as const,
+				pinned: addon.pinned === true,
+				defaultSelected: addon.defaultSelected === true,
+			}];
+		});
+		return {
+			scopeRevision: asOptionalString(status.scopeRevision),
+			scopeAuthority: asOptionalString(status.scopeAuthority),
+			discoveryMs: performance.now() - startedAt,
+			unavailableScopeIds,
+			sources: [
+				{ id: workspaceScopeId, label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true },
+				...addonSources,
+				{ id: wikiScopeId, label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: false, defaultSelected: true },
+			],
 		};
 	}
 
@@ -480,8 +560,10 @@ export class McpSearchClient {
 	private async startProcess(): Promise<void> {
 		const args = [
 			'mcp',
-			'--index-cache',
-			this.options.indexCache,
+			'--addon-source-inventory',
+			this.options.addonSourceInventory,
+			'--addon-index-storage',
+			this.options.addonIndexStorage,
 			'--official-wiki-root',
 			this.options.officialWikiRoot,
 			...this.options.workspaceScripts.flatMap(root => ['--workspace-scripts', root]),
@@ -527,6 +609,7 @@ export class McpSearchClient {
 		source: SearchSource,
 		start: number,
 		end: number,
+		addonGuids: readonly string[],
 		symbolKinds?: readonly SearchSymbolKind[],
 		trace?: SearchPerformanceTrace,
 		mode: SearchMode = 'semantic',
@@ -537,7 +620,7 @@ export class McpSearchClient {
 		const firstPageNumber = Math.floor(start / sourcePageSize) + 1;
 		const lastPageNumber = Math.floor((end - 1) / sourcePageSize) + 1;
 		for (let pageNumber = firstPageNumber; pageNumber <= lastPageNumber; pageNumber += 1) {
-			const page = await this.searchPage(query, source, sourcePageSize, pageNumber, symbolKinds, trace, mode, textOptions);
+			const page = await this.searchPage(query, source, sourcePageSize, pageNumber, addonGuids, symbolKinds, trace, mode, textOptions);
 			const pageStart = (pageNumber - 1) * sourcePageSize;
 			const resultStart = Math.max(0, start - pageStart);
 			const resultEnd = Math.min(page.results.length, end - pageStart);
@@ -559,13 +642,14 @@ export class McpSearchClient {
 		source: SearchSource,
 		pageSize: number,
 		page: number,
+		addonGuids: readonly string[],
 		symbolKinds?: readonly SearchSymbolKind[],
 		trace?: SearchPerformanceTrace,
 		mode: SearchMode = 'semantic',
 		textOptions: TextSearchOptions = defaultTextSearchOptions,
 	): Promise<CachedSearchPage> {
 		const sourceTrace = trace ? sourcePerformanceFor(trace, source) : undefined;
-		const cacheKey = `${mode}\u0000${source}\u0000${pageSize}\u0000${query}\u0000${symbolKinds?.join(',') ?? ''}\u0000${textOptions.matchCase}\u0000${textOptions.matchWholeWord}\u0000${textOptions.useRegex}`;
+		const cacheKey = `${mode}\u0000${source}\u0000${pageSize}\u0000${query}\u0000${addonGuids.join(',')}\u0000${symbolKinds?.join(',') ?? ''}\u0000${textOptions.matchCase}\u0000${textOptions.matchWholeWord}\u0000${textOptions.useRegex}`;
 		let pages = this.searchPageCaches.get(cacheKey);
 		if (!pages) {
 			if (this.searchPageCaches.size >= maxSearchPageCaches) {
@@ -589,11 +673,12 @@ export class McpSearchClient {
 		}
 		const usesCursor = mode === 'text' && source !== 'wiki';
 		if (usesCursor && page > 1 && !pages.has(page - 1)) {
-			await this.searchPage(query, source, pageSize, page - 1, symbolKinds, trace, mode, textOptions);
+			await this.searchPage(query, source, pageSize, page - 1, addonGuids, symbolKinds, trace, mode, textOptions);
 		}
 		const previousPage = usesCursor && page > 1 ? pages.get(page - 1) : undefined;
 		const argumentsValue: Record<string, unknown> = usesCursor ? {
 			query,
+			...(source === 'gameData' ? { addonGuids } : {}),
 			limit: pageSize,
 			matchCase: textOptions.matchCase,
 			matchWholeWord: textOptions.matchWholeWord,
@@ -601,6 +686,7 @@ export class McpSearchClient {
 			...(previousPage?.nextCursor ? { cursor: previousPage.nextCursor } : {}),
 		} : {
 			query,
+			...(source === 'gameData' ? { addonGuids } : {}),
 			limit: pageSize,
 			offset: (page - 1) * pageSize,
 			...(source !== 'wiki' && symbolKinds?.length ? { kinds: symbolKinds } : {}),
@@ -620,7 +706,13 @@ export class McpSearchClient {
 				? { nextCursor: value.nextCursor }
 				: {}),
 			...(mode === 'text' && value.stats && typeof value.stats === 'object' ? { stats: asRecord(value.stats) } : {}),
+			...(value.totalsByAddon && typeof value.totalsByAddon === 'object'
+				? { addonTotals: numberRecord(value.totalsByAddon) }
+				: {}),
 		};
+		if (sourceTrace && currentPage.addonTotals) {
+			sourceTrace.addonTotals = currentPage.addonTotals;
+		}
 		if (sourceTrace && mode === 'text' && currentPage.stats) {
 			sourceTrace.textStats = currentPage.stats;
 		}
@@ -772,11 +864,12 @@ function normalizeSymbolHit(source: SearchSource, hit: RecordValue, index: numbe
 	const documentation = typeof hit.documentationSummary === 'string' ? hit.documentationSummary : '';
 	const excerpt = documentation ? `${signature}\n\n${documentation}` : signature;
 	const readInput = asRecord(hit.readSourceInput);
+	const addonGuid = asOptionalString(hit.addonGuid);
 	if (!readInput.relativePath) {
 		return [];
 	}
 	return [{
-		id: `${source}-${index}-${asString(hit.symbolRef, name)}`,
+		id: `${source}-${addonGuid ? `${addonGuid}-` : ''}${index}-${asString(hit.symbolRef, name)}`,
 		source,
 		kind: 'symbol',
 		title: name,
@@ -788,6 +881,8 @@ function normalizeSymbolHit(source: SearchSource, hit: RecordValue, index: numbe
 		selectionStartLine: asNumber(asRecord(hit.selectionRange).startLine, line),
 		selectionEndLine: asNumber(asRecord(hit.selectionRange).endLine, line),
 		readInput,
+		...(addonGuid ? { addonGuid } : {}),
+		...(asOptionalString(hit.addonLabel) ? { addonLabel: asOptionalString(hit.addonLabel) } : {}),
 	}];
 }
 
@@ -798,12 +893,13 @@ function normalizeTextHit(source: SearchSource, hit: RecordValue, index: number)
 	const excerpt = asString(hit.excerpt, '');
 	const matchText = asString(hit.matchText, '');
 	const readInput = asRecord(hit.readSourceInput);
+	const addonGuid = asOptionalString(hit.addonGuid);
 	if (!readInput.relativePath) {
 		return [];
 	}
 	const matchStart = matchText ? excerpt.indexOf(matchText) : -1;
 	return [{
-		id: `${source}-text-${index}-${relativePath}-${startLine}`,
+		id: `${source}-text-${addonGuid ? `${addonGuid}-` : ''}${index}-${relativePath}-${startLine}`,
 		source,
 		kind: 'text',
 		title: matchText || 'Text match',
@@ -814,6 +910,8 @@ function normalizeTextHit(source: SearchSource, hit: RecordValue, index: number)
 		selectionStartLine: startLine,
 		selectionEndLine: asNumber(range.endLine, startLine),
 		readInput,
+		...(addonGuid ? { addonGuid } : {}),
+		...(asOptionalString(hit.addonLabel) ? { addonLabel: asOptionalString(hit.addonLabel) } : {}),
 		textMatchStart: matchStart >= 0 ? matchStart : asNumber(range.startCharacter, 0),
 		textMatchLength: matchText.length,
 	}];
@@ -856,8 +954,20 @@ function asString(value: unknown, fallback: string): string {
 	return typeof value === 'string' && value.length > 0 ? value : fallback;
 }
 
+function asOptionalString(value: unknown): string | undefined {
+	return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
 function asNumber(value: unknown, fallback: number): number {
 	return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function numberRecord(value: unknown): Record<string, number> {
+	const record = asRecord(value);
+	return Object.fromEntries(
+		Object.entries(record)
+			.filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1])),
+	);
 }
 
 function isWithinRoot(root: string, candidate: string): boolean {

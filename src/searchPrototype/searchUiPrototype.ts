@@ -2,7 +2,8 @@ import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import * as vscode from 'vscode';
 import { diagnostic, diagnosticsEnabled } from '../diagnostics/diagnostics';
-import { resolveBaseGameIndexCache } from '../gameData/baseGameIndexCache';
+import { gameDataStorage } from '../extensionConfig/gameData';
+import { languageClientIndexCache } from '../extensionConfig/languageClient';
 import { searchCommands, searchContext, searchLimits } from '../extensionConfig/search';
 import { provideLanguageServerSemanticTokens } from '../languageClient/languageClient';
 import { discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
@@ -124,6 +125,7 @@ async function handleMessage(
 			height: numberField(message.height),
 			devicePixelRatio: numberField(message.devicePixelRatio),
 		});
+		void publishSearchScope(context, active);
 		return;
 	}
 	if (message.type === 'webviewError') {
@@ -133,6 +135,10 @@ async function handleMessage(
 			line: numberField(message.line),
 			column: numberField(message.column),
 		});
+		return;
+	}
+	if (message.type === 'refreshScope') {
+		await refreshSearchScope(context, active);
 		return;
 	}
 	if (message.type === 'debugSnapshot') {
@@ -155,7 +161,7 @@ async function handleMessage(
 			message.query,
 			searchMode,
 			textOptions,
-			message.source,
+			message.scopeIds,
 			message.resultType,
 			numberField(message.page) ?? 1,
 			numberField(message.pageSize) ?? 25,
@@ -174,6 +180,50 @@ async function handleMessage(
 	}
 }
 
+async function refreshSearchScope(
+	context: vscode.ExtensionContext,
+	active: ActiveSearch,
+): Promise<void> {
+	active.requestSequence += 1;
+	active.latestResults.clear();
+	active.semanticDocuments.clear();
+	const previousClient = active.client;
+	active.client = undefined;
+	if (previousClient) {
+		try {
+			(await previousClient).dispose();
+		} catch {
+			// A failed or already-closed process is replaced below.
+		}
+	}
+	await publishSearchScope(context, active);
+}
+
+async function publishSearchScope(
+	context: vscode.ExtensionContext,
+	active: ActiveSearch,
+): Promise<void> {
+	try {
+		const client = await getClient(context, active);
+		const scope = await client.discoverScope();
+		if (active.disposed) {
+			return;
+		}
+		diagnostic('searchUi.scopeDiscovered', {
+			scopeRevision: scope.scopeRevision,
+			scopeAuthority: scope.scopeAuthority,
+			sourceCount: scope.sources.length,
+			unavailableScopeIds: jsonField(scope.unavailableScopeIds),
+			discoveryMs: scope.discoveryMs,
+		});
+		active.panel.webview.postMessage({ type: 'scope', requestId: active.requestSequence, scope });
+	} catch (error) {
+		diagnostic('searchUi.scopeDiscoveryFailed', {
+			message: error instanceof Error ? error.message : String(error),
+		});
+	}
+}
+
 function logSearchSnapshot(value: unknown): void {
 	if (!diagnosticsEnabled()) {
 		void vscode.window.showInformationMessage(
@@ -187,14 +237,19 @@ function logSearchSnapshot(value: unknown): void {
 	const results = snapshotResults(snapshot.results);
 	diagnostic('searchUi.snapshot', {
 		query: textField(snapshot.query),
-		addonPrototypeVariant: textField(snapshot.addonPrototypeVariant),
-		addonPrototypeOpen: snapshot.addonPrototypeOpen === true,
-		addonPrototypeFilter: textField(snapshot.addonPrototypeFilter),
-		addonPrototypeSelected: jsonField(Array.isArray(snapshot.addonPrototypeSelected) ? snapshot.addonPrototypeSelected.slice(0, 32) : []),
+		scopeOpen: snapshot.scopeOpen === true,
+		scopeFilter: textField(snapshot.scopeFilter),
+		scopeRevision: textField(snapshot.scopeRevision),
+		scopeAuthority: textField(snapshot.scopeAuthority),
+		scopeDiscoveryMs: numberField(snapshot.scopeDiscoveryMs),
+		availableScopeIds: jsonField(Array.isArray(snapshot.availableScopeIds) ? snapshot.availableScopeIds.slice(0, 256) : []),
+		unavailableScopeIds: jsonField(Array.isArray(snapshot.unavailableScopeIds) ? snapshot.unavailableScopeIds.slice(0, 256) : []),
+		selectedScopeIds: jsonField(Array.isArray(snapshot.selectedScopeIds) ? snapshot.selectedScopeIds.slice(0, 256) : []),
+		modeEligibleScopeIds: jsonField(Array.isArray(snapshot.modeEligibleScopeIds) ? snapshot.modeEligibleScopeIds.slice(0, 256) : []),
+		removedScopeIds: jsonField(Array.isArray(snapshot.removedScopeIds) ? snapshot.removedScopeIds.slice(0, 256) : []),
 		matchCase: snapshot.matchCase === true,
 		matchWholeWord: snapshot.matchWholeWord === true,
 		useRegex: snapshot.useRegex === true,
-		source: textField(snapshot.source),
 		resultType: textField(snapshot.resultType),
 		status: textField(snapshot.status),
 		requestId: numberField(snapshot.requestId),
@@ -229,7 +284,7 @@ async function runSearch(
 	query: string,
 	mode: SearchMode,
 	textOptions: TextSearchOptions,
-	sourceValue: unknown,
+	scopeValue: unknown,
 	typeValue: string,
 	page: number,
 	pageSize: number,
@@ -240,7 +295,7 @@ async function runSearch(
 	diagnostic('searchUi.searchStarted', {
 		requestId,
 		queryLength: normalizedQuery.length,
-		source: typeof sourceValue === 'string' ? sourceValue : 'all',
+		scopeIds: jsonField(scopeIdsFor(scopeValue)),
 		mode,
 		matchCase: textOptions.matchCase,
 		matchWholeWord: textOptions.matchWholeWord,
@@ -257,7 +312,7 @@ async function runSearch(
 	active.panel.webview.postMessage({ type: 'loading', requestId });
 	try {
 		const client = await getClient(context, active);
-		const result = await client.search(normalizedQuery, sourcesFor(sourceValue), pageSize, page, mode === 'semantic' ? searchKindsFor(typeValue) : undefined, mode, textOptions);
+		const result = await client.search(normalizedQuery, scopeIdsFor(scopeValue), pageSize, page, mode === 'semantic' ? searchKindsFor(typeValue) : undefined, mode, textOptions);
 		if (active.disposed || requestId !== active.requestSequence) {
 			return;
 		}
@@ -320,6 +375,8 @@ async function hydrateSymbolPreviews(
 	const rawPreviews = new Map<string, RawPreview>();
 	const previewDiagnostics: Array<Record<string, unknown>> = [];
 	let readMs = 0;
+	const readMsByAddon: Record<string, number> = {};
+	const readFailuresByAddon: Record<string, number> = {};
 	let semanticMs = 0;
 	let nextIndex = 0;
 	let firstRawMs: number | undefined;
@@ -340,6 +397,8 @@ async function hydrateSymbolPreviews(
 				rawMs: elapsedMs,
 				firstRawMs,
 				readMs,
+				readMsByAddon,
+				readFailuresByAddon,
 				semanticMs: 0,
 				requestedCount: previewHits.length,
 				loadedCount: Object.keys(previews).length,
@@ -370,7 +429,11 @@ async function hydrateSymbolPreviews(
 				}
 				const readStartedAt = performance.now();
 				const document = await client.read(hit);
-				readMs += performance.now() - readStartedAt;
+				const hitReadMs = performance.now() - readStartedAt;
+				readMs += hitReadMs;
+				if (hit.addonGuid) {
+					readMsByAddon[hit.addonGuid] = (readMsByAddon[hit.addonGuid] ?? 0) + hitReadMs;
+				}
 				const previewLine = sourcePreviewLine(document, hit.selectionStartLine, hit.title);
 				const preview = sourceLinePreview(document, previewLine, hit.title);
 				previews[hit.id] = preview;
@@ -381,10 +444,14 @@ async function hydrateSymbolPreviews(
 				rawPreviews.set(hit.id, { hit, document, previewLine, preview, matchRange });
 				postRawPreview(hit.id);
 			} catch (error) {
+				if (hit.addonGuid) {
+					readFailuresByAddon[hit.addonGuid] = (readFailuresByAddon[hit.addonGuid] ?? 0) + 1;
+				}
 				previewDiagnostics.push({
 					id: hit.id,
 					title: hit.title,
 					path: hit.path,
+					addonGuid: hit.addonGuid,
 					phase: 'source-read-failed',
 					message: error instanceof Error ? error.message : String(error),
 				});
@@ -403,6 +470,8 @@ async function hydrateSymbolPreviews(
 		firstRawMs,
 		lastRawMs: rawMs,
 		readMs,
+		readMsByAddon: jsonField(readMsByAddon),
+		readFailuresByAddon: jsonField(readFailuresByAddon),
 	});
 
 	const semanticItems = [...rawPreviews.values()].filter(item => item.hit.kind === 'symbol');
@@ -420,6 +489,8 @@ async function hydrateSymbolPreviews(
 				totalMs: Date.now() - startedAt,
 				rawMs,
 				readMs,
+				readMsByAddon,
+				readFailuresByAddon,
 				semanticMs,
 				requestedCount: previewHits.length,
 				loadedCount: rawPreviews.size,
@@ -512,6 +583,8 @@ async function hydrateSymbolPreviews(
 		totalMs: Date.now() - startedAt,
 		rawMs,
 		readMs,
+		readMsByAddon,
+		readFailuresByAddon,
 		semanticMs,
 		requestedCount: previewHits.length,
 		loadedCount: rawPreviews.size,
@@ -524,6 +597,8 @@ async function hydrateSymbolPreviews(
 		loadedCount: previewPerformance.loadedCount,
 		semanticCount: previewPerformance.semanticCount,
 		readMs: previewPerformance.readMs,
+		readMsByAddon: jsonField(previewPerformance.readMsByAddon),
+		readFailuresByAddon: jsonField(previewPerformance.readFailuresByAddon),
 		semanticMs: previewPerformance.semanticMs,
 		totalMs: previewPerformance.totalMs,
 		rawMs: previewPerformance.rawMs,
@@ -604,7 +679,15 @@ async function createClient(context: vscode.ExtensionContext): Promise<McpSearch
 	}
 	return new McpSearchClient({
 		serverPath,
-		indexCache: await resolveBaseGameIndexCache(context.globalStorageUri.fsPath),
+		addonSourceInventory: path.join(
+			context.globalStorageUri.fsPath,
+			gameDataStorage.rootFolder,
+			gameDataStorage.inventoryFile,
+		),
+		addonIndexStorage: path.join(
+			context.globalStorageUri.fsPath,
+			languageClientIndexCache.rootFolder,
+		),
 		workspaceScripts: await discoverWorkspaceScriptRoots(),
 		officialWikiRoot: path.join(context.extensionPath, 'data', 'official-wiki'),
 	});
@@ -680,17 +763,13 @@ async function getClientFromActive(active: ActiveSearch): Promise<McpSearchClien
 }
 
 
-function sourcesFor(value: unknown): SearchSource[] {
-	switch (value) {
-		case 'workspace':
-			return ['workspace'];
-		case 'gameData':
-			return ['gameData'];
-		case 'wiki':
-			return ['wiki'];
-		default:
-			return ['workspace', 'gameData', 'wiki'];
+function scopeIdsFor(value: unknown): string[] {
+	if (!Array.isArray(value)) {
+		return [];
 	}
+	return value
+		.filter((item): item is string => typeof item === 'string')
+		.slice(0, 256);
 }
 
 function isSearchKindValue(value: unknown): value is string {
@@ -753,10 +832,8 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .group-label { padding: 0 4px 6px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .07em; }
 .source-rail button { display: block; width: 100%; margin: 3px 0; padding: 9px 10px; text-align: left; border: 0; background: transparent; }
 .source-rail button.active { background: var(--selected); color: var(--selected-text); }
-.addon-prototype { margin: 0 0 12px; padding: 8px; border: 1px dashed var(--accent); background: var(--alt); }
-.addon-prototype-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .06em; }
-.prototype-badge { padding: 2px 5px; border-radius: 8px; background: var(--accent); color: var(--vscode-button-foreground); font-size: 9px; }
-.addon-prototype .addon-trigger { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; padding: 8px 9px; border: 1px solid var(--border); background: var(--panel); }
+.search-scope { margin: 0 0 12px; padding: 8px; border: 1px solid var(--border); background: var(--alt); }
+.search-scope .addon-trigger { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; padding: 8px 9px; border: 1px solid var(--border); background: var(--panel); }
 .addon-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .addon-menu { position: absolute; z-index: 4; left: 10px; width: 290px; margin-top: 5px; padding: 9px; border: 1px solid var(--accent); background: var(--vscode-menu-background, var(--panel)); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
 .addon-menu.inline { position: static; width: auto; margin-top: 0; padding: 0; border: 0; box-shadow: none; background: transparent; }
@@ -766,12 +843,10 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .addon-choice input { margin: 0; accent-color: var(--accent); }
 .addon-choice small { color: var(--muted); font-size: 10px; }
 .addon-choice.workspace { margin-bottom: 5px; padding-bottom: 5px; border-bottom: 1px solid var(--border); }
-.addon-prototype-note { margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.35; }
+.scope-actions { display: flex; justify-content: flex-end; margin-bottom: 5px; }
+.scope-actions button { width: auto; margin: 0; padding: 4px 6px; color: var(--accent); font-size: 10px; }
 .addon-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
 .addon-chip { max-width: 100%; padding: 3px 6px; border-radius: 10px; background: var(--selected); color: var(--selected-text); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.prototype-switcher { position: fixed; z-index: 10; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; min-width: 290px; padding: 6px; border: 1px solid var(--accent); border-radius: 18px; background: var(--vscode-editorWidget-background, var(--panel)); box-shadow: 0 5px 18px rgba(0, 0, 0, .4); }
-.prototype-switcher button { width: 32px; min-width: 32px; margin: 0; padding: 5px; text-align: center; border: 1px solid var(--border); }
-.prototype-switcher-label { flex: 1; text-align: center; font-size: 11px; white-space: nowrap; }
 .source-header { display: flex; justify-content: space-between; align-items: end; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
 .page-controls { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 14px; }
 .page-status { display: inline-flex; flex: 0 0 150px; align-items: center; justify-content: flex-end; gap: 6px; white-space: nowrap; }
@@ -826,54 +901,27 @@ window.__reforgerSearchVscode.postMessage({ type: 'webviewReady', width: window.
 </script>
 <script nonce="${nonce}">
 const vscode = window.__reforgerSearchVscode;
-// PROTOTYPE: Three Search In add-on selector variants; hard-coded selections intentionally do not alter backend queries.
-const prototypeVariants = [{ key: 'A', name: 'Compact menu' }, { key: 'B', name: 'Inline checklist' }, { key: 'C', name: 'Selected chips' }];
-const requestedPrototypeVariant = new URLSearchParams(window.location.search).get('addonVariant');
-const initialPrototypeVariant = prototypeVariants.some(item => item.key === requestedPrototypeVariant) ? requestedPrototypeVariant : 'A';
-const state = { query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, source: 'all', type: 'all', results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, addonPrototypeVariant: initialPrototypeVariant, addonPrototypeOpen: true, addonPrototypeFilter: '', addonPrototypeSelected: ['workspace', 'arma-reforger', 'enfusion-core'], uiPerformance: { renderCount: 0, lastRenderMs: 0, searchStartedAt: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
-const sources = [
-  { value: 'all', label: 'All sources' },
-  { value: 'workspace', label: 'Workspace' },
-  { value: 'gameData', label: 'Game Data' },
-  { value: 'wiki', label: 'Official Wiki' },
-];
-const addonPrototypeSources = [
-  { value: 'workspace', label: 'Workspace', detail: 'Live', workspace: true },
-  { value: 'arma-reforger', label: 'Arma Reforger', detail: '5,776 scripts' },
-  { value: 'enfusion-core', label: 'Enfusion Core', detail: '719 scripts' },
-  { value: 'rhs-core', label: 'RHS: Status Quo', detail: '459 scripts' },
-  { value: 'tf-core', label: 'Tactical Flava Core', detail: '192 scripts' },
-  { value: 'ace-core', label: 'ACE Core', detail: '118 scripts' },
-];
+const state = { query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, type: 'all', results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, scopeOpen: true, scopeFilter: '', scopeRevision: '', scopeAuthority: '', scopeDiscoveryMs: 0, unavailableScopeIds: [], scopeSources: [{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true }, { id: 'wiki', label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: false, defaultSelected: true }], selectedScopeIds: ['workspace', 'wiki'], selectionTouched: false, removedScopeIds: [], uiPerformance: { renderCount: 0, lastRenderMs: 0, searchStartedAt: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-const sourceLabel = value => sources.find(source => source.value === value)?.label ?? value;
+const sourceLabel = result => result.addonLabel ?? (result.source === 'wiki' ? 'Official Wiki' : result.source === 'workspace' ? 'Workspace' : 'Game Data');
 const visibleResults = () => state.results;
 const modeButtons = () => '<button class="' + (state.mode === 'semantic' ? 'active' : '') + '" data-mode="semantic">Semantic</button><button class="' + (state.mode === 'text' ? 'active' : '') + '" data-mode="text">Text</button>';
 const textSearchOptions = () => state.mode !== 'text' ? '' : '<div class="text-options" aria-label="Text search options"><label class="text-option"><input type="checkbox" data-text-option="matchCase"' + (state.matchCase ? ' checked' : '') + '>Match case</label><label class="text-option"><input type="checkbox" data-text-option="matchWholeWord"' + (state.matchWholeWord ? ' checked' : '') + '>Match whole word</label><label class="text-option"><input type="checkbox" data-text-option="useRegex"' + (state.useRegex ? ' checked' : '') + '>Regular expression</label></div>';
-const sourceButtons = () => sources.filter(source => source.value !== 'wiki' || state.mode === 'text').map(source => '<button class="' + (state.source === source.value ? 'active' : '') + '" data-source="' + esc(source.value) + '">' + esc(source.label) + '</button>').join('');
-const addonPrototypeSummary = () => {
-  const selected = addonPrototypeSources.filter(source => state.addonPrototypeSelected.includes(source.value));
-  if (selected.length === addonPrototypeSources.length) return 'All indexed sources';
-  if (selected.length === 1) return selected[0].label;
-  return selected.length + ' sources selected';
+const eligibleScopeSources = () => state.scopeSources.filter(source => source.kind !== 'wiki' || state.mode === 'text');
+const selectedEligibleScopeIds = () => state.selectedScopeIds.filter(id => eligibleScopeSources().some(source => source.id === id));
+const scopeChoices = () => {
+  const eligible = eligibleScopeSources();
+  const allSelected = eligible.length > 0 && eligible.every(source => state.selectedScopeIds.includes(source.id));
+  const filter = state.scopeFilter.trim().toLowerCase();
+  const choices = eligible.filter(source => !filter || source.label.toLowerCase().includes(filter)).map(source => '<label class="addon-choice' + (source.kind === 'workspace' ? ' workspace' : '') + '"><input type="checkbox" data-scope-choice="' + esc(source.id) + '"' + (state.selectedScopeIds.includes(source.id) ? ' checked' : '') + '><span>' + esc(source.label) + '</span><small>' + esc(source.detail) + '</small></label>').join('');
+  return '<div class="addon-menu"><input class="addon-filter" data-scope-filter value="' + esc(state.scopeFilter) + '" placeholder="Filter add-ons..." aria-label="Filter search scopes"><div class="scope-actions"><button type="button" data-scope-refresh' + (state.status === 'loading' ? ' disabled' : '') + '>Refresh</button><button type="button" data-scope-all>' + (allSelected ? 'Unselect all' : 'Select all') + '</button></div>' + choices + '</div>';
 };
-const addonPrototypeChoices = inline => {
-  const filter = state.addonPrototypeFilter.trim().toLowerCase();
-  const choices = addonPrototypeSources.filter(source => !filter || source.label.toLowerCase().includes(filter)).map(source => '<label class="addon-choice' + (source.workspace ? ' workspace' : '') + '"><input type="checkbox" data-addon-choice="' + esc(source.value) + '"' + (state.addonPrototypeSelected.includes(source.value) ? ' checked' : '') + '><span>' + esc(source.label) + '</span><small>' + esc(source.detail) + '</small></label>').join('');
-  return '<div class="addon-menu' + (inline ? ' inline' : '') + '"><input class="addon-filter" data-addon-filter value="' + esc(state.addonPrototypeFilter) + '" placeholder="Filter add-ons..." aria-label="Filter prototype add-ons">' + choices + '<p class="addon-prototype-note">Prototype only — these selections do not filter search results yet.</p></div>';
-};
-const addonScopePrototype = () => {
-  const head = '<div class="addon-prototype-head"><span>SEARCH SCOPE</span><span class="prototype-badge">PROTOTYPE</span></div>';
-  if (state.addonPrototypeVariant === 'B') return '<div class="addon-prototype">' + head + addonPrototypeChoices(true) + '</div>';
-  if (state.addonPrototypeVariant === 'C') {
-    const chips = addonPrototypeSources.filter(source => state.addonPrototypeSelected.includes(source.value)).map(source => '<span class="addon-chip">' + esc(source.label) + '</span>').join('') || '<span class="muted">Nothing selected</span>';
-    return '<div class="addon-prototype">' + head + '<div class="addon-chips">' + chips + '</div><button class="addon-trigger" data-addon-open><span>Edit selected sources</span><span>' + (state.addonPrototypeOpen ? '▲' : '▼') + '</span></button>' + (state.addonPrototypeOpen ? addonPrototypeChoices(false) : '') + '</div>';
-  }
-  return '<div class="addon-prototype">' + head + '<button class="addon-trigger" data-addon-open><span class="addon-summary">' + esc(addonPrototypeSummary()) + '</span><span>' + (state.addonPrototypeOpen ? '▲' : '▼') + '</span></button>' + (state.addonPrototypeOpen ? addonPrototypeChoices(false) : '') + '</div>';
-};
-const prototypeSwitcher = () => {
-  const variant = prototypeVariants.find(item => item.key === state.addonPrototypeVariant) ?? prototypeVariants[0];
-  return '<div class="prototype-switcher" aria-label="Add-on selector prototype variants"><button type="button" data-prototype-previous aria-label="Previous prototype">←</button><span class="prototype-switcher-label">' + esc(variant.key + ' · ' + variant.name) + '</span><button type="button" data-prototype-next aria-label="Next prototype">→</button></div>';
+const searchScope = () => {
+  const selected = eligibleScopeSources().filter(source => state.selectedScopeIds.includes(source.id));
+  const shown = selected.slice(0, 3).map(source => '<span class="addon-chip">' + esc(source.label) + '</span>').join('');
+  const overflow = selected.length > 3 ? '<span class="addon-chip">+' + (selected.length - 3) + ' more</span>' : '';
+  const chips = shown + overflow || '<span class="muted">No search scopes selected</span>';
+  return '<div class="search-scope"><div class="addon-chips">' + chips + '</div><button class="addon-trigger" data-scope-open><span>Edit selected sources</span><span>' + (state.scopeOpen ? '&#9650;' : '&#9660;') + '</span></button>' + (state.scopeOpen ? scopeChoices() : '') + '</div>';
 };
 const resultTypes = ${JSON.stringify(searchKindFilters.map(({ value, label }) => ({ value, label })))};
 const typeButtons = () => state.mode === 'text' ? '' : resultTypes.map(type => '<button class="' + (state.type === type.value ? 'active' : '') + '" data-type="' + esc(type.value) + '">' + esc(type.label) + '</button>').join('');
@@ -979,20 +1027,25 @@ const resultRows = () => visibleResults().map(result => {
   const selected = state.selected === result.id;
   const external = result.sourceUrl ? '<button data-external="' + esc(result.id) + '">Open official page</button>' : '';
   const preview = result.kind === 'documentation' ? '<div class="md-preview">' + renderMarkdown(result.excerpt) + '</div>' : '<pre class="snippet">' + semanticPreviewText(result) + '</pre>';
-  return '<article class="source-row ' + (selected ? 'selected' : '') + '" data-open="' + esc(result.id) + '" tabindex="0" role="button"><div class="source-icon">' + (result.kind === 'documentation' ? 'W' : result.kind === 'text' ? 'T' : 'S') + '</div><div class="result-content"><div class="result-head"><h3>' + esc(result.title) + '</h3><div class="result-path">' + esc(result.path) + '</div></div><div class="result-detail">' + esc(result.detail) + ' · ' + esc(sourceLabel(result.source)) + '</div>' + preview + '<div class="result-actions">' + external + '</div></div></article>';
+  return '<article class="source-row ' + (selected ? 'selected' : '') + '" data-open="' + esc(result.id) + '" tabindex="0" role="button"><div class="source-icon">' + (result.kind === 'documentation' ? 'W' : result.kind === 'text' ? 'T' : 'S') + '</div><div class="result-content"><div class="result-head"><h3>' + esc(result.title) + '</h3><div class="result-path">' + esc(result.path) + '</div></div><div class="result-detail">' + esc(result.detail) + ' · ' + esc(sourceLabel(result)) + '</div>' + preview + '<div class="result-actions">' + external + '</div></div></article>';
 }).join('');
 const hasTextSelection = () => Boolean(window.getSelection()?.toString());
 const captureSearchSnapshot = () => vscode.postMessage({ type: 'debugSnapshot', snapshot: {
   query: state.query,
-  addonPrototypeVariant: state.addonPrototypeVariant,
-  addonPrototypeOpen: state.addonPrototypeOpen,
-  addonPrototypeFilter: state.addonPrototypeFilter,
-  addonPrototypeSelected: state.addonPrototypeSelected,
+  scopeOpen: state.scopeOpen,
+  scopeFilter: state.scopeFilter,
+  scopeRevision: state.scopeRevision,
+  scopeAuthority: state.scopeAuthority,
+  scopeDiscoveryMs: state.scopeDiscoveryMs,
+  availableScopeIds: state.scopeSources.map(source => source.id),
+  unavailableScopeIds: state.unavailableScopeIds,
+  selectedScopeIds: state.selectedScopeIds,
+  modeEligibleScopeIds: eligibleScopeSources().map(source => source.id),
+  removedScopeIds: state.removedScopeIds,
   searchMode: state.mode,
   matchCase: state.matchCase,
   matchWholeWord: state.matchWholeWord,
   useRegex: state.useRegex,
-  source: state.source,
   resultType: state.type,
   status: state.status,
   requestId: state.requestId,
@@ -1046,23 +1099,22 @@ const openResult = element => {
 function render(focusQuery = true) {
   const renderStartedAt = performance.now();
   const results = visibleResults();
-  const body = state.error ? '<div class="error">' + esc(state.error) + '</div>' : results.length ? '<div class="source-rows">' + resultRows() + '</div>' : '<div class="empty">No results match this search.</div>';
+  const body = state.error ? '<div class="error">' + esc(state.error) + '</div>' : selectedEligibleScopeIds().length === 0 ? '<div class="empty">No search scopes selected.</div>' : results.length ? '<div class="source-rows">' + resultRows() + '</div>' : '<div class="empty">No results match this search.</div>';
   const warnings = state.warnings.map(warning => '<div class="warning">' + esc(warning) + '</div>').join('');
   const bottomPager = state.query.trim() && totalMatches() > 0 ? '<div class="page-bottom">' + pageControls() + '</div>' : '';
-  document.getElementById('app').innerHTML = '<div class="shell"><div class="eyebrow">Source browser · live MCP search</div><h1>Find usage in Reforger</h1><p class="intro">Search the indexed workspace, shipped Game Data, and Official Wiki together. Select a result to open the exact source document and highlight the matching lines.</p><div class="toolbar"><input id="query" value="' + esc(state.query) + '" placeholder="Search a symbol, concept, or phrase..." aria-label="Search query">' + textSearchOptions() + '</div><div class="layout"><aside class="source-rail"><div class="group-label">SEARCH MODE</div>' + modeButtons() + '<div class="group-label">SEARCH IN</div>' + addonScopePrototype() + sourceButtons() + (state.mode === 'text' ? '' : '<div class="group-label">RESULT TYPE</div>' + typeButtons()) + '</aside><section><div class="source-header"><div><h2>' + totalMatches() + ' matches</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Showing up to ' + state.pageSize + ' total results') + '</span></div>' + pageControls() + '</div><div class="status">' + (state.status === 'error' ? 'Search failed' : '') + '</div>' + warnings + body + bottomPager + '</section></div></div>' + prototypeSwitcher();
+  document.getElementById('app').innerHTML = '<div class="shell"><div class="eyebrow">Source browser · live MCP search</div><h1>Find usage in Reforger</h1><p class="intro">Search the indexed workspace, loaded add-ons, and Official Wiki together. Select a result to open the exact source document and highlight the matching lines.</p><div class="toolbar"><input id="query" value="' + esc(state.query) + '" placeholder="Search a symbol, concept, or phrase..." aria-label="Search query">' + textSearchOptions() + '</div><div class="layout"><aside class="source-rail"><div class="group-label">SEARCH MODE</div>' + modeButtons() + '<div class="group-label">SEARCH SCOPE</div>' + searchScope() + (state.mode === 'text' ? '' : '<div class="group-label">RESULT TYPE</div>' + typeButtons()) + '</aside><section><div class="source-header"><div><h2>' + totalMatches() + ' matches</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Showing up to ' + state.pageSize + ' total results') + '</span></div>' + pageControls() + '</div><div class="status">' + (state.status === 'error' ? 'Search failed' : '') + '</div>' + warnings + body + bottomPager + '</section></div></div>';
   const query = document.getElementById('query');
   if (focusQuery) { query.focus(); query.setSelectionRange(state.query.length, state.query.length); }
   query.addEventListener('input', event => { state.query = event.target.value; scheduleSearch(); });
   query.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); search(true); } });
   document.querySelectorAll('[data-text-option]').forEach(element => element.addEventListener('change', () => { state[element.dataset.textOption] = element.checked; search(true); }));
-  document.querySelectorAll('[data-mode]').forEach(element => element.addEventListener('click', () => { state.mode = element.dataset.mode === 'text' ? 'text' : 'semantic'; if (state.mode === 'semantic' && state.source === 'wiki') state.source = 'all'; state.page = 1; search(true); }));
+  document.querySelectorAll('[data-mode]').forEach(element => element.addEventListener('click', () => { state.mode = element.dataset.mode === 'text' ? 'text' : 'semantic'; state.page = 1; search(true); }));
   document.querySelectorAll('[data-type]').forEach(element => element.addEventListener('click', () => { state.type = element.dataset.type; state.page = 1; search(true); }));
-  document.querySelectorAll('[data-source]').forEach(element => element.addEventListener('click', () => { state.source = element.dataset.source; search(true); }));
-  document.querySelectorAll('[data-addon-open]').forEach(element => element.addEventListener('click', () => { state.addonPrototypeOpen = !state.addonPrototypeOpen; render(false); }));
-  document.querySelectorAll('[data-addon-choice]').forEach(element => element.addEventListener('change', () => { state.addonPrototypeSelected = element.checked ? [...new Set([...state.addonPrototypeSelected, element.dataset.addonChoice])] : state.addonPrototypeSelected.filter(value => value !== element.dataset.addonChoice); render(false); }));
-  document.querySelectorAll('[data-addon-filter]').forEach(element => element.addEventListener('input', () => { state.addonPrototypeFilter = element.value; render(false); const filter = document.querySelector('[data-addon-filter]'); if (filter) { filter.focus(); filter.setSelectionRange(filter.value.length, filter.value.length); } }));
-  document.querySelectorAll('[data-prototype-previous]').forEach(element => element.addEventListener('click', () => changePrototypeVariant(-1)));
-  document.querySelectorAll('[data-prototype-next]').forEach(element => element.addEventListener('click', () => changePrototypeVariant(1)));
+  document.querySelectorAll('[data-scope-open]').forEach(element => element.addEventListener('click', () => { state.scopeOpen = !state.scopeOpen; render(false); }));
+  document.querySelectorAll('[data-scope-choice]').forEach(element => element.addEventListener('change', () => { state.selectionTouched = true; state.selectedScopeIds = element.checked ? [...new Set([...state.selectedScopeIds, element.dataset.scopeChoice])] : state.selectedScopeIds.filter(value => value !== element.dataset.scopeChoice); render(false); search(true); }));
+  document.querySelectorAll('[data-scope-all]').forEach(element => element.addEventListener('click', () => { const eligible = eligibleScopeSources(); const allSelected = eligible.length > 0 && eligible.every(source => state.selectedScopeIds.includes(source.id)); const eligibleIds = new Set(eligible.map(source => source.id)); state.selectionTouched = true; state.selectedScopeIds = allSelected ? state.selectedScopeIds.filter(id => !eligibleIds.has(id)) : [...new Set([...state.selectedScopeIds, ...eligibleIds])]; render(false); search(true); }));
+  document.querySelectorAll('[data-scope-refresh]').forEach(element => element.addEventListener('click', () => vscode.postMessage({ type: 'refreshScope' })));
+  document.querySelectorAll('[data-scope-filter]').forEach(element => element.addEventListener('input', () => { state.scopeFilter = element.value; render(false); const filter = document.querySelector('[data-scope-filter]'); if (filter) { filter.focus(); filter.setSelectionRange(filter.value.length, filter.value.length); } }));
   document.querySelectorAll('[data-page-prev]').forEach(element => element.addEventListener('click', () => requestPage(state.page - 1)));
   document.querySelectorAll('[data-page-next]').forEach(element => element.addEventListener('click', () => requestPage(state.page + 1)));
   document.querySelectorAll('[data-page-size]').forEach(element => element.addEventListener('change', event => { state.pageSize = Number(event.target.value); search(true); }));
@@ -1078,13 +1130,12 @@ function render(focusQuery = true) {
   state.uiPerformance.lastRenderMs = performance.now() - renderStartedAt;
   state.uiPerformance.renderCount += 1;
 }
-function changePrototypeVariant(direction) { const index = prototypeVariants.findIndex(item => item.key === state.addonPrototypeVariant); const next = prototypeVariants[(index + direction + prototypeVariants.length) % prototypeVariants.length]; state.addonPrototypeVariant = next.key; state.addonPrototypeOpen = true; const url = new URL(window.location.href); url.searchParams.set('addonVariant', next.key); history.replaceState(null, '', url); render(false); }
-document.addEventListener('keydown', event => { if (event.ctrlKey && event.key === 'F3') { event.preventDefault(); event.stopPropagation(); captureSearchSnapshot(); return; } const target = event.target; if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable) return; if (event.key === 'ArrowLeft') { event.preventDefault(); changePrototypeVariant(-1); } if (event.key === 'ArrowRight') { event.preventDefault(); changePrototypeVariant(1); } });
+document.addEventListener('keydown', event => { if (event.ctrlKey && event.key === 'F3') { event.preventDefault(); event.stopPropagation(); captureSearchSnapshot(); } });
 let searchTimer;
 function scheduleSearch() { clearTimeout(searchTimer); if (state.mode === 'text') return; searchTimer = setTimeout(() => search(true), 260); }
 function requestPage(value) { if (state.status === 'loading') return; const requested = Number.parseInt(value, 10); if (!Number.isFinite(requested)) return; state.page = Math.min(totalPages(), Math.max(1, requested)); search(false); }
-function search(resetPagination) { if (resetPagination) { state.page = 1; } const searchKey = [state.mode, state.query, state.matchCase, state.matchWholeWord, state.useRegex, state.source, state.type, state.page, state.pageSize].join('\\u0000'); if (state.status === 'loading' && state.lastSearchKey === searchKey) return; state.lastSearchKey = searchKey; state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.uiPerformance.searchStartedAt = performance.now(); state.uiPerformance.lastSearchResponseMs = 0; state.uiPerformance.lastPreviewMessageMs = 0; state.uiPerformance.lastSemanticMessageMs = 0; vscode.postMessage({ type: 'search', query: state.query, searchMode: state.mode, matchCase: state.matchCase, matchWholeWord: state.matchWholeWord, useRegex: state.useRegex, source: state.source, resultType: state.type, page: state.page, pageSize: state.pageSize }); }
-window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.uiPerformance.lastSearchResponseMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = message.performance ?? {}; state.previewPerformance = {}; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'previews') { state.uiPerformance.lastPreviewMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? {}; state.sourcePreviews = { ...state.sourcePreviews, ...(message.previews ?? {}) }; state.matchRanges = { ...state.matchRanges, ...(message.matches ?? {}) }; render(); } if (message.type === 'semanticPreviews') { state.uiPerformance.lastSemanticMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? state.previewPerformance; state.semanticPreviews = { ...state.semanticPreviews, ...(message.previews ?? {}) }; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.total = 0; state.totalBySource = {}; render(); } });
+function search(resetPagination) { if (resetPagination) { state.page = 1; } const scopeIds = selectedEligibleScopeIds(); const searchKey = [state.mode, state.query, state.matchCase, state.matchWholeWord, state.useRegex, scopeIds.slice().sort().join(','), state.type, state.page, state.pageSize].join('\\u0000'); if (state.status === 'loading' && state.lastSearchKey === searchKey) return; state.lastSearchKey = searchKey; state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.uiPerformance.searchStartedAt = performance.now(); state.uiPerformance.lastSearchResponseMs = 0; state.uiPerformance.lastPreviewMessageMs = 0; state.uiPerformance.lastSemanticMessageMs = 0; vscode.postMessage({ type: 'search', query: state.query, searchMode: state.mode, matchCase: state.matchCase, matchWholeWord: state.matchWholeWord, useRegex: state.useRegex, scopeIds, resultType: state.type, page: state.page, pageSize: state.pageSize }); }
+window.addEventListener('message', event => { const message = event.data; if (!message) return; if (message.type === 'scope') { const nextSources = Array.isArray(message.scope?.sources) ? message.scope.sources : []; const available = new Set(nextSources.map(source => source.id)); const previous = state.selectedScopeIds.slice(); state.scopeSources = nextSources; state.scopeRevision = message.scope?.scopeRevision ?? ''; state.scopeAuthority = message.scope?.scopeAuthority ?? ''; state.scopeDiscoveryMs = message.scope?.discoveryMs ?? 0; state.unavailableScopeIds = Array.isArray(message.scope?.unavailableScopeIds) ? message.scope.unavailableScopeIds : []; state.removedScopeIds = previous.filter(id => !available.has(id)); state.selectedScopeIds = state.selectionTouched ? previous.filter(id => available.has(id)) : nextSources.filter(source => source.defaultSelected).map(source => source.id); render(false); if (state.query.trim()) search(true); return; } if (message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.uiPerformance.lastSearchResponseMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = message.performance ?? {}; state.previewPerformance = {}; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'previews') { state.uiPerformance.lastPreviewMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? {}; state.sourcePreviews = { ...state.sourcePreviews, ...(message.previews ?? {}) }; state.matchRanges = { ...state.matchRanges, ...(message.matches ?? {}) }; render(); } if (message.type === 'semanticPreviews') { state.uiPerformance.lastSemanticMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? state.previewPerformance; state.semanticPreviews = { ...state.semanticPreviews, ...(message.previews ?? {}) }; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.total = 0; state.totalBySource = {}; render(); } });
 render();
 </script>
 </body>
@@ -1142,6 +1193,8 @@ function snapshotResults(value: unknown): Array<Record<string, unknown>> {
 	return value.slice(0, 100).filter(isRecord).map(result => ({
 		id: textField(result.id),
 		source: textField(result.source),
+		addonGuid: textField(result.addonGuid),
+		addonLabel: textField(result.addonLabel),
 		kind: textField(result.kind),
 		title: textField(result.title),
 		detail: textField(result.detail),
@@ -1202,6 +1255,8 @@ function snapshotPerformance(value: unknown): Record<string, unknown> {
 		result.searchMode = searchMode;
 	}
 	result.textOptions = jsonField(value.textOptions);
+	result.readMsByAddon = jsonField(value.readMsByAddon);
+	result.readFailuresByAddon = jsonField(value.readFailuresByAddon);
 	if (Array.isArray(value.sources)) {
 		result.sources = value.sources.slice(0, 8).filter(isRecord).map(source => {
 			const entry: Record<string, unknown> = { source: textField(source.source) };
@@ -1215,6 +1270,7 @@ function snapshotPerformance(value: unknown): Record<string, unknown> {
 				}
 			}
 			entry.textStats = jsonField(source.textStats);
+			entry.addonTotals = jsonField(source.addonTotals);
 			return entry;
 		});
 	}

@@ -2,6 +2,7 @@ use crate::index_build::IndexBuildControl;
 use regex::{Regex, RegexBuilder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
@@ -17,6 +18,8 @@ const MAX_EXCERPT_BYTES: usize = 16 * 1024;
 #[derive(Debug, Clone)]
 pub struct TextSource {
     pub relative_path: String,
+    pub addon_guid: Option<String>,
+    pub addon_label: Option<String>,
     pub content: Arc<str>,
 }
 
@@ -25,11 +28,14 @@ pub struct TextSearchCorpus {
     pub sources: Vec<TextSource>,
     pub files_considered: usize,
     pub source_read_failures: usize,
+    pub source_read_failures_by_addon: BTreeMap<String, usize>,
+    pub source_read_ms_by_addon: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextSearchRequest {
     pub query: String,
+    pub addon_guids: Option<Vec<String>>,
     pub options: TextSearchOptions,
     pub limit: Option<usize>,
     pub cursor: Option<String>,
@@ -48,6 +54,7 @@ pub struct TextSearchResultSet {
     catalogue_revision: String,
     query: String,
     options: TextSearchOptions,
+    addon_guids: Vec<String>,
     results: Vec<TextSearchHit>,
     truncated: bool,
     stats: TextSearchStats,
@@ -58,8 +65,10 @@ pub struct TextSearchResultSet {
 pub struct TextSearchPage {
     pub catalogue_revision: String,
     pub query: String,
+    pub addon_guids: Vec<String>,
     pub returned: usize,
     pub total: usize,
+    pub totals_by_addon: BTreeMap<String, usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
     pub truncated: bool,
@@ -74,6 +83,8 @@ pub struct TextSearchStats {
     pub files_read: usize,
     pub files_with_matches: usize,
     pub source_read_failures: usize,
+    pub source_read_failures_by_addon: BTreeMap<String, usize>,
+    pub source_read_ms_by_addon: BTreeMap<String, u64>,
     pub matches_found: usize,
     pub scan_ms: u64,
 }
@@ -81,6 +92,10 @@ pub struct TextSearchStats {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TextSearchHit {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addon_guid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addon_label: Option<String>,
     pub relative_path: String,
     pub match_range: TextRange,
     pub excerpt: String,
@@ -101,6 +116,8 @@ pub struct TextRange {
 #[serde(rename_all = "camelCase")]
 pub struct TextReadInput {
     pub catalogue_revision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addon_guid: Option<String>,
     pub relative_path: String,
     pub start_line: usize,
 }
@@ -188,6 +205,7 @@ pub fn scan(
         catalogue_revision: catalogue_revision.to_string(),
         query,
         options: request.options,
+        addon_guids: request.addon_guids.clone().unwrap_or_default(),
         results: hits,
         truncated,
         stats: TextSearchStats {
@@ -195,6 +213,8 @@ pub fn scan(
             files_read,
             files_with_matches,
             source_read_failures: corpus.source_read_failures,
+            source_read_failures_by_addon: corpus.source_read_failures_by_addon,
+            source_read_ms_by_addon: corpus.source_read_ms_by_addon,
             matches_found,
             scan_ms: started.elapsed().as_millis() as u64,
         },
@@ -208,7 +228,11 @@ pub fn page(
 ) -> Result<TextSearchPage, TextSearchError> {
     control.check().map_err(|_| TextSearchError::Cancelled)?;
     let query = normalize_query(&request.query)?;
-    if query != result_set.query || request.options != result_set.options {
+    let addon_guids = request.addon_guids.clone().unwrap_or_default();
+    if query != result_set.query
+        || request.options != result_set.options
+        || addon_guids != result_set.addon_guids
+    {
         return Err(TextSearchError::InvalidCursor);
     }
     let limit = request.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
@@ -217,7 +241,10 @@ pub fn page(
         if cursor.catalogue_revision != result_set.catalogue_revision {
             return Err(TextSearchError::StaleCursor);
         }
-        if cursor.query != query || cursor.options != request.options {
+        if cursor.query != query
+            || cursor.options != request.options
+            || cursor.addon_guids != addon_guids
+        {
             return Err(TextSearchError::InvalidCursor);
         }
     }
@@ -231,20 +258,29 @@ pub fn page(
         .cloned()
         .collect::<Vec<_>>();
     let returned = page_hits.len();
+    let mut totals_by_addon = BTreeMap::new();
+    for hit in &result_set.results {
+        if let Some(guid) = &hit.addon_guid {
+            *totals_by_addon.entry(guid.clone()).or_insert(0) += 1;
+        }
+    }
     let next_cursor = (offset + returned < total).then(|| {
         encode_cursor(&Cursor {
-            version: 2,
+            version: 3,
             catalogue_revision: result_set.catalogue_revision.clone(),
             query: query.clone(),
             options: request.options,
+            addon_guids: addon_guids.clone(),
             offset: offset + returned,
         })
     });
     let mut page = TextSearchPage {
         catalogue_revision: result_set.catalogue_revision.clone(),
         query,
+        addon_guids: addon_guids.clone(),
         returned,
         total,
+        totals_by_addon,
         next_cursor,
         truncated: result_set.truncated,
         stats: result_set.stats.clone(),
@@ -259,10 +295,11 @@ pub fn page(
         page.results.pop();
         page.returned = page.results.len();
         page.next_cursor = Some(encode_cursor(&Cursor {
-            version: 2,
+            version: 3,
             catalogue_revision: page.catalogue_revision.clone(),
             query: page.query.clone(),
             options: request.options,
+            addon_guids: addon_guids.clone(),
             offset: offset + page.returned,
         }));
     }
@@ -354,6 +391,8 @@ fn project_hit(
         .trim_end_matches('\r')
         .to_string();
     TextSearchHit {
+        addon_guid: source.addon_guid.clone(),
+        addon_label: source.addon_label.clone(),
         relative_path: source.relative_path.clone(),
         match_range: TextRange {
             start_line: start_line_index + 1,
@@ -365,6 +404,7 @@ fn project_hit(
         match_text: source.content[start..end].to_string(),
         read_source_input: TextReadInput {
             catalogue_revision: catalogue_revision.to_string(),
+            addon_guid: source.addon_guid.clone(),
             relative_path: source.relative_path.clone(),
             start_line: start_line_index + 1,
         },
@@ -411,6 +451,7 @@ struct Cursor {
     catalogue_revision: String,
     query: String,
     options: TextSearchOptions,
+    addon_guids: Vec<String>,
     offset: usize,
 }
 
@@ -425,7 +466,7 @@ fn decode_cursor(value: &str) -> Result<Cursor, TextSearchError> {
     let bytes = unhex(value).ok_or(TextSearchError::InvalidCursor)?;
     let cursor =
         serde_json::from_slice::<Cursor>(&bytes).map_err(|_| TextSearchError::InvalidCursor)?;
-    (cursor.version == 2)
+    (cursor.version == 3)
         .then_some(cursor)
         .ok_or(TextSearchError::InvalidCursor)
 }
@@ -460,13 +501,18 @@ mod tests {
             sources: vec![
                 TextSource {
                     relative_path: "Game/Z.c".to_string(),
+                    addon_guid: None,
+                    addon_label: None,
                     content: Arc::from("// SCR_ in a comment\nvoid Z() { string s = \"SCR_\"; }\n"),
                 },
                 TextSource {
                     relative_path: "Game/A.c".to_string(),
+                    addon_guid: None,
+                    addon_label: None,
                     content: Arc::from("void A() { SCR_(); }\n"),
                 },
             ],
+            ..TextSearchCorpus::default()
         }
     }
 
@@ -478,6 +524,7 @@ mod tests {
             "ws1:test",
             TextSearchRequest {
                 query: "SCR_".to_string(),
+                addon_guids: None,
                 options: TextSearchOptions::default(),
                 limit: Some(10),
                 cursor: None,
@@ -510,6 +557,7 @@ mod tests {
             "ws1:test",
             TextSearchRequest {
                 query: "scr_".to_string(),
+                addon_guids: None,
                 options: TextSearchOptions::default(),
                 limit: Some(10),
                 cursor: None,
@@ -525,6 +573,7 @@ mod tests {
             "ws1:test",
             TextSearchRequest {
                 query: "scr_".to_string(),
+                addon_guids: None,
                 options: TextSearchOptions {
                     match_case: true,
                     ..TextSearchOptions::default()
@@ -544,8 +593,11 @@ mod tests {
             source_read_failures: 0,
             sources: vec![TextSource {
                 relative_path: "Game/Words.c".to_string(),
+                addon_guid: None,
+                addon_label: None,
                 content: Arc::from("SCR SCR_Player scr\nSCR_One SCR_Two other"),
             }],
+            ..TextSearchCorpus::default()
         };
         let whole_word = search(
             corpus.clone(),
@@ -553,6 +605,7 @@ mod tests {
             "ws1:test",
             TextSearchRequest {
                 query: "scr".to_string(),
+                addon_guids: None,
                 options: TextSearchOptions {
                     match_whole_word: true,
                     ..TextSearchOptions::default()
@@ -570,6 +623,7 @@ mod tests {
             "ws1:test",
             TextSearchRequest {
                 query: r"SCR_(One|Two)".to_string(),
+                addon_guids: None,
                 options: TextSearchOptions {
                     use_regex: true,
                     ..TextSearchOptions::default()
@@ -592,6 +646,7 @@ mod tests {
             "ws1:test",
             TextSearchRequest {
                 query: "(".to_string(),
+                addon_guids: None,
                 options: TextSearchOptions {
                     use_regex: true,
                     ..TextSearchOptions::default()
@@ -612,6 +667,7 @@ mod tests {
             "ws1:test",
             TextSearchRequest {
                 query: "SCR_".to_string(),
+                addon_guids: None,
                 options: TextSearchOptions::default(),
                 limit: Some(1),
                 cursor: None,
@@ -627,6 +683,7 @@ mod tests {
             "ws1:test",
             TextSearchRequest {
                 query: "SCR_".to_string(),
+                addon_guids: None,
                 options: TextSearchOptions::default(),
                 limit: Some(1),
                 cursor: Some(cursor),
@@ -643,10 +700,27 @@ mod tests {
                 "ws1:test",
                 TextSearchRequest {
                     query: "SCR_".to_string(),
+                    addon_guids: None,
                     options: TextSearchOptions {
                         match_case: true,
                         ..TextSearchOptions::default()
                     },
+                    limit: Some(1),
+                    cursor: first.next_cursor.clone(),
+                },
+            ),
+            Err(TextSearchError::InvalidCursor)
+        ));
+
+        assert!(matches!(
+            search(
+                corpus(),
+                &IndexBuildControl::default(),
+                "ws1:test",
+                TextSearchRequest {
+                    query: "SCR_".to_string(),
+                    addon_guids: Some(vec!["AAAAAAAAAAAAAAAA".to_string()]),
+                    options: TextSearchOptions::default(),
                     limit: Some(1),
                     cursor: first.next_cursor.clone(),
                 },
@@ -661,6 +735,7 @@ mod tests {
                 "ws1:other",
                 TextSearchRequest {
                     query: "SCR_".to_string(),
+                    addon_guids: None,
                     options: TextSearchOptions::default(),
                     limit: Some(1),
                     cursor: first.next_cursor,
@@ -681,6 +756,7 @@ mod tests {
                 "ws1:test",
                 TextSearchRequest {
                     query: "SCR_".to_string(),
+                    addon_guids: None,
                     options: TextSearchOptions::default(),
                     limit: Some(10),
                     cursor: None,
@@ -700,13 +776,17 @@ mod tests {
                 source_read_failures: 0,
                 sources: vec![TextSource {
                     relative_path: "Game/Large.c".to_string(),
+                    addon_guid: None,
+                    addon_label: None,
                     content: Arc::from(content),
                 }],
+                ..TextSearchCorpus::default()
             },
             &IndexBuildControl::default(),
             "ws1:test",
             TextSearchRequest {
                 query: "SCR_".to_string(),
+                addon_guids: None,
                 options: TextSearchOptions::default(),
                 limit: Some(1),
                 cursor: None,
