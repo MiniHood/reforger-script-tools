@@ -111,7 +111,7 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 	panel.webview.html = renderSearchUi(panel.webview);
 	const indexModeSubscription = vscode.workspace.onDidChangeConfiguration(event => {
 		if (event.affectsConfiguration(`${workbenchConfig.section}.${workbenchConfig.settings.externalIndexMode}`)) {
-			void refreshSearchScope(context, active);
+			void refreshSearchScope(context, active, true);
 		}
 	});
 	panel.webview.onDidReceiveMessage(message => {
@@ -134,6 +134,7 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 async function restartSearchScopeForIndexMode(
 	context: vscode.ExtensionContext,
 	active: ActiveSearch,
+	refreshSearch: boolean,
 ): Promise<void> {
 	active.previewCancellation?.cancel();
 	active.previewCancellation?.dispose();
@@ -150,18 +151,19 @@ async function restartSearchScopeForIndexMode(
 			// A failed or already-closed process is replaced below.
 		}
 	}
-	await publishSearchScope(context, active);
+	await publishSearchScope(context, active, refreshSearch);
 }
 
 async function refreshSearchScope(
 	context: vscode.ExtensionContext,
 	active: ActiveSearch,
+	refreshSearch: boolean,
 ): Promise<void> {
 	if (active.scopeRefresh) {
 		await active.scopeRefresh;
 		return;
 	}
-	const refresh = restartSearchScopeForIndexMode(context, active);
+	const refresh = restartSearchScopeForIndexMode(context, active, refreshSearch);
 	active.scopeRefresh = refresh;
 	try {
 		await refresh;
@@ -186,7 +188,7 @@ async function handleMessage(
 			height: numberField(message.height),
 			devicePixelRatio: numberField(message.devicePixelRatio),
 		});
-		void publishSearchScope(context, active);
+		void publishSearchScope(context, active, false);
 		return;
 	}
 	if (message.type === 'webviewError') {
@@ -199,7 +201,7 @@ async function handleMessage(
 		return;
 	}
 	if (message.type === 'refreshScope') {
-		await refreshSearchScope(context, active);
+		await refreshSearchScope(context, active, false);
 		return;
 	}
 	if (message.type === 'debugSnapshot') {
@@ -244,6 +246,7 @@ async function handleMessage(
 async function publishSearchScope(
 	context: vscode.ExtensionContext,
 	active: ActiveSearch,
+	refreshSearch: boolean,
 ): Promise<void> {
 	try {
 		const client = await getClient(context, active);
@@ -258,7 +261,7 @@ async function publishSearchScope(
 			unavailableScopeIds: jsonField(scope.unavailableScopeIds),
 			discoveryMs: scope.discoveryMs,
 		});
-		active.panel.webview.postMessage({ type: 'scope', requestId: active.requestSequence, scope });
+		active.panel.webview.postMessage({ type: 'scope', requestId: active.requestSequence, scope, refreshSearch });
 	} catch (error) {
 		diagnostic('searchUi.scopeDiscoveryFailed', {
 			message: error instanceof Error ? error.message : String(error),
@@ -1021,6 +1024,7 @@ const modeButtons = () => '<button class="' + (state.mode === 'semantic' ? 'acti
 const textSearchOptions = () => state.mode !== 'text' ? '' : '<div class="text-options" aria-label="Text search options"><label class="text-option"><input type="checkbox" data-text-option="matchCase"' + (state.matchCase ? ' checked' : '') + '>Match case</label><label class="text-option"><input type="checkbox" data-text-option="matchWholeWord"' + (state.matchWholeWord ? ' checked' : '') + '>Match whole word</label><label class="text-option"><input type="checkbox" data-text-option="useRegex"' + (state.useRegex ? ' checked' : '') + '>Regular expression</label></div>';
 const eligibleScopeSources = () => state.scopeSources.filter(source => source.kind !== 'wiki' || state.mode === 'text');
 const selectedEligibleScopeIds = () => state.selectedScopeIds.filter(id => eligibleScopeSources().some(source => source.id === id));
+const sameScopeIds = (left, right) => left.length === right.length && left.every(id => right.includes(id));
 const allEligibleScopesSelected = () => {
   const eligible = eligibleScopeSources();
   return eligible.length > 0 && eligible.every(source => state.selectedScopeIds.includes(source.id));
@@ -1271,7 +1275,7 @@ let searchTimer;
 function scheduleSearch() { clearTimeout(searchTimer); if (state.mode === 'text') return; searchTimer = setTimeout(() => search(true), 100); }
 function requestPage(value) { if (state.status === 'loading') return; const requested = Number.parseInt(value, 10); if (!Number.isFinite(requested)) return; state.page = Math.min(totalPages(), Math.max(1, requested)); search(false); }
 function search(resetPagination) { if (resetPagination) { state.page = 1; } const scopeIds = selectedEligibleScopeIds(); const searchKey = [state.mode, state.query, state.matchCase, state.matchWholeWord, state.useRegex, scopeIds.slice().sort().join(','), state.type, state.page, state.pageSize].join('\\u0000'); if (state.status === 'loading' && state.lastSearchKey === searchKey) return; state.lastSearchKey = searchKey; state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.uiPerformance.searchStartedAt = performance.now(); state.uiPerformance.lastSearchResponseMs = 0; state.uiPerformance.lastPreviewMessageMs = 0; state.uiPerformance.lastSemanticMessageMs = 0; vscode.postMessage({ type: 'search', query: state.query, searchMode: state.mode, matchCase: state.matchCase, matchWholeWord: state.matchWholeWord, useRegex: state.useRegex, scopeIds, resultType: state.type, page: state.page, pageSize: state.pageSize }); }
-window.addEventListener('message', event => { const message = event.data; if (!message) return; if (message.type === 'scope') { const nextSources = Array.isArray(message.scope?.sources) ? message.scope.sources : []; const available = new Set(nextSources.map(source => source.id)); const previous = state.selectedScopeIds.slice(); state.scopeSources = nextSources; state.scopeRevision = message.scope?.scopeRevision ?? ''; state.scopeAuthority = message.scope?.scopeAuthority ?? ''; state.scopeDiscoveryMs = message.scope?.discoveryMs ?? 0; state.unavailableScopeIds = Array.isArray(message.scope?.unavailableScopeIds) ? message.scope.unavailableScopeIds : []; state.removedScopeIds = previous.filter(id => !available.has(id)); state.selectedScopeIds = state.selectionTouched ? previous.filter(id => available.has(id)) : nextSources.filter(source => source.defaultSelected).map(source => source.id); render(false); if (state.query.trim()) search(true); return; } if (message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.uiPerformance.lastSearchResponseMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = message.performance ?? {}; state.previewPerformance = {}; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'previews') { state.uiPerformance.lastPreviewMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? {}; state.sourcePreviews = { ...state.sourcePreviews, ...(message.previews ?? {}) }; state.matchRanges = { ...state.matchRanges, ...(message.matches ?? {}) }; updateResultPreviews(Object.keys(message.previews ?? {})); } if (message.type === 'semanticPreviews') { state.uiPerformance.lastSemanticMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? state.previewPerformance; state.semanticPreviews = { ...state.semanticPreviews, ...(message.previews ?? {}) }; updateResultPreviews(Object.keys(message.previews ?? {})); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.total = 0; state.totalBySource = {}; render(); } });
+window.addEventListener('message', event => { const message = event.data; if (!message) return; if (message.type === 'scope') { const nextSources = Array.isArray(message.scope?.sources) ? message.scope.sources : []; const available = new Set(nextSources.map(source => source.id)); const previous = state.selectedScopeIds.slice(); const previousScopeRevision = state.scopeRevision; state.scopeSources = nextSources; state.scopeRevision = message.scope?.scopeRevision ?? ''; state.scopeAuthority = message.scope?.scopeAuthority ?? ''; state.scopeDiscoveryMs = message.scope?.discoveryMs ?? 0; state.unavailableScopeIds = Array.isArray(message.scope?.unavailableScopeIds) ? message.scope.unavailableScopeIds : []; state.removedScopeIds = previous.filter(id => !available.has(id)); state.selectedScopeIds = state.selectionTouched ? previous.filter(id => available.has(id)) : nextSources.filter(source => source.defaultSelected).map(source => source.id); const scopeSelectionChanged = !sameScopeIds(previous, state.selectedScopeIds); const scopeRevisionChanged = Boolean(previousScopeRevision && state.scopeRevision && previousScopeRevision !== state.scopeRevision); const scopeSearchChanged = scopeSelectionChanged || scopeRevisionChanged; render(false); if (message.refreshSearch === true && scopeSearchChanged && state.query.trim()) search(true); return; } if (message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.uiPerformance.lastSearchResponseMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = message.performance ?? {}; state.previewPerformance = {}; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'previews') { state.uiPerformance.lastPreviewMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? {}; state.sourcePreviews = { ...state.sourcePreviews, ...(message.previews ?? {}) }; state.matchRanges = { ...state.matchRanges, ...(message.matches ?? {}) }; updateResultPreviews(Object.keys(message.previews ?? {})); } if (message.type === 'semanticPreviews') { state.uiPerformance.lastSemanticMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? state.previewPerformance; state.semanticPreviews = { ...state.semanticPreviews, ...(message.previews ?? {}) }; updateResultPreviews(Object.keys(message.previews ?? {})); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.total = 0; state.totalBySource = {}; render(); } });
 render();
 </script>
 </body>

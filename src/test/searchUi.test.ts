@@ -208,6 +208,16 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /SEARCH SCOPE<\/div>' \+ searchScope\(\) \+ '<div class="group-label">SEARCH MODE<\/div>' \+ modeButtons\(\)/);
 	});
 
+	test('does not rerun an active search when refreshed scope selection is unchanged', () => {
+		assert.match(searchUiSource, /const scopeSelectionChanged =/);
+		assert.match(searchUiSource, /const scopeRevisionChanged =/);
+		assert.match(searchUiSource, /const scopeSearchChanged = scopeSelectionChanged \|\| scopeRevisionChanged/);
+		assert.match(searchUiSource, /if \(message\.refreshSearch === true && scopeSearchChanged && state\.query\.trim\(\)\) search\(true\)/);
+		assert.match(searchUiSource, /message\.type === 'refreshScope'[\s\S]*?refreshSearchScope\(context, active, false\)/);
+		assert.match(searchUiSource, /affectsConfiguration[\s\S]*?refreshSearchScope\(context, active, true\)/);
+		assert.doesNotMatch(searchUiSource, /render\(false\); if \(state\.query\.trim\(\)\) search\(true\); return;/);
+	});
+
 	test('starts the custom Search MCP process with the configured external index mode', () => {
 		assert.match(searchClientSource, /externalIndexMode: ExternalIndexMode/);
 		assert.match(searchClientSource, /'--external-index-mode',[\s\S]*?this\.options\.externalIndexMode/);
@@ -215,7 +225,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /dependencyProjectFiles: await discoverWorkspaceProjectFiles\(\)/);
 		assert.match(searchClientSource, /this\.options\.dependencyProjectFiles\.flatMap\(projectFile => \['--dependency-project', projectFile\]\)/);
 		assert.match(searchUiSource, /affectsConfiguration\(`\$\{workbenchConfig\.section\}\.\$\{workbenchConfig\.settings\.externalIndexMode\}`\)/);
-		assert.match(searchUiSource, /restartSearchScopeForIndexMode\(context, active\)/);
+		assert.match(searchUiSource, /restartSearchScopeForIndexMode\(context, active, refreshSearch\)/);
 		assert.match(searchUiSource, /\(await previousClient\)\.dispose\(\)/);
 	});
 
