@@ -1157,18 +1157,27 @@ pub(crate) fn completion_report_for_current_argument_labels_at_offset_with_exter
         );
     }
     let callable_candidates = combine_completion_candidates(callable_candidates);
+    let builtin_parts = builtin_callable_fact(&context.callee).map(|fact| fact.signature_parts());
     if start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE {
         return None;
     }
-    if callable_candidates.is_empty() {
+    if callable_candidates.is_empty() && builtin_parts.is_none() {
         let labels =
             BoundedCompletionFacts::callable_parameter_names(source, &region, &context.callee)?;
         return (start.elapsed() <= LOCAL_SCOPE_QUERY_DEADLINE).then_some(
             bounded_argument_label_report(source, context, labels, start),
         );
     }
-    let parameter_candidates =
-        parameter_label_candidates_for_callables(&callable_candidates, None, &context);
+    let indexed_candidates = if builtin_parts.is_some() {
+        &[][..]
+    } else {
+        callable_candidates.as_slice()
+    };
+    let parameter_candidates = parameter_label_candidates_for_callables(
+        indexed_candidates,
+        builtin_parts.as_ref(),
+        &context,
+    );
     let edit_range = range_for_span(source, context.prefix_span);
     let empty_local_index = SymbolIndex::default();
     let (items, source_kind_counts, origin_counts) = completion_items_for_parameter_labels(
@@ -6625,6 +6634,24 @@ mod tests {
             .items
             .iter()
             .any(|item| item.label == "firstValue"));
+    }
+
+    #[test]
+    fn current_argument_query_uses_the_shared_builtin_attribute_fact() {
+        let source = "class Example { [Attribute(uiw)] int m_Value; }";
+        let offset = source.find("Attribute(uiw").unwrap() + "Attribute(uiw".len();
+
+        let report = completion_report_for_current_argument_labels_at_offset_with_external_indexes(
+            source, offset, None, None,
+        )
+        .expect("the built-in Attribute fact should be available before rich analysis");
+
+        assert_eq!(report.query_quality, QueryQuality::Exact);
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "uiwidget"));
     }
 
     #[test]

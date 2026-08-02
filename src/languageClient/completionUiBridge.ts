@@ -63,16 +63,6 @@ function registerEmptyCompletionRefresh(): vscode.Disposable {
 	return vscode.workspace.onDidChangeTextDocument(event => {
 		const documentUri = event.document.uri.toString();
 		const hasDeletion = event.contentChanges.some(change => change.rangeLength > change.text.length);
-		if (event.document.languageId === languageClientLanguage.id) {
-			recordCompletionDiagnostic('documentChange', {
-				version: event.document.version,
-				changeCount: event.contentChanges.length,
-				hasDeletion,
-				insertedCharacters: event.contentChanges.reduce((total, change) => total + change.text.length, 0),
-				deletedCharacters: event.contentChanges.reduce((total, change) => total + change.rangeLength, 0),
-				activeDocument: isActiveEnforceDocument(event.document),
-			});
-		}
 		latestEditorDocumentChange = {
 			documentUri,
 			version: event.document.version,
@@ -85,9 +75,6 @@ function registerEmptyCompletionRefresh(): vscode.Disposable {
 		}
 		pendingEmptyCompletionRefresh = undefined;
 		if (!hasDeletion || !isActiveEnforceDocument(event.document)) {
-			recordCompletionDiagnostic('emptyRefreshCancelled', {
-				reason: hasDeletion ? 'inactiveDocument' : 'nonDeletion',
-			});
 			diagnostic('completion.emptyRefresh.cancelled', {
 				reason: hasDeletion ? 'inactiveDocument' : 'nonDeletion',
 			});
@@ -119,7 +106,6 @@ function armEmptyCompletionRefresh(
 		return;
 	}
 	pendingEmptyCompletionRefresh = { documentUri, requestVersion };
-	recordCompletionDiagnostic('emptyRefreshArmed', { requestVersion });
 	diagnostic('completion.emptyRefresh.armed', { requestVersion });
 }
 
@@ -133,34 +119,23 @@ function isRefreshableEmptyCompletion(
 		&& result.isIncomplete === true;
 }
 
-function recordCompletionDiagnostic(
-	event: string,
-	fields: Record<string, string | number | boolean | undefined>,
-): void {
-	diagnostic(`completion.lifecycle.${event}`, fields);
-}
-
 function isActiveEnforceDocument(document: vscode.TextDocument): boolean {
 	return document.languageId === languageClientLanguage.id
 		&& vscode.window.activeTextEditor?.document.uri.toString() === document.uri.toString();
 }
 
 function dispatchEmptyCompletionRefresh(document: vscode.TextDocument, source: 'deletion' | 'staleEmptyResponseAfterDeletion'): void {
-	recordCompletionDiagnostic('emptyRefreshDispatchRequested', { source });
 	diagnostic('completion.emptyRefresh.dispatched', { source });
 	queueMicrotask(() => {
 		if (!isActiveEnforceDocument(document)) {
-			recordCompletionDiagnostic('emptyRefreshCancelled', { reason: 'activeEditorChanged' });
 			diagnostic('completion.emptyRefresh.cancelled', { reason: 'activeEditorChanged' });
 			return;
 		}
 		void vscode.commands.executeCommand('editor.action.triggerSuggest').then(
 			() => {
-				recordCompletionDiagnostic('emptyRefreshSuggestDispatched', { source });
 				diagnostic('completion.emptyRefresh.suggestDispatched', { source });
 			},
 			() => {
-				recordCompletionDiagnostic('emptyRefreshSuggestDispatchError', { source });
 				diagnostic('completion.emptyRefresh.suggestDispatchError', { source });
 			},
 		);
@@ -648,12 +623,6 @@ export const completionUiMiddlewareCallbacks: CompletionMiddlewareCallbacks = {
 			line: position.line,
 			character: position.character,
 		});
-		recordCompletionDiagnostic('request', {
-			requestVersion: document.version,
-			line: position.line,
-			character: position.character,
-			triggerKind,
-		});
 		return { transactionId: transaction?.documentUri === document.uri.toString() && transaction.awaitingCompletionResponse ? transaction.id : undefined };
 	},
 	respond: (document, triggerKind, requestVersion, transactionId, result, elapsedMs) => {
@@ -669,7 +638,6 @@ export const completionUiMiddlewareCallbacks: CompletionMiddlewareCallbacks = {
 			triggerKind,
 			items,
 		});
-		recordCompletionDiagnostic('response', { requestVersion, currentVersion: document.version, triggerKind, itemCount: completionItemCount(result), isIncomplete: isCompletionListIncomplete(result), elapsedMs, ...completionPresentationMetadata(result) });
 		armEmptyCompletionRefresh(document, requestVersion, result);
 		const transaction = pendingSnippetSuggestTransaction;
 		if (transaction && transaction.id === transactionId && transaction.documentUri === document.uri.toString() && transaction.awaitingCompletionResponse) {
@@ -679,7 +647,6 @@ export const completionUiMiddlewareCallbacks: CompletionMiddlewareCallbacks = {
 		}
 	},
 	fail: (document, triggerKind, requestVersion, transactionId, elapsedMs) => {
-		recordCompletionDiagnostic('responseError', { requestVersion, triggerKind, elapsedMs });
 		const transaction = pendingSnippetSuggestTransaction;
 		if (transaction && transaction.id === transactionId && transaction.documentUri === document.uri.toString() && transaction.awaitingCompletionResponse) {
 			diagnostic('completion.transaction.responseError', { transactionId: transaction.id, triggerKind, elapsedMs });
