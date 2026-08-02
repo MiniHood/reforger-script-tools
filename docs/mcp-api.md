@@ -33,7 +33,7 @@ Use this guide to choose a tool family and establish the minimum live context. F
 | --- | --- | --- |
 | Exact game declarations or members | `search_game_data_symbols` | `inspect_game_data_symbol`, members, relationships, or source read |
 | User add-on declarations | `search_workspace_symbols` | workspace inspection, relationships, or source read |
-| Literal source usage, comments, strings, or local-variable text | `search_game_data_text` or `search_workspace_text` | use the returned range and `read_source_input`; this is explicit, bounded, case-sensitive text evidence |
+| Literal source usage, comments, strings, or local-variable text | `search_game_data_text` or `search_workspace_text` | use the returned range and `readSourceInput`; this is explicit, bounded, case-sensitive text evidence |
 | Official Reforger documentation | `search_official_wiki` | `read_official_wiki` using the returned revision and line handoff |
 | Live Workbench availability or context | `workbench_status` when uncertain | `workbench_state` or `workbench_project_context` |
 | Live resources or editors | `workbench_search_resources` or `workbench_list_editors` | inspect/open the exact returned identity |
