@@ -815,7 +815,7 @@ const sourceLabel = value => sources.find(source => source.value === value)?.lab
 const visibleResults = () => state.results;
 const modeButtons = () => '<button class="' + (state.mode === 'semantic' ? 'active' : '') + '" data-mode="semantic">Semantic</button><button class="' + (state.mode === 'text' ? 'active' : '') + '" data-mode="text">Text</button>';
 const textSearchOptions = () => state.mode !== 'text' ? '' : '<div class="text-options" aria-label="Text search options"><label class="text-option"><input type="checkbox" data-text-option="matchCase"' + (state.matchCase ? ' checked' : '') + '>Match case</label><label class="text-option"><input type="checkbox" data-text-option="matchWholeWord"' + (state.matchWholeWord ? ' checked' : '') + '>Match whole word</label><label class="text-option"><input type="checkbox" data-text-option="useRegex"' + (state.useRegex ? ' checked' : '') + '>Regular expression</label></div>';
-const sourceButtons = () => sources.map(source => '<button class="' + (state.source === source.value ? 'active' : '') + '" data-source="' + esc(source.value) + '"' + (state.mode === 'text' && source.value === 'wiki' ? ' disabled' : '') + '>' + esc(source.label) + '</button>').join('');
+const sourceButtons = () => sources.filter(source => source.value !== 'wiki' || state.mode === 'text').map(source => '<button class="' + (state.source === source.value ? 'active' : '') + '" data-source="' + esc(source.value) + '">' + esc(source.label) + '</button>').join('');
 const resultTypes = ${JSON.stringify(searchKindFilters.map(({ value, label }) => ({ value, label })))};
 const typeButtons = () => state.mode === 'text' ? '' : resultTypes.map(type => '<button class="' + (state.type === type.value ? 'active' : '') + '" data-type="' + esc(type.value) + '">' + esc(type.label) + '</button>').join('');
 const pageSizeOptions = [25, 50, 100];
@@ -993,7 +993,7 @@ function render() {
   query.addEventListener('input', event => { state.query = event.target.value; scheduleSearch(); });
   query.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); search(true); } });
   document.querySelectorAll('[data-text-option]').forEach(element => element.addEventListener('change', () => { state[element.dataset.textOption] = element.checked; search(true); }));
-  document.querySelectorAll('[data-mode]').forEach(element => element.addEventListener('click', () => { state.mode = element.dataset.mode === 'text' ? 'text' : 'semantic'; if (state.mode === 'text' && state.source === 'wiki') state.source = 'all'; state.page = 1; search(true); }));
+  document.querySelectorAll('[data-mode]').forEach(element => element.addEventListener('click', () => { state.mode = element.dataset.mode === 'text' ? 'text' : 'semantic'; if (state.mode === 'semantic' && state.source === 'wiki') state.source = 'all'; state.page = 1; search(true); }));
   document.querySelectorAll('[data-type]').forEach(element => element.addEventListener('click', () => { state.type = element.dataset.type; state.page = 1; search(true); }));
   document.querySelectorAll('[data-source]').forEach(element => element.addEventListener('click', () => { state.source = element.dataset.source; search(true); }));
   document.querySelectorAll('[data-page-prev]').forEach(element => element.addEventListener('click', () => requestPage(state.page - 1)));

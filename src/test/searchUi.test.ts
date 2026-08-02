@@ -21,6 +21,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.strictEqual(searchToolFor('wiki'), 'search_official_wiki');
 		assert.strictEqual(searchToolFor('workspace', 'text'), 'search_workspace_text');
 		assert.strictEqual(searchToolFor('gameData', 'text'), 'search_game_data_text');
+		assert.strictEqual(searchToolFor('wiki', 'text'), 'search_official_wiki');
 	});
 
 	test('maps literal text matches to exact line previews and source-read handoffs', () => {
@@ -128,7 +129,10 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /searchMode: state\.mode/);
 		assert.match(searchClientSource, /search_workspace_text/);
 		assert.match(searchClientSource, /search_game_data_text/);
-		assert.match(searchClientSource, /paginationMode: mode === 'text' \? 'cursor' : 'offset'/);
+		assert.match(searchClientSource, /paginationMode: paginationModeFor\(mode, sources\)/);
+		assert.match(searchClientSource, /mode === 'semantic'[\s\S]*sources\.filter\(source => source !== 'wiki'\)/);
+		assert.match(searchUiSource, /sources\.filter\(source => source\.value !== 'wiki' \|\| state\.mode === 'text'\)/);
+		assert.match(searchUiSource, /state\.mode === 'semantic' && state\.source === 'wiki'/);
 	});
 
 	test('maps symbol search handoffs into source-browser rows', () => {

@@ -93,7 +93,7 @@ export interface SearchPerformance {
 	rangeSearchMs: number;
 	mergeMs: number;
 	requestedPage: number;
-	paginationMode: 'offset' | 'cursor';
+	paginationMode: 'offset' | 'cursor' | 'mixed';
 	searchMode: SearchMode;
 	textOptions: TextSearchOptions;
 	pageSize: number;
@@ -309,7 +309,7 @@ function finishSearchPerformance(
 		rangeSearchMs: trace.rangeSearchMs,
 		mergeMs: trace.mergeMs,
 		requestedPage,
-		paginationMode: mode === 'text' ? 'cursor' : 'offset',
+		paginationMode: paginationModeFor(mode, sources),
 		searchMode: mode,
 		textOptions,
 		pageSize,
@@ -342,7 +342,7 @@ export class McpSearchClient {
 		trace.startupMs = performance.now() - trace.startedAt;
 		const normalizedPageSize = Math.min(100, Math.max(1, Number.isFinite(pageSize) ? Math.floor(pageSize) : 25));
 		const requestedPage = Math.min(maxSearchPages, Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1));
-		const searchableSources = mode === 'text' ? sources.filter(source => source !== 'wiki') : symbolKinds?.length
+		const searchableSources = mode === 'semantic'
 			? sources.filter(source => source !== 'wiki')
 			: sources;
 		if (searchableSources.length === 0) {
@@ -587,11 +587,12 @@ export class McpSearchClient {
 			}
 			return cached;
 		}
-		if (mode === 'text' && page > 1 && !pages.has(page - 1)) {
+		const usesCursor = mode === 'text' && source !== 'wiki';
+		if (usesCursor && page > 1 && !pages.has(page - 1)) {
 			await this.searchPage(query, source, pageSize, page - 1, symbolKinds, trace, mode, textOptions);
 		}
-		const previousPage = mode === 'text' && page > 1 ? pages.get(page - 1) : undefined;
-		const argumentsValue: Record<string, unknown> = mode === 'text' ? {
+		const previousPage = usesCursor && page > 1 ? pages.get(page - 1) : undefined;
+		const argumentsValue: Record<string, unknown> = usesCursor ? {
 			query,
 			limit: pageSize,
 			matchCase: textOptions.matchCase,
@@ -721,12 +722,22 @@ export class McpSearchClient {
 }
 
 export function searchToolFor(source: SearchSource, mode: SearchMode = 'semantic'): string {
+	if (source === 'wiki') {
+		return 'search_official_wiki';
+	}
 	if (mode === 'text') {
 		return source === 'gameData' ? 'search_game_data_text' : 'search_workspace_text';
 	}
-	return source === 'wiki' ? 'search_official_wiki' : source === 'gameData'
+	return source === 'gameData'
 		? 'search_game_data_symbols'
 		: 'search_workspace_symbols';
+}
+
+function paginationModeFor(mode: SearchMode, sources: readonly SearchSource[]): 'offset' | 'cursor' | 'mixed' {
+	if (mode === 'semantic' || sources.every(source => source === 'wiki')) {
+		return 'offset';
+	}
+	return sources.includes('wiki') ? 'mixed' : 'cursor';
 }
 
 export function normalizeSearchPage(source: SearchSource, value: unknown, mode: SearchMode = 'semantic'): SearchHit[] {
