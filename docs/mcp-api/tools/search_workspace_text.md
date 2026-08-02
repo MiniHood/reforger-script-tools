@@ -3,7 +3,7 @@
 
 [Back to the MCP API router](../../mcp-api.md)
 
-Explicit bounded full-text search over readable user add-on workspace script files. This is a case-sensitive literal substring scan: comments, strings, expressions, and local-variable uses are included; it is not regex, fuzzy, semantic, or Wiki search. Results are deterministic, revision-bound, paged with an opaque cursor, and carry exact source ranges, a line excerpt, and a ready-to-copy readSourceInput. This scan is intentionally on demand and may take seconds across the configured workspace; use semantic search for declarations.
+Explicit bounded full-text search over readable user add-on workspace script files. Matching is a case-insensitive literal substring by default; optional case-sensitive, whole-word, and regular-expression modes are explicit. Comments, strings, expressions, and local-variable uses are included; this is not fuzzy, semantic, or Wiki search. Results are deterministic, revision-bound, paged with an opaque cursor, and carry exact source ranges, a line excerpt, and a ready-to-copy readSourceInput. This scan is intentionally on demand and may take seconds across the configured workspace; use semantic search for declarations.
 
 ### Annotations
 
@@ -37,10 +37,22 @@ Explicit bounded full-text search over readable user add-on workspace script fil
         "null"
       ]
     },
+    "matchCase": {
+      "default": false,
+      "type": "boolean"
+    },
+    "matchWholeWord": {
+      "default": false,
+      "type": "boolean"
+    },
     "query": {
       "maxLength": 256,
       "minLength": 1,
       "type": "string"
+    },
+    "useRegex": {
+      "default": false,
+      "type": "boolean"
     }
   },
   "required": [
@@ -217,16 +229,17 @@ Explicit bounded full-text search over readable user add-on workspace script fil
 
 ### Limits and matching
 
-- `query` is a required case-sensitive literal substring, limited to 256 characters; whitespace is preserved. This is not regex, fuzzy, semantic, or Wiki search.
-- `limit` defaults to 20 and clamps to 1 through 100. Continue with the opaque revision-bound `cursor`; cursors are limited to 2 KiB and cannot be constructed by callers.
+- `query` is required and limited to 256 characters; whitespace is preserved. Matching is a case-insensitive literal substring by default.
+- Set `matchCase` for exact capitalization, `matchWholeWord` to require non-identifier boundaries around each match, and `useRegex` to interpret `query` as a Rust-regex pattern. Options may be combined.
+- `limit` defaults to 20 and clamps to 1 through 100. Continue with the opaque revision- and option-bound `cursor`; cursors are limited to 2 KiB and cannot be constructed by callers.
 - The scan is explicit and on demand. It includes comments, strings, expressions, and local-variable uses, and reports deterministic logical paths and exact one-based line/character ranges.
-- Results are capped at 100,000 retained matches and 256 KiB per page. `stats` reports files considered/read, files with matches, source-read failures, matches found, and scan time; `truncated` means the retained result bound was reached.
+- Results are capped at 100,000 retained matches, 16 KiB per line excerpt, and 256 KiB per page. Zero-length regular-expression matches are omitted. `stats` reports files considered/read, files with matches, source-read failures, matches found, and scan time; `truncated` means the retained result bound was reached.
 - The operation is cancellable and has a bounded 30,000 ms ready-catalogue deadline.
 
 ### Stable failures
 
-- `invalid_arguments`: correct the literal query or limit.
-- `invalid_cursor`: omit the cursor and repeat from the first page.
+- `invalid_arguments`: correct the query, regular expression, options, or limit.
+- `invalid_cursor`: repeat from the first page when the query or matching options change.
 - `stale_cursor`: repeat the same search without the cursor.
 - `request_cancelled` or `deadline_exceeded`: retry the explicit scan or narrow the configured corpus.
 

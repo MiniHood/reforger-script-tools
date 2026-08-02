@@ -75,7 +75,10 @@ as one batch: it validates each referenced source revision once, groups entries
 by PAC archive, opens each archive once, and reads selected scripts in archive
 offset order before scanning. Individual navigation remains a one-entry lazy
 read; full-text search does not repeat navigation-time PAC inspection for every
-script.
+script. The matcher uses case-insensitive literal substrings by default and
+accepts explicit match-case, whole-word, and regular-expression options. Those
+options are part of both the bounded result-cache identity and opaque paging
+cursor, so pages from different matching modes cannot be combined.
 The later authoritative Workbench graph validates the exact packed and loose
 sources and atomically replaces only changed instances. Unchanged validation
 inspects bounded PAC catalogues and hashes only selected compressed script

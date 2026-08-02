@@ -21,6 +21,9 @@ async function main() {
 		source: options.source,
 		queryCharacters: [...options.query].length,
 		limit: options.limit,
+		matchCase: options.matchCase,
+		matchWholeWord: options.matchWholeWord,
+		useRegex: options.useRegex,
 		budgetMs: options.budgetMs,
 		timeoutMs: options.timeoutMs,
 		server: serverPath,
@@ -46,6 +49,9 @@ async function main() {
 		const search = await measure(() => client.callTool(toolName, {
 			query: options.query,
 			limit: options.limit,
+			matchCase: options.matchCase,
+			matchWholeWord: options.matchWholeWord,
+			useRegex: options.useRegex,
 		}, options.timeoutMs));
 		report.searchMs = round(search.elapsedMs);
 		report.search = summarizeToolResult(search.value);
@@ -219,6 +225,9 @@ function parseArguments(args) {
 		limit: 25,
 		budgetMs: 5000,
 		timeoutMs: 35000,
+		matchCase: false,
+		matchWholeWord: false,
+		useRegex: false,
 	};
 	for (let index = 0; index < args.length; index += 1) {
 		const argument = args[index];
@@ -236,6 +245,9 @@ function parseArguments(args) {
 			case '--limit': parsed.limit = positiveInteger(value(), argument); break;
 			case '--budget-ms': parsed.budgetMs = positiveInteger(value(), argument); break;
 			case '--timeout-ms': parsed.timeoutMs = positiveInteger(value(), argument); break;
+			case '--match-case': parsed.matchCase = true; break;
+			case '--match-whole-word': parsed.matchWholeWord = true; break;
+			case '--regex': parsed.useRegex = true; break;
 			case '--help': usage(); break;
 			default: usage(`Unknown argument: ${argument}`);
 		}
@@ -265,7 +277,7 @@ function usage(error) {
 		'Usage: node tools/text-search-performance.mjs --server <exe> --source <workspace|game-data> --query <literal> [options]\n' +
 		'  Workspace: --workspace-scripts <root> (repeatable)\n' +
 		'  Game Data: --index-cache <symbols.bin>\n' +
-		'  Options: --limit <1-100> --budget-ms <ms> --timeout-ms <ms>\n',
+		'  Options: --limit <1-100> --budget-ms <ms> --timeout-ms <ms> --match-case --match-whole-word --regex\n',
 	);
 	process.exit(error ? 2 : 0);
 }

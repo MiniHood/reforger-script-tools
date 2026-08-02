@@ -172,6 +172,12 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
             text_tool.pointer("/inputSchema/required/0"),
             Some(&json!("query"))
         );
+        for option in ["matchCase", "matchWholeWord", "useRegex"] {
+            assert_eq!(
+                text_tool.pointer(&format!("/inputSchema/properties/{option}/type")),
+                Some(&json!("boolean"))
+            );
+        }
         assert!(text_tool.get("outputSchema").is_some());
     }
     for name in [
@@ -334,7 +340,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
 
     client.send(json!({
         "jsonrpc": "2.0", "id": 7, "method": "tools/call",
-        "params": { "name": "search_game_data_text", "arguments": { "query": "McpFixture" } }
+        "params": { "name": "search_game_data_text", "arguments": { "query": "mcpfixture" } }
     }));
     let text_search = client.response(7);
     assert_eq!(text_search.pointer("/result/isError"), Some(&json!(false)));
@@ -413,6 +419,22 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         text_hit_search.pointer("/result/structuredContent/results/0/readSourceInput/relativePath"),
         Some(&json!("Game/McpFixture.c"))
     );
+
+    client.send(json!({
+        "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+        "params": { "name": "search_game_data_text", "arguments": { "query": "mcpfixture", "matchCase": true } }
+    }));
+    let case_sensitive_search = client.response(9);
+    assert_eq!(
+        case_sensitive_search.pointer("/result/structuredContent/total"),
+        Some(&json!(0))
+    );
+
+    client.send(json!({
+        "jsonrpc": "2.0", "id": 10, "method": "tools/call",
+        "params": { "name": "search_game_data_text", "arguments": { "query": "(", "useRegex": true } }
+    }));
+    assert_tool_error_code(&client.response(10), "invalid_arguments");
 
     for (offset, tool) in listed.iter().enumerate() {
         let name = tool

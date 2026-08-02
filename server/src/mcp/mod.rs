@@ -22,7 +22,7 @@ use crate::official_wiki::{
     OfficialWikiReadRequest, OfficialWikiSearchError, OfficialWikiSearchPage,
     OfficialWikiSearchRequest, OfficialWikiStatus,
 };
-use crate::text_search::{TextSearchError, TextSearchPage, TextSearchRequest};
+use crate::text_search::{TextSearchError, TextSearchOptions, TextSearchPage, TextSearchRequest};
 use crate::workbench::{
     WorkbenchBridgeInstallResult, WorkbenchComponentResult, WorkbenchController,
     WorkbenchControllerOptions, WorkbenchCreateEntityOptions, WorkbenchEditorList,
@@ -182,7 +182,7 @@ Use this guide to choose a tool family and establish the minimum live context. F
 | --- | --- | --- |
 | Exact game declarations or members | `search_game_data_symbols` | `inspect_game_data_symbol`, members, relationships, or source read |
 | User add-on declarations | `search_workspace_symbols` | workspace inspection, relationships, or source read |
-| Literal source usage, comments, strings, or local-variable text | `search_game_data_text` or `search_workspace_text` | use the returned range and `readSourceInput`; this is explicit, bounded, case-sensitive text evidence |
+| Literal or regular-expression source usage, comments, strings, or local-variable text | `search_game_data_text` or `search_workspace_text` | use the returned range and `readSourceInput`; matching ignores case by default and supports explicit case, whole-word, and regular-expression options |
 | Official Reforger documentation | `search_official_wiki` | `read_official_wiki` using the returned revision and line handoff |
 | Live Workbench availability or context | `workbench_status` when uncertain | `workbench_state` or `workbench_project_context` |
 | Live resources or editors | `workbench_search_resources` or `workbench_list_editors` | inspect/open the exact returned identity |
@@ -208,8 +208,8 @@ Use this guide to choose a tool family and establish the minimum live context. F
 const GAME_DATA_STATUS_DESCRIPTION: &str = "Load and report the parser-owned Reforger Game Data Catalogue cache. Use this first when Game Data availability or coverage is uncertain. Returns the immutable catalogue revision, source provenance, semantic coverage and counts, cache outcome, bounded timings, limits, warnings, and recovery guidance without physical paths; it does not inspect source inputs, parse, rebuild, write the cache, or search symbols.";
 const SEARCH_GAME_DATA_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the immutable Reforger Game Data Catalogue. Results are ranked deterministically and contain opaque revision-bound symbol references plus ready-to-copy inspection and source-read inputs; this is not a source-text search. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry.";
 const SEARCH_WORKSPACE_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the configured user add-on workspace index. Results use the same language-owned symbol references, deterministic pagination, and inspection handoffs as Game Data search; the index is built once per MCP process from --workspace-scripts roots. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry. Identifier-prefix queries ending in `_` (for example, `SCR_`) match declared symbol names only, not containing names, signatures, or types.";
-const SEARCH_GAME_DATA_TEXT_DESCRIPTION: &str = "Explicit bounded full-text search over readable Reforger Game Data source files. This is a case-sensitive literal substring scan: comments, strings, expressions, and local-variable uses are included; it is not regex, fuzzy, semantic, or Wiki search. Results are deterministic, revision-bound, paged with an opaque cursor, and carry exact source ranges, a line excerpt, and a ready-to-copy readSourceInput. This scan is intentionally on demand and may take seconds across the corpus; use semantic search for declarations. Do not use this tool to infer live Workbench state.";
-const SEARCH_WORKSPACE_TEXT_DESCRIPTION: &str = "Explicit bounded full-text search over readable user add-on workspace script files. This is a case-sensitive literal substring scan: comments, strings, expressions, and local-variable uses are included; it is not regex, fuzzy, semantic, or Wiki search. Results are deterministic, revision-bound, paged with an opaque cursor, and carry exact source ranges, a line excerpt, and a ready-to-copy readSourceInput. This scan is intentionally on demand and may take seconds across the configured workspace; use semantic search for declarations.";
+const SEARCH_GAME_DATA_TEXT_DESCRIPTION: &str = "Explicit bounded full-text search over readable Reforger Game Data source files. Matching is a case-insensitive literal substring by default; optional case-sensitive, whole-word, and regular-expression modes are explicit. Comments, strings, expressions, and local-variable uses are included; this is not fuzzy, semantic, or Wiki search. Results are deterministic, revision-bound, paged with an opaque cursor, and carry exact source ranges, a line excerpt, and a ready-to-copy readSourceInput. This scan is intentionally on demand and may take seconds across the corpus; use semantic search for declarations. Do not use this tool to infer live Workbench state.";
+const SEARCH_WORKSPACE_TEXT_DESCRIPTION: &str = "Explicit bounded full-text search over readable user add-on workspace script files. Matching is a case-insensitive literal substring by default; optional case-sensitive, whole-word, and regular-expression modes are explicit. Comments, strings, expressions, and local-variable uses are included; this is not fuzzy, semantic, or Wiki search. Results are deterministic, revision-bound, paged with an opaque cursor, and carry exact source ranges, a line excerpt, and a ready-to-copy readSourceInput. This scan is intentionally on demand and may take seconds across the configured workspace; use semantic search for declarations.";
 const INSPECT_WORKSPACE_SYMBOL_DESCRIPTION: &str = "Inspect one opaque workspace symbol reference returned by search_workspace_symbols. Returns parser-owned declaration, documentation, member, and source-location facts for the user add-on index.";
 const LIST_WORKSPACE_SYMBOL_MEMBERS_DESCRIPTION: &str = "List direct members of one revision-bound workspace symbol with semantic-kind filters and opaque pagination.";
 const QUERY_WORKSPACE_SYMBOL_RELATIONSHIPS_DESCRIPTION: &str = "Query bounded definitions, inheritance, references, and callers for one revision-bound workspace symbol. Reference results come from the language-owned workspace index, not an MCP text scan.";
@@ -1049,6 +1049,12 @@ struct McpWorkspaceSearchInput {
 struct McpTextSearchInput {
     #[schemars(length(min = 1, max = 256))]
     query: String,
+    #[serde(default)]
+    match_case: bool,
+    #[serde(default)]
+    match_whole_word: bool,
+    #[serde(default)]
+    use_regex: bool,
     #[schemars(range(min = 1, max = 100))]
     limit: Option<usize>,
     #[schemars(length(max = 2048))]
@@ -1937,6 +1943,11 @@ fn text_search_error(error: &TextSearchError) -> CallToolResult {
             message,
             "Correct the text search input and retry.",
         ),
+        TextSearchError::InvalidPattern(message) => tool_error(
+            "invalid_arguments",
+            message,
+            "Correct the regular expression and retry.",
+        ),
         TextSearchError::Cancelled => tool_error(
             "request_cancelled",
             "The text search was cancelled.",
@@ -2279,6 +2290,11 @@ impl ReforgerMcpServer {
                 .workspace_text_search(
                     TextSearchRequest {
                         query: input.query,
+                        options: TextSearchOptions {
+                            match_case: input.match_case,
+                            match_whole_word: input.match_whole_word,
+                            use_regex: input.use_regex,
+                        },
                         limit: input.limit,
                         cursor: input.cursor,
                     },
@@ -3942,6 +3958,11 @@ impl ReforgerMcpServer {
                 .search_game_data_text(
                     TextSearchRequest {
                         query: input.query,
+                        options: TextSearchOptions {
+                            match_case: input.match_case,
+                            match_whole_word: input.match_whole_word,
+                            use_regex: input.use_regex,
+                        },
                         limit: input.limit,
                         cursor: input.cursor,
                     },
@@ -5215,7 +5236,7 @@ fn append_text_tool_reference(reference: &mut String, tool: &Tool) {
     )
     .expect("text tool output schema serializes");
     reference.push_str(&format!(
-        "\n## `{}`\n\n{}\n\n### Annotations\n\n```json\n{}\n```\n\n### Input schema\n\n```json\n{}\n```\n\n### Output schema\n\n```json\n{}\n```\n\n### Limits and matching\n\n- `query` is a required case-sensitive literal substring, limited to 256 characters; whitespace is preserved. This is not regex, fuzzy, semantic, or Wiki search.\n- `limit` defaults to 20 and clamps to 1 through 100. Continue with the opaque revision-bound `cursor`; cursors are limited to 2 KiB and cannot be constructed by callers.\n- The scan is explicit and on demand. It includes comments, strings, expressions, and local-variable uses, and reports deterministic logical paths and exact one-based line/character ranges.\n- Results are capped at 100,000 retained matches and 256 KiB per page. `stats` reports files considered/read, files with matches, source-read failures, matches found, and scan time; `truncated` means the retained result bound was reached.\n- The operation is cancellable and has a bounded 30,000 ms ready-catalogue deadline.\n\n### Stable failures\n\n- `invalid_arguments`: correct the literal query or limit.\n- `invalid_cursor`: omit the cursor and repeat from the first page.\n- `stale_cursor`: repeat the same search without the cursor.\n- `request_cancelled` or `deadline_exceeded`: retry the explicit scan or narrow the configured corpus.\n\n### Result handoff\n\nCopy `readSourceInput` unchanged to the matching corpus source-read tool. Text results are source evidence, not semantic symbol or reference evidence.\n",
+        "\n## `{}`\n\n{}\n\n### Annotations\n\n```json\n{}\n```\n\n### Input schema\n\n```json\n{}\n```\n\n### Output schema\n\n```json\n{}\n```\n\n### Limits and matching\n\n- `query` is required and limited to 256 characters; whitespace is preserved. Matching is a case-insensitive literal substring by default.\n- Set `matchCase` for exact capitalization, `matchWholeWord` to require non-identifier boundaries around each match, and `useRegex` to interpret `query` as a Rust-regex pattern. Options may be combined.\n- `limit` defaults to 20 and clamps to 1 through 100. Continue with the opaque revision- and option-bound `cursor`; cursors are limited to 2 KiB and cannot be constructed by callers.\n- The scan is explicit and on demand. It includes comments, strings, expressions, and local-variable uses, and reports deterministic logical paths and exact one-based line/character ranges.\n- Results are capped at 100,000 retained matches, 16 KiB per line excerpt, and 256 KiB per page. Zero-length regular-expression matches are omitted. `stats` reports files considered/read, files with matches, source-read failures, matches found, and scan time; `truncated` means the retained result bound was reached.\n- The operation is cancellable and has a bounded 30,000 ms ready-catalogue deadline.\n\n### Stable failures\n\n- `invalid_arguments`: correct the query, regular expression, options, or limit.\n- `invalid_cursor`: repeat from the first page when the query or matching options change.\n- `stale_cursor`: repeat the same search without the cursor.\n- `request_cancelled` or `deadline_exceeded`: retry the explicit scan or narrow the configured corpus.\n\n### Result handoff\n\nCopy `readSourceInput` unchanged to the matching corpus source-read tool. Text results are source evidence, not semantic symbol or reference evidence.\n",
         tool.name,
         tool.description.as_deref().unwrap_or_default(),
         annotations,

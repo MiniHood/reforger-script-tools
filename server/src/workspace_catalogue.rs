@@ -16,8 +16,8 @@ use crate::index_build::{
 };
 use crate::model::{SourceKind, SOURCE_PRIORITY_WORKSPACE};
 use crate::text_search::{
-    page as page_text, scan as scan_text, TextSearchCorpus, TextSearchError, TextSearchPage,
-    TextSearchRequest, TextSearchResultSet, TextSource,
+    page as page_text, scan as scan_text, TextSearchCorpus, TextSearchError, TextSearchOptions,
+    TextSearchPage, TextSearchRequest, TextSearchResultSet, TextSource,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -34,7 +34,8 @@ pub struct WorkspaceCatalogueConfig {
 pub struct WorkspaceCatalogue {
     config: WorkspaceCatalogueConfig,
     snapshot: Mutex<Option<Arc<WorkspaceSnapshot>>>,
-    text_search_cache: Mutex<BTreeMap<(String, String), Arc<TextSearchResultSet>>>,
+    text_search_cache:
+        Mutex<BTreeMap<(String, String, TextSearchOptions), Arc<TextSearchResultSet>>>,
 }
 
 #[derive(Debug)]
@@ -90,7 +91,11 @@ impl WorkspaceCatalogue {
         request: TextSearchRequest,
     ) -> Result<TextSearchPage, WorkspaceCatalogueError> {
         let snapshot = self.snapshot(control)?;
-        let cache_key = (snapshot.revision.clone(), request.query.clone());
+        let cache_key = (
+            snapshot.revision.clone(),
+            request.query.clone(),
+            request.options,
+        );
         if let Some(result_set) = self
             .text_search_cache
             .lock()
@@ -127,7 +132,7 @@ impl WorkspaceCatalogue {
             },
             control,
             &snapshot.revision,
-            &request.query,
+            &request,
         )
         .map_err(WorkspaceCatalogueError::TextSearch)
         .map(Arc::new)?;
@@ -317,6 +322,7 @@ mod tests {
                 &control,
                 TextSearchRequest {
                     query: "void Run".to_string(),
+                    options: TextSearchOptions::default(),
                     limit: Some(10),
                     cursor: None,
                 },

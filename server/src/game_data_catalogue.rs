@@ -19,8 +19,8 @@ use crate::index_cache::{
 };
 use crate::model::SymbolKind;
 use crate::text_search::{
-    page as page_text, scan as scan_text, TextSearchCorpus, TextSearchError, TextSearchPage,
-    TextSearchRequest, TextSearchResultSet, TextSource,
+    page as page_text, scan as scan_text, TextSearchCorpus, TextSearchError, TextSearchOptions,
+    TextSearchPage, TextSearchRequest, TextSearchResultSet, TextSource,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -43,7 +43,8 @@ pub struct GameDataCatalogueConfig {
 pub struct GameDataCatalogue {
     config: GameDataCatalogueConfig,
     state: Mutex<Option<GameDataCatalogueState>>,
-    text_search_cache: Mutex<BTreeMap<(String, String), Arc<TextSearchResultSet>>>,
+    text_search_cache:
+        Mutex<BTreeMap<(String, String, TextSearchOptions), Arc<TextSearchResultSet>>>,
     initialized: AtomicBool,
     #[cfg(all(feature = "test-hooks", debug_assertions))]
     panic_once: std::sync::atomic::AtomicBool,
@@ -145,7 +146,7 @@ impl GameDataCatalogue {
             .catalogue_revision
             .clone()
             .ok_or(GameDataCatalogueTextSearchError::Unavailable)?;
-        let cache_key = (revision.clone(), request.query.clone());
+        let cache_key = (revision.clone(), request.query.clone(), request.options);
         if let Some(result_set) = self
             .text_search_cache
             .lock()
@@ -257,7 +258,7 @@ impl GameDataCatalogue {
             },
             control,
             &revision,
-            &request.query,
+            &request,
         )
         .map_err(GameDataCatalogueTextSearchError::TextSearch)
         .map(Arc::new)?;

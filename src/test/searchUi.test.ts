@@ -315,6 +315,18 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /data-mode="text"/);
 		assert.match(searchUiSource, /state\.mode === 'text'/);
 		assert.match(searchUiSource, /searchMode: state\.mode/);
+		assert.match(searchUiSource, /matchCase: false, matchWholeWord: false, useRegex: false/);
+		assert.match(searchUiSource, /data-text-option="matchCase"/);
+		assert.match(searchUiSource, />Match case<\/label>/);
+		assert.match(searchUiSource, /data-text-option="matchWholeWord"/);
+		assert.match(searchUiSource, />Match whole word<\/label>/);
+		assert.match(searchUiSource, /data-text-option="useRegex"/);
+		assert.match(searchUiSource, />Regular expression<\/label>/);
+		assert.match(searchUiSource, /matchCase: state\.matchCase, matchWholeWord: state\.matchWholeWord, useRegex: state\.useRegex/);
+		assert.match(searchClientSource, /matchCase: textOptions\.matchCase/);
+		assert.match(searchClientSource, /matchWholeWord: textOptions\.matchWholeWord/);
+		assert.match(searchClientSource, /useRegex: textOptions\.useRegex/);
+		assert.match(searchClientSource, /textOptions\.matchCase.*textOptions\.matchWholeWord.*textOptions\.useRegex/);
 		assert.match(searchClientSource, /search_game_data_text/);
 		assert.match(searchClientSource, /search_workspace_text/);
 	});

@@ -82,7 +82,8 @@ a 35,000 ms hard timeout. Use
 nonzero for a timeout, structured tool failure, or over-budget search, making
 it suitable for a local red/green optimization loop against real installed
 Game Data. Machine-specific budgets are diagnostic evidence, not portable CI
-thresholds.
+thresholds. Matching ignores case by default; pass `--match-case`,
+`--match-whole-word`, or `--regex` to exercise the corresponding MCP options.
 
 To catalogue one or more PAC1 archives without extracting their contents, run:
 

@@ -1,4 +1,5 @@
 use crate::index_build::IndexBuildControl;
+use regex::{Regex, RegexBuilder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -11,6 +12,7 @@ pub const MAX_QUERY_CHARS: usize = 256;
 pub const MAX_CURSOR_BYTES: usize = 2048;
 const MAX_TEXT_MATCHES: usize = 100_000;
 const MAX_RESULT_BYTES: usize = 256 * 1024;
+const MAX_EXCERPT_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct TextSource {
@@ -28,14 +30,24 @@ pub struct TextSearchCorpus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextSearchRequest {
     pub query: String,
+    pub options: TextSearchOptions,
     pub limit: Option<usize>,
     pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextSearchOptions {
+    pub match_case: bool,
+    pub match_whole_word: bool,
+    pub use_regex: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct TextSearchResultSet {
     catalogue_revision: String,
     query: String,
+    options: TextSearchOptions,
     results: Vec<TextSearchHit>,
     truncated: bool,
     stats: TextSearchStats,
@@ -96,6 +108,7 @@ pub struct TextReadInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextSearchError {
     InvalidRequest(&'static str),
+    InvalidPattern(String),
     InvalidCursor,
     StaleCursor,
     Cancelled,
@@ -105,6 +118,7 @@ impl fmt::Display for TextSearchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidRequest(message) => write!(f, "{message}"),
+            Self::InvalidPattern(message) => f.write_str(message),
             Self::InvalidCursor => write!(f, "invalid cursor"),
             Self::StaleCursor => write!(f, "stale cursor"),
             Self::Cancelled => write!(f, "search cancelled"),
@@ -118,7 +132,7 @@ pub fn search(
     catalogue_revision: &str,
     request: TextSearchRequest,
 ) -> Result<TextSearchPage, TextSearchError> {
-    let result_set = scan(corpus, control, catalogue_revision, &request.query)?;
+    let result_set = scan(corpus, control, catalogue_revision, &request)?;
     page(&result_set, control, request)
 }
 
@@ -126,9 +140,10 @@ pub fn scan(
     mut corpus: TextSearchCorpus,
     control: &IndexBuildControl,
     catalogue_revision: &str,
-    query: &str,
+    request: &TextSearchRequest,
 ) -> Result<TextSearchResultSet, TextSearchError> {
-    let query = normalize_query(query)?;
+    let query = normalize_query(&request.query)?;
+    let matcher = compile_matcher(&query, request.options)?;
     let started = Instant::now();
     corpus
         .sources
@@ -143,8 +158,14 @@ pub fn scan(
         files_read += 1;
         let starts = line_starts(&source.content);
         let mut source_match_count = 0;
-        for (start, _) in source.content.match_indices(&query) {
+        for matched in matcher.regex.find_iter(&source.content) {
             control.check().map_err(|_| TextSearchError::Cancelled)?;
+            if matched.is_empty()
+                || (request.options.match_whole_word
+                    && !is_whole_word_match(&source.content, matched.start(), matched.end()))
+            {
+                continue;
+            }
             matches_found = matches_found.saturating_add(1);
             source_match_count += 1;
             if hits.len() < MAX_TEXT_MATCHES {
@@ -152,8 +173,8 @@ pub fn scan(
                     source,
                     &starts,
                     catalogue_revision,
-                    &query,
-                    start,
+                    matched.start(),
+                    matched.end(),
                 ));
             }
         }
@@ -166,6 +187,7 @@ pub fn scan(
     Ok(TextSearchResultSet {
         catalogue_revision: catalogue_revision.to_string(),
         query,
+        options: request.options,
         results: hits,
         truncated,
         stats: TextSearchStats {
@@ -186,7 +208,7 @@ pub fn page(
 ) -> Result<TextSearchPage, TextSearchError> {
     control.check().map_err(|_| TextSearchError::Cancelled)?;
     let query = normalize_query(&request.query)?;
-    if query != result_set.query {
+    if query != result_set.query || request.options != result_set.options {
         return Err(TextSearchError::InvalidCursor);
     }
     let limit = request.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
@@ -195,7 +217,7 @@ pub fn page(
         if cursor.catalogue_revision != result_set.catalogue_revision {
             return Err(TextSearchError::StaleCursor);
         }
-        if cursor.query != query {
+        if cursor.query != query || cursor.options != request.options {
             return Err(TextSearchError::InvalidCursor);
         }
     }
@@ -211,9 +233,10 @@ pub fn page(
     let returned = page_hits.len();
     let next_cursor = (offset + returned < total).then(|| {
         encode_cursor(&Cursor {
-            version: 1,
+            version: 2,
             catalogue_revision: result_set.catalogue_revision.clone(),
             query: query.clone(),
+            options: request.options,
             offset: offset + returned,
         })
     });
@@ -236,9 +259,10 @@ pub fn page(
         page.results.pop();
         page.returned = page.results.len();
         page.next_cursor = Some(encode_cursor(&Cursor {
-            version: 1,
+            version: 2,
             catalogue_revision: page.catalogue_revision.clone(),
             query: page.query.clone(),
+            options: request.options,
             offset: offset + page.returned,
         }));
     }
@@ -257,6 +281,40 @@ fn normalize_query(query: &str) -> Result<String, TextSearchError> {
     Ok(query.to_string())
 }
 
+struct CompiledMatcher {
+    regex: Regex,
+}
+
+fn compile_matcher(
+    query: &str,
+    options: TextSearchOptions,
+) -> Result<CompiledMatcher, TextSearchError> {
+    let pattern = if options.use_regex {
+        query.to_string()
+    } else {
+        regex::escape(query)
+    };
+    let regex = RegexBuilder::new(&pattern)
+        .case_insensitive(!options.match_case)
+        .size_limit(4 * 1024 * 1024)
+        .build()
+        .map_err(|error| {
+            TextSearchError::InvalidPattern(format!("regular expression is invalid: {error}"))
+        })?;
+    Ok(CompiledMatcher { regex })
+}
+
+fn is_whole_word_match(source: &str, start: usize, end: usize) -> bool {
+    let before = source[..start].chars().next_back();
+    let after = source[end..].chars().next();
+    before.is_none_or(|character| !is_word_character(character))
+        && after.is_none_or(|character| !is_word_character(character))
+}
+
+fn is_word_character(character: char) -> bool {
+    character == '_' || character.is_alphanumeric()
+}
+
 fn line_starts(source: &str) -> Vec<usize> {
     let mut starts = vec![0];
     starts.extend(
@@ -272,21 +330,26 @@ fn project_hit(
     source: &TextSource,
     starts: &[usize],
     catalogue_revision: &str,
-    query: &str,
     start: usize,
+    end: usize,
 ) -> TextSearchHit {
-    let end = start + query.len();
     let start_line_index = line_for_offset(starts, start);
     let end_line_index = line_for_offset(starts, end.saturating_sub(1));
     let start_line_offset = starts[start_line_index];
     let end_line_offset = starts[end_line_index];
     let start_character = source.content[start_line_offset..start].chars().count();
     let end_character = source.content[end_line_offset..end].chars().count();
-    let excerpt_start = start_line_offset;
-    let excerpt_end = source.content[start_line_offset..]
+    let line_end_offset = source.content[start_line_offset..]
         .find('\n')
         .map(|offset| start_line_offset + offset)
         .unwrap_or(source.content.len());
+    let (excerpt_start, excerpt_end) = bounded_excerpt_range(
+        source.content.as_ref(),
+        start_line_offset,
+        line_end_offset,
+        start,
+        end,
+    );
     let excerpt = source.content[excerpt_start..excerpt_end]
         .trim_end_matches('\r')
         .to_string();
@@ -299,13 +362,40 @@ fn project_hit(
             end_character,
         },
         excerpt,
-        match_text: query.to_string(),
+        match_text: source.content[start..end].to_string(),
         read_source_input: TextReadInput {
             catalogue_revision: catalogue_revision.to_string(),
             relative_path: source.relative_path.clone(),
             start_line: start_line_index + 1,
         },
     }
+}
+
+fn bounded_excerpt_range(
+    source: &str,
+    line_start: usize,
+    line_end: usize,
+    match_start: usize,
+    match_end: usize,
+) -> (usize, usize) {
+    if line_end.saturating_sub(line_start) <= MAX_EXCERPT_BYTES {
+        return (line_start, line_end);
+    }
+    let max_start = line_end.saturating_sub(MAX_EXCERPT_BYTES);
+    let mut excerpt_start = match_start
+        .saturating_sub(MAX_EXCERPT_BYTES / 2)
+        .clamp(line_start, max_start);
+    while excerpt_start > line_start && !source.is_char_boundary(excerpt_start) {
+        excerpt_start -= 1;
+    }
+    let mut excerpt_end = (excerpt_start + MAX_EXCERPT_BYTES).min(line_end);
+    while excerpt_end < line_end && !source.is_char_boundary(excerpt_end) {
+        excerpt_end += 1;
+    }
+    if excerpt_end < match_end {
+        excerpt_end = match_end;
+    }
+    (excerpt_start, excerpt_end.min(line_end))
 }
 
 fn line_for_offset(starts: &[usize], offset: usize) -> usize {
@@ -320,6 +410,7 @@ struct Cursor {
     version: u8,
     catalogue_revision: String,
     query: String,
+    options: TextSearchOptions,
     offset: usize,
 }
 
@@ -334,7 +425,7 @@ fn decode_cursor(value: &str) -> Result<Cursor, TextSearchError> {
     let bytes = unhex(value).ok_or(TextSearchError::InvalidCursor)?;
     let cursor =
         serde_json::from_slice::<Cursor>(&bytes).map_err(|_| TextSearchError::InvalidCursor)?;
-    (cursor.version == 1)
+    (cursor.version == 2)
         .then_some(cursor)
         .ok_or(TextSearchError::InvalidCursor)
 }
@@ -387,6 +478,7 @@ mod tests {
             "ws1:test",
             TextSearchRequest {
                 query: "SCR_".to_string(),
+                options: TextSearchOptions::default(),
                 limit: Some(10),
                 cursor: None,
             },
@@ -411,6 +503,108 @@ mod tests {
     }
 
     #[test]
+    fn literal_search_ignores_case_unless_match_case_is_enabled() {
+        let insensitive = search(
+            corpus(),
+            &IndexBuildControl::default(),
+            "ws1:test",
+            TextSearchRequest {
+                query: "scr_".to_string(),
+                options: TextSearchOptions::default(),
+                limit: Some(10),
+                cursor: None,
+            },
+        )
+        .expect("case-insensitive text search");
+        assert_eq!(insensitive.total, 3);
+        assert_eq!(insensitive.results[0].match_text, "SCR_");
+
+        let sensitive = search(
+            corpus(),
+            &IndexBuildControl::default(),
+            "ws1:test",
+            TextSearchRequest {
+                query: "scr_".to_string(),
+                options: TextSearchOptions {
+                    match_case: true,
+                    ..TextSearchOptions::default()
+                },
+                limit: Some(10),
+                cursor: None,
+            },
+        )
+        .expect("case-sensitive text search");
+        assert_eq!(sensitive.total, 0);
+    }
+
+    #[test]
+    fn whole_word_and_regular_expression_options_constrain_matches() {
+        let corpus = TextSearchCorpus {
+            files_considered: 1,
+            source_read_failures: 0,
+            sources: vec![TextSource {
+                relative_path: "Game/Words.c".to_string(),
+                content: Arc::from("SCR SCR_Player scr\nSCR_One SCR_Two other"),
+            }],
+        };
+        let whole_word = search(
+            corpus.clone(),
+            &IndexBuildControl::default(),
+            "ws1:test",
+            TextSearchRequest {
+                query: "scr".to_string(),
+                options: TextSearchOptions {
+                    match_whole_word: true,
+                    ..TextSearchOptions::default()
+                },
+                limit: Some(10),
+                cursor: None,
+            },
+        )
+        .expect("whole-word text search");
+        assert_eq!(whole_word.total, 2);
+
+        let regex = search(
+            corpus,
+            &IndexBuildControl::default(),
+            "ws1:test",
+            TextSearchRequest {
+                query: r"SCR_(One|Two)".to_string(),
+                options: TextSearchOptions {
+                    use_regex: true,
+                    ..TextSearchOptions::default()
+                },
+                limit: Some(10),
+                cursor: None,
+            },
+        )
+        .expect("regular-expression text search");
+        assert_eq!(regex.total, 2);
+        assert_eq!(regex.results[0].match_text, "SCR_One");
+        assert_eq!(regex.results[1].match_text, "SCR_Two");
+    }
+
+    #[test]
+    fn invalid_regular_expression_is_a_stable_request_error() {
+        let error = search(
+            corpus(),
+            &IndexBuildControl::default(),
+            "ws1:test",
+            TextSearchRequest {
+                query: "(".to_string(),
+                options: TextSearchOptions {
+                    use_regex: true,
+                    ..TextSearchOptions::default()
+                },
+                limit: Some(10),
+                cursor: None,
+            },
+        )
+        .expect_err("invalid regular expression");
+        assert!(matches!(error, TextSearchError::InvalidPattern(_)));
+    }
+
+    #[test]
     fn cursor_is_opaque_revision_bound_and_pages_literal_matches() {
         let first = search(
             corpus(),
@@ -418,6 +612,7 @@ mod tests {
             "ws1:test",
             TextSearchRequest {
                 query: "SCR_".to_string(),
+                options: TextSearchOptions::default(),
                 limit: Some(1),
                 cursor: None,
             },
@@ -432,6 +627,7 @@ mod tests {
             "ws1:test",
             TextSearchRequest {
                 query: "SCR_".to_string(),
+                options: TextSearchOptions::default(),
                 limit: Some(1),
                 cursor: Some(cursor),
             },
@@ -440,6 +636,24 @@ mod tests {
         assert_eq!(second.results[0].relative_path, "Game/Z.c");
         assert_eq!(second.results[0].match_range.start_line, 1);
 
+        assert!(matches!(
+            search(
+                corpus(),
+                &IndexBuildControl::default(),
+                "ws1:test",
+                TextSearchRequest {
+                    query: "SCR_".to_string(),
+                    options: TextSearchOptions {
+                        match_case: true,
+                        ..TextSearchOptions::default()
+                    },
+                    limit: Some(1),
+                    cursor: first.next_cursor.clone(),
+                },
+            ),
+            Err(TextSearchError::InvalidCursor)
+        ));
+
         assert_eq!(
             search(
                 corpus(),
@@ -447,6 +661,7 @@ mod tests {
                 "ws1:other",
                 TextSearchRequest {
                     query: "SCR_".to_string(),
+                    options: TextSearchOptions::default(),
                     limit: Some(1),
                     cursor: first.next_cursor,
                 },
@@ -466,11 +681,40 @@ mod tests {
                 "ws1:test",
                 TextSearchRequest {
                     query: "SCR_".to_string(),
+                    options: TextSearchOptions::default(),
                     limit: Some(10),
                     cursor: None,
                 },
             ),
             Err(TextSearchError::Cancelled)
         );
+    }
+
+    #[test]
+    fn bounds_large_line_excerpts_while_retaining_the_literal_match() {
+        let mut content = "x".repeat(MAX_EXCERPT_BYTES * 2);
+        content.push_str("SCR_");
+        let page = search(
+            TextSearchCorpus {
+                files_considered: 1,
+                source_read_failures: 0,
+                sources: vec![TextSource {
+                    relative_path: "Game/Large.c".to_string(),
+                    content: Arc::from(content),
+                }],
+            },
+            &IndexBuildControl::default(),
+            "ws1:test",
+            TextSearchRequest {
+                query: "SCR_".to_string(),
+                options: TextSearchOptions::default(),
+                limit: Some(1),
+                cursor: None,
+            },
+        )
+        .expect("large-line text search");
+
+        assert!(page.results[0].excerpt.len() <= MAX_EXCERPT_BYTES + 3);
+        assert!(page.results[0].excerpt.contains("SCR_"));
     }
 }
