@@ -38,6 +38,8 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.deepStrictEqual(sourceMatchRange('void foo()', 'FOO'), { start: 5, length: 3 });
 		assert.strictEqual(sourceMatchRange('void Bar()', 'Foo'), undefined);
 		assert.doesNotMatch(searchUiSource, /highlightText\(result\.excerpt, state\.query \+ ' ' \+ result\.title\)/);
+		assert.match(searchUiSource, /hydrateSymbolPreviews\(active, client, requestId, result\.results, normalizedQuery\)/);
+		assert.match(searchUiSource, /const matchRange = sourceMatchRange\(preview, query\);/);
 	});
 
 	test('decodes the language server semantic token legend for a preview line', () => {

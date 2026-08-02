@@ -251,7 +251,7 @@ async function runSearch(
 			pageSize: result.pageSize,
 			performance: result.performance,
 		});
-		void hydrateSymbolPreviews(active, client, requestId, result.results);
+		void hydrateSymbolPreviews(active, client, requestId, result.results, normalizedQuery);
 	} catch (error) {
 		if (!active.disposed && requestId === active.requestSequence) {
 			diagnostic('searchUi.searchFailed', {
@@ -273,6 +273,7 @@ async function hydrateSymbolPreviews(
 	client: McpSearchClient,
 	requestId: number,
 	hits: SearchHit[],
+	query: string,
 ): Promise<void> {
 	const symbolHits = hits.filter(hit => hit.kind === 'symbol');
 	if (symbolHits.length === 0) {
@@ -294,7 +295,7 @@ async function hydrateSymbolPreviews(
 				readMs += performance.now() - readStartedAt;
 				const preview = sourceLinePreview(document, hit.selectionStartLine);
 				previews[hit.id] = preview;
-				const matchRange = sourceMatchRange(preview, hit.title);
+				const matchRange = sourceMatchRange(preview, query);
 				if (matchRange) {
 					matchRanges[hit.id] = matchRange;
 				}
