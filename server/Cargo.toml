@@ -164,6 +164,10 @@ name = "resolver_report"
 path = "../tools/server-reports/resolver_report.rs"
 
 [[example]]
+name = "semantic_search_benchmark"
+path = "../tools/server-reports/semantic_search_benchmark.rs"
+
+[[example]]
 name = "scope_corpus_report"
 path = "../tools/server-reports/scope_corpus_report.rs"
 

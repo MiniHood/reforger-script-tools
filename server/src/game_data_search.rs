@@ -174,6 +174,7 @@ impl fmt::Display for GameDataSearchError {
 struct Candidate {
     id: GlobalSymbolId,
     rank: u8,
+    origin_rank: u8,
     match_kind: &'static str,
     qualified_name: String,
     kind: String,
@@ -186,6 +187,7 @@ struct Candidate {
 fn compare_candidates(left: &Candidate, right: &Candidate) -> Ordering {
     (
         left.rank,
+        left.origin_rank,
         &left.qualified_name,
         &left.kind,
         &left.path,
@@ -195,6 +197,7 @@ fn compare_candidates(left: &Candidate, right: &Candidate) -> Ordering {
     )
         .cmp(&(
             right.rank,
+            right.origin_rank,
             &right.qualified_name,
             &right.kind,
             &right.path,
@@ -416,6 +419,7 @@ fn search_with_scope(
         candidates.push(Candidate {
             id: symbol.id,
             rank,
+            origin_rank: declaration_origin_rank(index, symbol),
             match_kind,
             qualified_name,
             kind,
@@ -753,6 +757,22 @@ fn match_rank(
         None
     }
 }
+
+fn declaration_origin_rank(index: &SymbolIndex, symbol: &IndexedSymbol) -> u8 {
+    let mut declaration = Some(symbol);
+    while let Some(current) = declaration {
+        if current
+            .modifiers
+            .iter()
+            .any(|modifier| modifier == "modded" || modifier == "override")
+        {
+            return 1;
+        }
+        declaration = current.parent.and_then(|parent| index.symbol(parent));
+    }
+    0
+}
+
 fn project_hit(
     index: &SymbolIndex,
     source_line_starts: &BTreeMap<SourceFileId, SourceLineStarts>,

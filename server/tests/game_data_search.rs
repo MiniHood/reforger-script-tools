@@ -158,6 +158,53 @@ fn search_ranks_exact_names_before_other_semantic_matches() {
 }
 
 #[test]
+fn search_ranks_original_declarations_before_modded_and_override_declarations() {
+    let fixture = TempFixture::new("search-origin-ranking");
+    let scripts = fixture.path.join("Game");
+    fs::create_dir_all(&scripts).expect("create scripts");
+    fs::write(
+        scripts.join("Modded.c"),
+        "modded class RankedType { int SharedField; override void SharedMethod(); }\n",
+    )
+    .expect("write modded source");
+    fs::write(
+        scripts.join("Original.c"),
+        "class RankedType { int SharedField; void SharedMethod(); }\n",
+    )
+    .expect("write original source");
+    let index = build_index(&IndexBuildConfig {
+        roots: vec![IndexSourceRoot::new(
+            &fixture.path,
+            SourceKind::GameData,
+            SOURCE_PRIORITY_GAME_DATA,
+        )],
+    })
+    .expect("index")
+    .index;
+    let lines = line_starts(&index);
+    let control = IndexBuildControl::default();
+
+    for query in ["RankedType", "SharedField", "SharedMethod"] {
+        let page = search(
+            &index,
+            &lines,
+            &control,
+            "gd1:origin-ranking",
+            GameDataSearchRequest::new(query),
+        )
+        .expect("search succeeds");
+        let exact_paths = page
+            .results
+            .iter()
+            .filter(|result| result.match_kind == "exactName")
+            .map(|result| result.relative_path.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(exact_paths, ["Game/Original.c", "Game/Modded.c"]);
+    }
+}
+
+#[test]
 fn loose_source_search_publishes_the_full_file_editor_identity() {
     let fixture = TempFixture::new("loose-source-uri");
     let scripts = fixture.path.join("Game");

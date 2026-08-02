@@ -94,6 +94,9 @@ symbol references include that GUID, and Game Data source reads require the
 returned GUID for every handoff so path uniqueness is never assumed. Layered
 queries iterate the immutable child
 indexes directly rather than relying on an eagerly flattened symbol allocation.
+Within the same semantic match-quality tier, original declarations rank before
+`modded` or `override` declarations and before members declared inside those
+overlays. Remaining ties use the stable symbol identity and source ordering.
 The later authoritative Workbench graph validates the exact packed and loose
 sources and atomically replaces only changed instances. Unchanged validation
 inspects bounded PAC catalogues and hashes only selected compressed script

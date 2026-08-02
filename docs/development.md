@@ -251,6 +251,20 @@ development and release profiles. It separates file read, binary decode, and
 runtime-index construction time, and verifies that file, public-symbol,
 parameter, local-variable-pruning, and lookup-map counts remain consistent.
 
+For a repeatable synthetic semantic-search ranking measurement, use:
+
+```powershell
+$env:CARGO_TARGET_DIR = ".cache/cargo/semantic-search-benchmark"
+cargo run --release --manifest-path server/Cargo.toml `
+  --example semantic_search_benchmark -- `
+  --declaration-pairs 5000 --iterations 31
+```
+
+The benchmark builds one immutable index containing paired original and
+`modded` declarations, warms the search path, then reports minimum, median,
+p95, and maximum search latency. It also verifies a stable fingerprint across
+iterations so ranking changes remain visible alongside their timing impact.
+
 For a live editor capture, generate the runtime report from the local
 language-server log:
 
