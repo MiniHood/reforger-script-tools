@@ -182,9 +182,15 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /data-preview-context-down/);
 		assert.match(searchUiSource, /data-preview-context-up/);
 		assert.match(searchUiSource, /previewContextLines === 0 \? 'Auto' : previewContextLines/);
-		assert.match(searchUiSource, /type: 'previewContext', contextLines: previewContextLines/);
-		assert.match(searchUiSource, /clearTimeout\(previewContextTimer\);[\s\S]*?setTimeout\(\(\) => vscode\.postMessage\(\{ type: 'previewContext'/);
+		assert.match(searchUiSource, /type: 'previewContext', contextLines: nextContextLines/);
+		assert.match(searchUiSource, /vscode\.postMessage\(\{ type: 'previewContext', contextLines: nextContextLines \}\)/);
 		assert.match(searchUiSource, /previewContextLines: numberField\(snapshot\.previewContextLines\)/);
+	});
+
+	test('round-trips explicit context back to Auto immediately', () => {
+		assert.match(searchUiSource, /const nextContextLines = Math\.max\(0, Math\.min\(249, value\)\)/);
+		assert.match(searchUiSource, /previewContextLines = nextContextLines;[\s\S]*?vscode\.postMessage\(\{ type: 'previewContext', contextLines: nextContextLines \}\)/);
+		assert.doesNotMatch(searchUiSource, /previewContextTimer|setTimeout\(\(\) => vscode\.postMessage\(\{ type: 'previewContext'/);
 	});
 
 	test('anchors previews to the declaration and removes comments', () => {
@@ -349,12 +355,16 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /\.atlas-card \{[^}]*border-left: 3px solid var\(--result-accent\);/);
 		assert.match(searchUiSource, /\.atlas-card\.result-class/);
 		assert.match(searchUiSource, /\.atlas-card\.result-string/);
+		assert.match(searchUiSource, /\.atlas-card\.result-class \{ --result-accent: #40b5ac; \}/);
+		assert.match(searchUiSource, /\.atlas-card\.result-function \{ --result-accent: #f3ad58; \}/);
+		assert.match(searchUiSource, /\.atlas-card\.result-enum \{ --result-accent: #40b5ac; \}/);
+		assert.match(searchUiSource, /\.atlas-card\.result-string \{ --result-accent: #c178dd; \}/);
 		assert.match(searchUiSource, /const resultAccent = result =>/);
 		assert.match(searchUiSource, /const resultGroups = \(\) => \{/);
 		assert.match(searchUiSource, /visibleResults\(\)\.forEach\(result => \{/);
 		assert.match(searchUiSource, /<section class="atlas-group"><div class="atlas-group-head"><h2>/);
 		assert.match(searchUiSource, /results\.map\(resultCard\)\.join\(''\)/);
-		assert.match(searchUiSource, /\.atlas-results\.two-column \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+		assert.match(searchUiSource, /\.atlas-results\.two-column \{ display: block; column-count: 2;/);
 		assert.match(searchUiSource, /const sharedMatchArea = \(\) => warnings \+ resultBody\(resultGroups\(\)\) \+ bottomPager/);
 		assert.doesNotMatch(searchUiSource, /atlas-lanes|atlas-lane/);
 	});
@@ -502,7 +512,7 @@ suite('Reforger search UI MCP mapping', () => {
 
 	test('toggles a top-only two-column result grid without rerunning the search', () => {
 		assert.match(searchUiSource, /resultColumns: 1/);
-		assert.match(searchUiSource, /\.atlas-results\.two-column \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+		assert.match(searchUiSource, /\.atlas-results\.two-column \{ display: block; column-count: 2;/);
 		assert.match(searchUiSource, /\.page-controls \[data-result-layout\] \{ display: inline-flex; align-items: center; justify-content: center; padding: 0; line-height: 0; \}/);
 		assert.match(searchUiSource, /const pageControls = \(includeLayoutToggle = false\) =>/);
 		assert.match(searchUiSource, /return '<div class="page-controls" aria-label="Search result pages">' \+ previewControl \+ layoutToggle \+ '<select data-page-size/);
@@ -512,6 +522,12 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /state\.resultColumns = state\.resultColumns === 2 \? 1 : 2; render\(false\);/);
 		assert.doesNotMatch(searchUiSource, /data-result-layout[^\n]*search\(/);
 		assert.match(searchUiSource, /resultColumns: state\.resultColumns/);
+	});
+
+	test('packs unequal cards into masonry columns within each source group', () => {
+		assert.match(searchUiSource, /\.atlas-results\.two-column \{ display: block; column-count: 2; column-gap: 10px; \}/);
+		assert.match(searchUiSource, /\.atlas-results\.two-column \.atlas-card \{ display: inline-block; width: 100%; margin: 0 0 10px; break-inside: avoid; \}/);
+		assert.match(searchUiSource, /@media \(max-width: 980px\) \{ \.atlas-results\.two-column \{ column-count: 1; \} \}/);
 	});
 
 	test('publishes raw previews before semantic coloring completes', () => {

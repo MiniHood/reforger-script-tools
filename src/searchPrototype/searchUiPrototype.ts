@@ -1103,14 +1103,15 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .atlas-group-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--alt); }
 .atlas-group-head h2 { margin: 0; font-size: 13px; }
 .atlas-results { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 12px; align-items: start; }
-.atlas-results.two-column { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.atlas-results.two-column { display: block; column-count: 2; column-gap: 10px; }
+.atlas-results.two-column .atlas-card { display: inline-block; width: 100%; margin: 0 0 10px; break-inside: avoid; }
 .atlas-group .atlas-results { margin: 0; padding: 10px; }
 .atlas-card { --result-accent: var(--accent); min-width: 0; padding: 12px; border: 1px solid var(--border); border-left: 3px solid var(--result-accent); background: var(--panel); cursor: pointer; user-select: text; }
-.atlas-card.result-class { --result-accent: var(--vscode-symbolIcon-classForeground, #4ec9b0); }
-.atlas-card.result-function { --result-accent: var(--vscode-symbolIcon-functionForeground, #c586c0); }
+.atlas-card.result-class { --result-accent: #40b5ac; }
+.atlas-card.result-function { --result-accent: #f3ad58; }
 .atlas-card.result-field { --result-accent: var(--vscode-symbolIcon-fieldForeground, #9cdcfe); }
-.atlas-card.result-enum { --result-accent: var(--vscode-symbolIcon-enumeratorForeground, #dcdcaa); }
-.atlas-card.result-string { --result-accent: var(--vscode-symbolIcon-stringForeground, #ce9178); }
+.atlas-card.result-enum { --result-accent: #40b5ac; }
+.atlas-card.result-string { --result-accent: #c178dd; }
 .atlas-card.result-resource { --result-accent: var(--vscode-symbolIcon-fileForeground, var(--accent)); }
 .atlas-card.result-documentation { --result-accent: var(--vscode-symbolIcon-keyForeground, var(--accent)); }
 .atlas-card:hover, .atlas-card.selected { border-color: var(--accent); }
@@ -1147,7 +1148,7 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .context-stepper { display: inline-flex; align-items: center; gap: 2px; white-space: nowrap; }
 .context-stepper-label { margin-right: 4px; }
 .context-stepper output { min-width: 34px; text-align: center; color: var(--text); }
-@media (max-width: 980px) { .atlas-results.two-column { grid-template-columns: 1fr; } }
+@media (max-width: 980px) { .atlas-results.two-column { column-count: 1; } }
 @media (max-width: 1100px) { .search-primary { grid-template-columns: max-content minmax(260px, 1fr); } .search-count { display: none; } .search-secondary { flex-wrap: wrap; } .search-secondary .page-controls { flex-basis: 100%; margin-left: 0; } }
 @media (max-width: 720px) { .shell { padding: 18px 14px 60px; } .search-primary { grid-template-columns: 1fr; } .search-secondary { flex-direction: column; } .search-query { flex-wrap: wrap; } .text-option-buttons { margin: -1px 0 0; } .atlas-card-head { align-items: flex-start; flex-wrap: wrap; } .result-path { max-width: 100%; margin-left: 0; text-align: left; } }
 </style>
@@ -1166,7 +1167,6 @@ const vscode = window.__reforgerSearchVscode;
 const state = { query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, type: 'all', resultColumns: 1, results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, truncated: false, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, scopeOpen: false, scopeFilter: '', scopeRevision: '', scopeAuthority: '', scopeDiscoveryMs: 0, unavailableScopeIds: [], scopeSources: [{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true }, { id: 'wiki', label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true }], selectedScopeIds: ['workspace', 'wiki'], selectionTouched: false, removedScopeIds: [], uiPerformance: { renderCount: 0, lastRenderMs: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
 let pendingQuerySelection;
 let previewContextLines = 0;
-let previewContextTimer;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const sourceLabel = result => result.addonLabel ?? (result.source === 'wiki' ? 'Official Wiki' : result.source === 'workspace' ? 'Workspace' : result.source === 'workbench' ? 'Workbench' : 'Game Data');
 const visibleResults = () => state.results;
@@ -1209,7 +1209,7 @@ const pageControls = (includeLayoutToggle = false) => {
   const navigationDisabled = !state.query.trim() || state.status === 'loading';
   const pageTotal = totalPages();
   const sizes = pageSizeOptions.map(size => '<option value="' + size + '"' + (state.pageSize === size ? ' selected' : '') + '>' + size + ' results</option>').join('');
-  const layoutToggle = includeLayoutToggle ? '<button type="button" data-result-layout class="' + (state.resultColumns === 2 ? 'active' : '') + '" aria-label="Toggle two-column result grid" aria-pressed="' + (state.resultColumns === 2) + '" title="Toggle two-column result grid"><span class="layout-toggle" aria-hidden="true"><span></span><span></span><span></span><span></span></span></button>' : '';
+  const layoutToggle = includeLayoutToggle ? '<button type="button" data-result-layout class="' + (state.resultColumns === 2 ? 'active' : '') + '" aria-label="Toggle packed result columns" aria-pressed="' + (state.resultColumns === 2) + '" title="Toggle packed result columns"><span class="layout-toggle" aria-hidden="true"><span></span><span></span><span></span><span></span></span></button>' : '';
   const previewControl = includeLayoutToggle ? '<div class="context-stepper" aria-label="Preview context"><span class="muted context-stepper-label">Context</span><button type="button" data-preview-context-down aria-label="Decrease preview context"' + (previewContextLines === 0 ? ' disabled' : '') + '>&minus;</button><output aria-live="polite" title="' + (previewContextLines === 0 ? 'Automatic enclosing scope' : previewContextLines + ' surrounding lines') + '">' + (previewContextLines === 0 ? 'Auto' : previewContextLines) + '</output><button type="button" data-preview-context-up aria-label="Increase preview context">+</button></div>' : '';
   return '<div class="page-controls" aria-label="Search result pages">' + previewControl + layoutToggle + '<select data-page-size aria-label="Total results per page"' + (state.status === 'loading' ? ' disabled' : '') + '>' + sizes + '</select><span class="page-status"><span class="muted">Page</span><input data-page-input type="number" min="1" max="' + pageTotal + '" value="' + state.page + '" aria-label="Current result page"' + (navigationDisabled ? ' disabled' : '') + '><span class="muted">of ' + pageTotal + '</span></span><span class="page-arrows"><button type="button" data-page-prev' + (navigationDisabled || state.page <= 1 ? ' disabled' : '') + ' aria-label="Previous page">‹</button><button type="button" data-page-next' + (navigationDisabled || state.page >= pageTotal ? ' disabled' : '') + ' aria-label="Next page">›</button></span></div>';
 };
@@ -1445,7 +1445,7 @@ function render(focusQuery = false) {
   document.querySelectorAll('[data-page-prev]').forEach(element => element.addEventListener('click', () => requestPage(state.page - 1)));
   document.querySelectorAll('[data-page-next]').forEach(element => element.addEventListener('click', () => requestPage(state.page + 1)));
   document.querySelectorAll('[data-page-size]').forEach(element => element.addEventListener('change', event => { state.pageSize = Number(event.target.value); search(true); }));
-  const setPreviewContext = value => { previewContextLines = Math.max(0, Math.min(249, value)); render(false); clearTimeout(previewContextTimer); previewContextTimer = setTimeout(() => vscode.postMessage({ type: 'previewContext', contextLines: previewContextLines }), 100); };
+  const setPreviewContext = value => { const nextContextLines = Math.max(0, Math.min(249, value)); previewContextLines = nextContextLines; render(false); vscode.postMessage({ type: 'previewContext', contextLines: nextContextLines }); };
   document.querySelectorAll('[data-preview-context-down]').forEach(element => element.addEventListener('click', () => setPreviewContext(previewContextLines - 1)));
   document.querySelectorAll('[data-preview-context-up]').forEach(element => element.addEventListener('click', () => setPreviewContext(previewContextLines + 1)));
   document.querySelectorAll('[data-result-layout]').forEach(element => element.addEventListener('click', () => { state.resultColumns = state.resultColumns === 2 ? 1 : 2; render(false); }));
