@@ -12,6 +12,7 @@ import {
 	McpSearchClient,
 	searchKindFilters,
 	sourceLinePreview,
+	sourcePreviewLine,
 	sourceMatchRange,
 	type SearchDocument,
 	type SearchHit,
@@ -283,6 +284,7 @@ async function hydrateSymbolPreviews(
 	const previews: Record<string, string> = {};
 	const matchRanges: Record<string, SourceMatchRange> = {};
 	const semanticPreviews: Record<string, SemanticPreview> = {};
+	const previewDiagnostics: Array<Record<string, unknown>> = [];
 	let readMs = 0;
 	let semanticMs = 0;
 	let nextIndex = 0;
@@ -293,7 +295,8 @@ async function hydrateSymbolPreviews(
 				const readStartedAt = performance.now();
 				const document = await client.read(hit);
 				readMs += performance.now() - readStartedAt;
-				const preview = sourceLinePreview(document, hit.selectionStartLine);
+				const previewLine = sourcePreviewLine(document, hit.selectionStartLine, hit.title);
+				const preview = sourceLinePreview(document, previewLine, hit.title);
 				previews[hit.id] = preview;
 				const matchRange = sourceMatchRange(preview, query);
 				if (matchRange) {
@@ -302,9 +305,10 @@ async function hydrateSymbolPreviews(
 				const semanticStartedAt = performance.now();
 				const semanticDocument = await semanticSourceDocument(active, client, hit, document);
 				semanticMs += performance.now() - semanticStartedAt;
-				if (semanticDocument && hit.selectionStartLine !== undefined) {
-					const line = Math.max(0, hit.selectionStartLine - semanticDocument.startLine);
-					const semanticPreview = semanticPreviewForLine(
+				let semanticPreview: SemanticPreview | undefined;
+				if (semanticDocument) {
+					const line = Math.max(0, previewLine - semanticDocument.startLine);
+					semanticPreview = semanticPreviewForLine(
 						semanticDocument.document,
 						semanticDocument.semanticTokens,
 						line,
@@ -313,6 +317,24 @@ async function hydrateSymbolPreviews(
 						semanticPreviews[hit.id] = semanticPreview;
 					}
 				}
+				previewDiagnostics.push({
+					id: hit.id,
+					title: hit.title,
+					path: hit.path,
+					selectionStartLine: hit.selectionStartLine,
+					previewLine,
+					previewText: preview.slice(0, 500),
+					matchStart: matchRange?.start,
+					matchLength: matchRange?.length,
+					matchText: matchRange ? preview.slice(matchRange.start, matchRange.start + matchRange.length) : undefined,
+					semanticDocument: Boolean(semanticDocument),
+					semanticLanguageId: semanticDocument?.document.languageId,
+					semanticStartLine: semanticDocument?.startLine,
+					semanticTokenCount: semanticPreview?.tokens.length ?? 0,
+					semanticTokenRoles: semanticPreview ? [...new Set(semanticPreview.tokens.map(token => token.role))] : [],
+					semanticEnabled: semanticPreview?.enabled,
+					semanticForegrounds: semanticPreview?.foregrounds,
+				});
 			} catch {
 				// Keep the bounded search excerpt when the optional preview read fails.
 			}
@@ -348,6 +370,7 @@ async function hydrateSymbolPreviews(
 		readMs: previewPerformance.readMs,
 		semanticMs: previewPerformance.semanticMs,
 		totalMs: previewPerformance.totalMs,
+		items: jsonField(previewDiagnostics.slice(0, 100)),
 		elapsedMs: Date.now() - startedAt,
 	});
 }
@@ -775,7 +798,15 @@ const captureSearchSnapshot = () => vscode.postMessage({ type: 'debugSnapshot', 
     excerptLineCount: typeof result.excerpt === 'string' ? result.excerpt.split('\\n').length : 0,
     previewMatchStart: state.matchRanges[result.id]?.start,
     previewMatchLength: state.matchRanges[result.id]?.length,
+    previewMatchText: state.matchRanges[result.id] && typeof result.excerpt === 'string' ? result.excerpt.slice(state.matchRanges[result.id].start, state.matchRanges[result.id].start + state.matchRanges[result.id].length) : undefined,
+    previewText: typeof result.excerpt === 'string' ? result.excerpt.slice(0, 500) : undefined,
     previewType: result.kind === 'documentation' ? 'markdown' : 'code',
+    semanticAvailable: Boolean(state.semanticPreviews[result.id]),
+    semanticEnabled: state.semanticPreviews[result.id]?.enabled,
+    semanticTextLength: typeof state.semanticPreviews[result.id]?.text === 'string' ? state.semanticPreviews[result.id].text.length : undefined,
+    semanticTokenCount: Array.isArray(state.semanticPreviews[result.id]?.tokens) ? state.semanticPreviews[result.id].tokens.length : 0,
+    semanticTokenRoles: Array.isArray(state.semanticPreviews[result.id]?.tokens) ? [...new Set(state.semanticPreviews[result.id].tokens.map(token => token.role))] : [],
+    semanticForegrounds: state.semanticPreviews[result.id]?.foregrounds,
   })),
 } });
 const openResult = element => {
@@ -889,7 +920,22 @@ function snapshotResults(value: unknown): Array<Record<string, unknown>> {
 		excerptLineCount: numberField(result.excerptLineCount),
 		previewMatchStart: numberField(result.previewMatchStart),
 		previewMatchLength: numberField(result.previewMatchLength),
+		previewMatchText: textField(result.previewMatchText),
+		previewText: textField(result.previewText),
 		previewType: textField(result.previewType),
+		semanticAvailable: typeof result.semanticAvailable === 'boolean' ? result.semanticAvailable : undefined,
+		semanticEnabled: typeof result.semanticEnabled === 'boolean' ? result.semanticEnabled : undefined,
+		semanticTextLength: numberField(result.semanticTextLength),
+		semanticTokenCount: numberField(result.semanticTokenCount),
+		semanticTokenRoles: Array.isArray(result.semanticTokenRoles)
+			? result.semanticTokenRoles.slice(0, 32).map(item => textField(item)).filter((item): item is string => item !== undefined)
+			: [],
+		semanticForegrounds: isRecord(result.semanticForegrounds)
+			? Object.fromEntries(Object.entries(result.semanticForegrounds).slice(0, 32).flatMap(([role, color]) => {
+				const value = textField(color);
+				return value ? [[role, value]] : [];
+			}))
+			: {},
 	}));
 }
 

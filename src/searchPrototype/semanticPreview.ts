@@ -4,6 +4,7 @@ import {
 	semanticTokenTypes,
 	type HoverSemanticForegrounds,
 } from '../languageClient/hoverSemanticPalette';
+import { stripSourceComments } from './mcpSearchClient';
 
 export interface SemanticPreviewToken {
 	start: number;
@@ -52,9 +53,9 @@ export function semanticPreviewForLine(
 	if (targetLine < 0 || targetLine >= document.lineCount) {
 		return undefined;
 	}
-	const sourceText = document.lineAt(targetLine).text;
+	const sourceText = stripSourceComments(document.lineAt(targetLine).text);
 	const leadingWhitespace = sourceText.length - sourceText.trimStart().length;
-	const text = sourceText.slice(leadingWhitespace);
+	const text = sourceText.slice(leadingWhitespace).trimEnd();
 	const tokens = semanticTokenSpansForLine(semanticTokens.data, targetLine)
 		.map(token => ({
 			...token,

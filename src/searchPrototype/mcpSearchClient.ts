@@ -88,11 +88,83 @@ export interface SearchDocument {
 	endLine: number;
 }
 
-export function sourceLinePreview(document: SearchDocument, line: number | undefined): string {
+export function sourcePreviewLine(
+	document: SearchDocument,
+	line: number | undefined,
+	needle?: string,
+): number {
 	const lines = document.content.split(/\r?\n/);
 	const startLine = document.startLine > 0 ? document.startLine : line ?? 1;
-	const lineIndex = Math.max(0, (line ?? startLine) - startLine);
-	return (lines[lineIndex] ?? lines[0] ?? '').trimStart();
+	const requestedIndex = Math.max(0, Math.min(lines.length - 1, (line ?? startLine) - startLine));
+	const candidateIndexes = [
+		...Array.from({ length: Math.max(0, lines.length - requestedIndex) }, (_, index) => requestedIndex + index),
+		...Array.from({ length: Math.max(0, requestedIndex) }, (_, index) => index),
+	];
+	const normalizedNeedle = needle?.trim().toLowerCase();
+	const matchingIndex = normalizedNeedle
+		? candidateIndexes.find(index => {
+			const value = stripSourceComments(lines[index] ?? '');
+			return value.trim().length > 0 && value.toLowerCase().includes(normalizedNeedle);
+		})
+		: undefined;
+	const contentIndex = matchingIndex
+		?? candidateIndexes.find(index => stripSourceComments(lines[index] ?? '').trim().length > 0)
+		?? requestedIndex;
+	return startLine + contentIndex;
+}
+
+export function sourceLinePreview(
+	document: SearchDocument,
+	line: number | undefined,
+	needle?: string,
+): string {
+	const lines = document.content.split(/\r?\n/);
+	const startLine = document.startLine > 0 ? document.startLine : line ?? 1;
+	const selectedLine = sourcePreviewLine(document, line, needle);
+	const lineIndex = Math.max(0, selectedLine - startLine);
+	return stripSourceComments(lines[lineIndex] ?? lines[0] ?? '').trimStart().trimEnd();
+}
+
+/** Removes comments while preserving quoted strings. */
+export function stripSourceComments(value: string): string {
+	let result = '';
+	let quote: '"' | "'" | undefined;
+	let escaped = false;
+	let blockComment = false;
+	for (let index = 0; index < value.length; index += 1) {
+		const character = value[index];
+		const next = value[index + 1];
+		if (blockComment) {
+			if (character === '*' && next === '/') {
+				blockComment = false;
+				index += 1;
+			}
+			continue;
+		}
+		if (quote) {
+			result += character;
+			if (escaped) {
+				escaped = false;
+			} else if (character === '\\') {
+				escaped = true;
+			} else if (character === quote) {
+				quote = undefined;
+			}
+			continue;
+		}
+		if (character === '"' || character === "'") {
+			quote = character;
+			result += character;
+		} else if (character === '/' && next === '/') {
+			break;
+		} else if (character === '/' && next === '*') {
+			blockComment = true;
+			index += 1;
+		} else {
+			result += character;
+		}
+	}
+	return result;
 }
 
 export interface SourceMatchRange {

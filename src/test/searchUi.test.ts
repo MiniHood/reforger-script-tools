@@ -1,7 +1,7 @@
 import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { formatSearchKind, nearestCachedSearchPage, normalizeSearchPage, searchKindFilters, searchToolFor, sourceLinePreview, sourceMatchRange } from '../searchPrototype/mcpSearchClient';
+import { formatSearchKind, nearestCachedSearchPage, normalizeSearchPage, searchKindFilters, searchToolFor, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
 import { semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
 
 const searchUiSource = fs.readFileSync(
@@ -31,6 +31,13 @@ suite('Reforger search UI MCP mapping', () => {
 	test('extracts the authoritative source line for a symbol preview', () => {
 		assert.strictEqual(sourceLinePreview({ content: '    class SCR_Mode\n', startLine: 18, endLine: 18 }, 18), 'class SCR_Mode');
 		assert.strictEqual(sourceLinePreview({ content: 'only line', startLine: 0, endLine: 0 }, 1), 'only line');
+	});
+
+	test('anchors previews to the declaration and removes comments', () => {
+		const document = { content: '// field documentation\n    SCR_Field value; // trailing note\n', startLine: 10, endLine: 11 };
+		assert.strictEqual(sourcePreviewLine(document, 10, 'SCR_Field'), 11);
+		assert.strictEqual(sourceLinePreview(document, 10, 'SCR_Field'), 'SCR_Field value;');
+		assert.strictEqual(stripSourceComments('const url = "https://example.test"; // note'), 'const url = "https://example.test"; ');
 	});
 
 	test('finds the selected symbol occurrence instead of every query occurrence', () => {
@@ -147,6 +154,10 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /provideLanguageServerSemanticTokens/);
 		assert.match(searchUiSource, /semanticPreviewText/);
 		assert.match(searchUiSource, /message\.type === 'semanticPreviews'/);
+		assert.match(searchUiSource, /previewMatchText/);
+		assert.match(searchUiSource, /semanticTokenRoles/);
+		assert.match(searchUiSource, /semanticForegrounds/);
+		assert.match(searchUiSource, /previewDiagnostics/);
 	});
 
 	test('opens result cards while preserving text selection and the Wiki page action', () => {
