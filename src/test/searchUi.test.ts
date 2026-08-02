@@ -310,7 +310,9 @@ suite('Reforger search UI MCP mapping', () => {
 	test('toggles a top-only two-column result grid without rerunning the search', () => {
 		assert.match(searchUiSource, /resultColumns: 1/);
 		assert.match(searchUiSource, /\.source-rows\.two-column \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+		assert.match(searchUiSource, /\.page-controls \[data-result-layout\] \{ display: inline-flex; align-items: center; justify-content: center; padding: 0; line-height: 0; \}/);
 		assert.match(searchUiSource, /const pageControls = \(includeLayoutToggle = false\) =>/);
+		assert.match(searchUiSource, /return '<div class="page-controls" aria-label="Search result pages">' \+ layoutToggle \+ '<select data-page-size/);
 		assert.match(searchUiSource, /pageControls\(true\)/);
 		assert.match(searchUiSource, /data-result-layout/);
 		assert.match(searchUiSource, /aria-pressed="' \+ \(state\.resultColumns === 2\) \+ '"/);
