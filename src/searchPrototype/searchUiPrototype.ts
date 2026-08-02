@@ -845,6 +845,7 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .addon-choice.pinned-boundary { margin-bottom: 5px; padding-bottom: 5px; border-bottom: 1px solid var(--border); }
 .scope-actions { display: flex; justify-content: flex-end; margin-bottom: 5px; }
 .scope-actions button { width: auto; margin: 0; padding: 4px 6px; color: var(--accent); font-size: 10px; }
+.scope-actions [data-scope-all] { flex: 0 0 76px; width: 76px; box-sizing: border-box; }
 .addon-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
 .addon-chip { max-width: 100%; padding: 3px 6px; border-radius: 10px; background: var(--selected); color: var(--selected-text); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-header { display: flex; justify-content: space-between; align-items: end; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
