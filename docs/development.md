@@ -239,7 +239,13 @@ contains the query, source and result-type filters, request status, page and
 page-size state, total and per-source counts, warnings/errors, viewport data,
 and bounded metadata for the visible results. Result metadata includes source
 targets, selection line ranges, preview type, and excerpt sizes, but not the
-source or preview text itself. The UI confirms when the snapshot is written;
+source or preview text itself. It also includes bounded performance data:
+end-to-end search time, initial source searches, high-page range traversal,
+source-page size, remote page requests, cursor/cache hits, preview reads,
+semantic-token hydration, and Webview response/render timing. This is intended
+to identify whether a delay is in MCP paging, source merging, preview
+hydration, or UI rendering without logging source text. The UI confirms when
+the snapshot is written;
 if diagnostics were not enabled before activation, it asks you to enable the
 setting and reload first.
 

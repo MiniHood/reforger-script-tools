@@ -179,6 +179,10 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /searchKindsFor\(typeValue\)/);
 		assert.match(searchUiSource, /if \(!isSearchKindValue\(message\.resultType\)\) \{/);
 		assert.match(searchClientSource, /const sourcePageSize = 100;/);
+		assert.match(searchClientSource, /export interface SearchPerformance/);
+		assert.match(searchClientSource, /remoteRequests: number/);
+		assert.match(searchClientSource, /cacheHits: number/);
+		assert.match(searchClientSource, /performance: finishSearchPerformance/);
 		assert.match(searchClientSource, /let sourceOffset = 0;/);
 		assert.match(searchClientSource, /this\.searchPageCaches\.clear\(\);/);
 		assert.doesNotMatch(searchUiSource, /maxPageNumber/);
@@ -199,6 +203,9 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /type: 'debugSnapshot'/);
 		assert.match(searchUiSource, /message\.type === 'debugSnapshot'/);
 		assert.match(searchUiSource, /searchUi\.snapshot/);
+		assert.match(searchUiSource, /searchPerformance: state\.searchPerformance/);
+		assert.match(searchUiSource, /lastSearchResponseMs/);
+		assert.match(searchUiSource, /state\.previewPerformance = message\.performance/);
 		assert.match(searchUiSource, /totalBySource: state\.totalBySource/);
 		assert.match(searchUiSource, /selectionStartLine: result\.selectionStartLine/);
 		assert.match(searchUiSource, /excerptLength: typeof result\.excerpt === 'string'/);

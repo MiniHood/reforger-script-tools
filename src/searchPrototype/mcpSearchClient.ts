@@ -1,6 +1,7 @@
 import { access } from 'node:fs/promises';
 import * as path from 'node:path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
 
 export type SearchSource = 'workspace' | 'gameData' | 'wiki';
 export type SearchSymbolKind =
@@ -53,6 +54,32 @@ export interface SearchResponse {
 	totalBySource: Partial<Record<SearchSource, number>>;
 	page: number;
 	pageSize: number;
+	performance: SearchPerformance;
+}
+
+export interface SearchSourcePerformance {
+	source: SearchSource;
+	initialMs: number;
+	rangeMs: number;
+	remoteMs: number;
+	pagesVisited: number;
+	remoteRequests: number;
+	cacheHits: number;
+	firstPage: number | undefined;
+	lastPage: number | undefined;
+	cacheSize: number;
+}
+
+export interface SearchPerformance {
+	totalMs: number;
+	startupMs: number;
+	initialSearchMs: number;
+	rangeSearchMs: number;
+	mergeMs: number;
+	requestedPage: number;
+	pageSize: number;
+	sourcePageSize: number;
+	sources: SearchSourcePerformance[];
 }
 
 export interface SearchDocument {
@@ -106,6 +133,76 @@ interface CachedSearchPage {
 	nextCursor?: string;
 }
 
+interface SearchPerformanceTrace {
+	startedAt: number;
+	startupMs: number;
+	initialSearchMs: number;
+	rangeSearchStartedAt: number | undefined;
+	rangeSearchMs: number;
+	mergeMs: number;
+	sources: Map<SearchSource, SearchSourcePerformance>;
+}
+
+function createSearchPerformanceTrace(): SearchPerformanceTrace {
+	return {
+		startedAt: performance.now(),
+		startupMs: 0,
+		initialSearchMs: 0,
+		rangeSearchStartedAt: undefined,
+		rangeSearchMs: 0,
+		mergeMs: 0,
+		sources: new Map(),
+	};
+}
+
+function sourcePerformanceFor(
+	trace: SearchPerformanceTrace,
+	source: SearchSource,
+): SearchSourcePerformance {
+	let value = trace.sources.get(source);
+	if (!value) {
+		value = {
+			source,
+			initialMs: 0,
+			rangeMs: 0,
+			remoteMs: 0,
+			pagesVisited: 0,
+			remoteRequests: 0,
+			cacheHits: 0,
+			firstPage: undefined,
+			lastPage: undefined,
+			cacheSize: 0,
+		};
+		trace.sources.set(source, value);
+	}
+	return value;
+}
+
+function recordVisitedPage(trace: SearchSourcePerformance, page: number): void {
+	trace.pagesVisited += 1;
+	trace.firstPage = trace.firstPage === undefined ? page : Math.min(trace.firstPage, page);
+	trace.lastPage = trace.lastPage === undefined ? page : Math.max(trace.lastPage, page);
+}
+
+function finishSearchPerformance(
+	trace: SearchPerformanceTrace,
+	requestedPage: number,
+	pageSize: number,
+	sources: readonly SearchSource[],
+): SearchPerformance {
+	return {
+		totalMs: performance.now() - trace.startedAt,
+		startupMs: trace.startupMs,
+		initialSearchMs: trace.initialSearchMs,
+		rangeSearchMs: trace.rangeSearchMs,
+		mergeMs: trace.mergeMs,
+		requestedPage,
+		pageSize,
+		sourcePageSize,
+		sources: sources.map(source => sourcePerformanceFor(trace, source)),
+	};
+}
+
 export function nearestCachedSearchPage(pages: ReadonlyMap<number, unknown>, requestedPage: number): number {
 	let nearest = 0;
 	for (const page of pages.keys()) {
@@ -133,23 +230,31 @@ export class McpSearchClient {
 		page: number,
 		symbolKinds?: readonly SearchSymbolKind[],
 	): Promise<SearchResponse> {
+		const trace = createSearchPerformanceTrace();
 		await this.start();
+		trace.startupMs = performance.now() - trace.startedAt;
 		const normalizedPageSize = Math.min(100, Math.max(1, Number.isFinite(pageSize) ? Math.floor(pageSize) : 25));
 		const requestedPage = Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1);
 		const searchableSources = symbolKinds?.length
 			? sources.filter(source => source !== 'wiki')
 			: sources;
 		if (searchableSources.length === 0) {
-			return { results: [], warnings: [], total: 0, totalBySource: {}, page: 1, pageSize: normalizedPageSize };
+			return { results: [], warnings: [], total: 0, totalBySource: {}, page: 1, pageSize: normalizedPageSize, performance: finishSearchPerformance(trace, 1, normalizedPageSize, []) };
 		}
+		const initialSearchStartedAt = performance.now();
 		const responses = await Promise.all(searchableSources.map(async source => {
+			const sourceTrace = sourcePerformanceFor(trace, source);
+			const startedAt = performance.now();
 			try {
-				const value = await this.searchPage(query, source, sourcePageSize, 1, symbolKinds);
+				const value = await this.searchPage(query, source, sourcePageSize, 1, symbolKinds, trace);
+				sourceTrace.initialMs += performance.now() - startedAt;
 				return { source, value, warning: undefined };
 			} catch (error) {
+				sourceTrace.initialMs += performance.now() - startedAt;
 				return { source, value: undefined, warning: searchErrorMessage(source, error) };
 			}
 		}));
+		trace.initialSearchMs = performance.now() - initialSearchStartedAt;
 
 		const warnings = responses
 			.map(response => response.warning)
@@ -170,16 +275,28 @@ export class McpSearchClient {
 		const pageEnd = pageStart + normalizedPageSize;
 		const results: SearchHit[] = [];
 		let sourceOffset = 0;
+		const mergeStartedAt = performance.now();
+		trace.rangeSearchStartedAt = performance.now();
 		for (const response of responses) {
 			const sourceTotal = response.value?.total ?? 0;
 			const sourceStart = Math.max(0, pageStart - sourceOffset);
 			const sourceEnd = Math.min(sourceTotal, pageEnd - sourceOffset);
 			if (response.value && sourceStart < sourceEnd) {
-				results.push(...await this.sourceRange(query, response.source, sourceStart, sourceEnd, symbolKinds));
+				results.push(...await this.sourceRange(query, response.source, sourceStart, sourceEnd, symbolKinds, trace));
 			}
 			sourceOffset += sourceTotal;
 		}
-		return { results, warnings, total, totalBySource, page: normalizedPage, pageSize: normalizedPageSize };
+		trace.rangeSearchMs = performance.now() - (trace.rangeSearchStartedAt ?? performance.now());
+		trace.mergeMs = performance.now() - mergeStartedAt - trace.rangeSearchMs;
+		return {
+			results,
+			warnings,
+			total,
+			totalBySource,
+			page: normalizedPage,
+			pageSize: normalizedPageSize,
+			performance: finishSearchPerformance(trace, requestedPage, normalizedPageSize, searchableSources),
+		};
 	}
 
 	public async read(hit: SearchHit): Promise<SearchDocument> {
@@ -301,12 +418,14 @@ export class McpSearchClient {
 		start: number,
 		end: number,
 		symbolKinds?: readonly SearchSymbolKind[],
+		trace?: SearchPerformanceTrace,
 	): Promise<SearchHit[]> {
+		const sourceStartedAt = performance.now();
 		const results: SearchHit[] = [];
 		const firstPageNumber = Math.floor(start / sourcePageSize) + 1;
 		const lastPageNumber = Math.floor((end - 1) / sourcePageSize) + 1;
 		for (let pageNumber = firstPageNumber; pageNumber <= lastPageNumber; pageNumber += 1) {
-			const page = await this.searchPage(query, source, sourcePageSize, pageNumber, symbolKinds);
+			const page = await this.searchPage(query, source, sourcePageSize, pageNumber, symbolKinds, trace);
 			const pageStart = (pageNumber - 1) * sourcePageSize;
 			const resultStart = Math.max(0, start - pageStart);
 			const resultEnd = Math.min(page.results.length, end - pageStart);
@@ -317,6 +436,9 @@ export class McpSearchClient {
 				break;
 			}
 		}
+		if (trace) {
+			sourcePerformanceFor(trace, source).rangeMs += performance.now() - sourceStartedAt;
+		}
 		return results;
 	}
 
@@ -326,7 +448,9 @@ export class McpSearchClient {
 		pageSize: number,
 		page: number,
 		symbolKinds?: readonly SearchSymbolKind[],
+		trace?: SearchPerformanceTrace,
 	): Promise<CachedSearchPage> {
+		const sourceTrace = trace ? sourcePerformanceFor(trace, source) : undefined;
 		const cacheKey = `${source}\u0000${pageSize}\u0000${query}\u0000${symbolKinds?.join(',') ?? ''}`;
 		let pages = this.searchPageCaches.get(cacheKey);
 		if (!pages) {
@@ -343,12 +467,21 @@ export class McpSearchClient {
 		const cachedPageNumber = nearestCachedSearchPage(pages, page);
 		let previousPage = cachedPageNumber > 0 ? pages.get(cachedPageNumber) : undefined;
 		if (cachedPageNumber === page && previousPage) {
+			if (sourceTrace) {
+				sourceTrace.cacheHits += 1;
+				recordVisitedPage(sourceTrace, page);
+				sourceTrace.cacheSize = pages.size;
+			}
 			return previousPage;
 		}
 		const firstPageToFetch = previousPage ? cachedPageNumber + 1 : 1;
 		for (let pageNumber = firstPageToFetch; pageNumber <= page; pageNumber += 1) {
 			const cached = pages.get(pageNumber);
 			if (cached) {
+				if (sourceTrace) {
+					sourceTrace.cacheHits += 1;
+					recordVisitedPage(sourceTrace, pageNumber);
+				}
 				previousPage = cached;
 				continue;
 			}
@@ -363,7 +496,13 @@ export class McpSearchClient {
 			if (previousPage?.nextCursor) {
 				argumentsValue.cursor = previousPage.nextCursor;
 			}
+			const remoteStartedAt = performance.now();
 			const value = asRecord(await this.callTool(searchToolFor(source), argumentsValue));
+			if (sourceTrace) {
+				sourceTrace.remoteRequests += 1;
+				sourceTrace.remoteMs += performance.now() - remoteStartedAt;
+				recordVisitedPage(sourceTrace, pageNumber);
+			}
 			const results = normalizeSearchPage(source, value);
 			const currentPage: CachedSearchPage = {
 				results,
@@ -390,6 +529,9 @@ export class McpSearchClient {
 				pages.delete(nextOldest);
 			}
 			previousPage = currentPage;
+			if (sourceTrace) {
+				sourceTrace.cacheSize = pages.size;
+			}
 		}
 		return previousPage ?? { results: [], total: 0 };
 	}
