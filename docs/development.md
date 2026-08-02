@@ -61,6 +61,26 @@ explicit example targets, so existing commands such as
 the supported way to run them. They are developer tooling and never a runtime
 dependency of the extension.
 
+To reproduce full-text search performance through the real MCP stdio path, run
+one of:
+
+```powershell
+npm run report:text-search -- --server <server.exe> --source workspace `
+  --workspace-scripts <scripts-root> --query <literal>
+npm run report:text-search -- --server <server.exe> --source game-data `
+  --index-cache <symbols.bin> --query <literal>
+```
+
+The report initializes a dedicated MCP process, warms Game Data explicitly
+when applicable, and records initialization, status, search, result-count, and
+server-provided scan statistics without printing the query or source text. It
+defaults to a 5,000 ms performance budget and a 35,000 ms hard timeout. Use
+`--budget-ms` or `--timeout-ms` to change either bound. The command exits
+nonzero for a timeout, structured tool failure, or over-budget search, making
+it suitable for a local red/green optimization loop against real installed
+Game Data. Machine-specific budgets are diagnostic evidence, not portable CI
+thresholds.
+
 To catalogue one or more PAC1 archives without extracting their contents, run:
 
 ```powershell
