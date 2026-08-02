@@ -405,6 +405,14 @@ fn mcp_inspection_and_source_read_reject_stale_and_changed_handoffs() {
         .cloned()
         .expect("revision");
 
+    client.send(json!({"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Run","limit":1,"offset":1}}}));
+    let direct_page = client.response(20);
+    assert_eq!(direct_page.pointer("/result/isError"), Some(&json!(false)));
+    assert!(direct_page
+        .pointer("/result/structuredContent/results")
+        .and_then(Value::as_array)
+        .is_some_and(|results| results.is_empty()));
+
     client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"inspect_game_data_symbol","arguments":{"symbolRef":symbol_ref}}}));
     let inspected = client.response(3);
     assert_eq!(inspected.pointer("/result/isError"), Some(&json!(false)));

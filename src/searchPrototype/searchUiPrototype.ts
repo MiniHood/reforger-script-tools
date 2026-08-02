@@ -3,7 +3,7 @@ import { performance } from 'node:perf_hooks';
 import * as vscode from 'vscode';
 import { diagnostic, diagnosticsEnabled } from '../diagnostics/diagnostics';
 import { resolveBaseGameIndexCache } from '../gameData/baseGameIndexCache';
-import { searchCommands, searchContext } from '../extensionConfig/search';
+import { searchCommands, searchContext, searchLimits } from '../extensionConfig/search';
 import { provideLanguageServerSemanticTokens } from '../languageClient/languageClient';
 import { discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
 import { resolveLanguageServerPath } from '../languageClient/serverPath';
@@ -681,8 +681,9 @@ const sourceButtons = () => sources.map(source => '<button class="' + (state.sou
 const resultTypes = ${JSON.stringify(searchKindFilters.map(({ value, label }) => ({ value, label })))};
 const typeButtons = () => resultTypes.map(type => '<button class="' + (state.type === type.value ? 'active' : '') + '" data-type="' + esc(type.value) + '">' + esc(type.label) + '</button>').join('');
 const pageSizeOptions = [25, 50, 100];
+const maxSearchPages = ${searchLimits.maxPages};
 const totalMatches = () => state.total;
-const totalPages = () => Math.max(1, Math.ceil(state.total / state.pageSize));
+const totalPages = () => Math.min(maxSearchPages, Math.max(1, Math.ceil(state.total / state.pageSize)));
 const pageControls = () => {
   const navigationDisabled = !state.query.trim() || state.status === 'loading';
   const pageTotal = totalPages();

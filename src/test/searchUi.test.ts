@@ -1,7 +1,8 @@
 import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { formatSearchKind, nearestCachedSearchPage, normalizeSearchPage, searchKindFilters, searchToolFor, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
+import { searchLimits } from '../extensionConfig/search';
+import { formatSearchKind, maxSearchPages, normalizeSearchPage, searchKindFilters, searchToolFor, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
 import { semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
 
 const searchUiSource = fs.readFileSync(
@@ -171,15 +172,13 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /data-external="' \+ esc\(result\.id\) \+ '">Open official page/);
 	});
 
-	test('supports cursor-backed result pages and selectable page sizes', () => {
-		assert.strictEqual(nearestCachedSearchPage(new Map([[1, {}], [32, {}], [96, {}]]), 80), 32);
-		assert.strictEqual(nearestCachedSearchPage(new Map([[1, {}], [32, {}], [96, {}]]), 96), 96);
-		assert.strictEqual(nearestCachedSearchPage(new Map([[1, {}], [32, {}], [96, {}]]), 0), 0);
+	test('supports random-access result pages, cursor-compatible MCP responses, and selectable page sizes', () => {
+		assert.strictEqual(maxSearchPages, searchLimits.maxPages);
 		assert.match(searchClientSource, /public async search\([\s\S]*?pageSize: number,[\s\S]*?page: number/);
 		assert.match(searchClientSource, /symbolKinds\?: readonly SearchSymbolKind\[\]/);
 		assert.match(searchClientSource, /kinds: symbolKinds/);
 		assert.match(searchClientSource, /limit: pageSize/);
-		assert.match(searchClientSource, /cursor/);
+		assert.match(searchClientSource, /nextCursor/);
 		assert.match(searchClientSource, /nextCursor/);
 		assert.match(searchClientSource, /total: number/);
 		assert.match(searchClientSource, /totalBySource: Partial<Record<SearchSource, number>>/);
@@ -202,13 +201,16 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /searchKindsFor\(typeValue\)/);
 		assert.match(searchUiSource, /if \(!isSearchKindValue\(message\.resultType\)\) \{/);
 		assert.match(searchClientSource, /const sourcePageSize = 100;/);
+		assert.match(searchClientSource, /export const maxSearchPages = searchLimits\.maxPages;/);
+		assert.match(searchClientSource, /paginationMode: 'offset'/);
 		assert.match(searchClientSource, /export interface SearchPerformance/);
 		assert.match(searchClientSource, /remoteRequests: number/);
 		assert.match(searchClientSource, /cacheHits: number/);
 		assert.match(searchClientSource, /performance: finishSearchPerformance/);
 		assert.match(searchClientSource, /let sourceOffset = 0;/);
 		assert.match(searchClientSource, /this\.searchPageCaches\.clear\(\);/);
-		assert.doesNotMatch(searchUiSource, /maxPageNumber/);
+		assert.match(searchUiSource, /const maxSearchPages = \$\{searchLimits\.maxPages\};/);
+		assert.match(searchUiSource, /Math\.min\(maxSearchPages, Math\.max\(1, Math\.ceil\(state\.total \/ state\.pageSize\)\)\)/);
 		assert.doesNotMatch(searchUiSource, /results per source/);
 		assert.match(searchUiSource, /Showing up to ' \+ state\.pageSize \+ ' total results/);
 		assert.match(searchUiSource, /<div class="empty">No results match this search\.<\/div>/);
@@ -220,8 +222,8 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /if \(state\.status === 'loading'\) return;/);
 		assert.match(searchUiSource, /state\.lastSearchKey/);
 		assert.match(searchUiSource, /function requestPage\(value\) \{ if \(state\.status === 'loading'\) return;/);
-		assert.match(searchClientSource, /const cachedPageNumber = nearestCachedSearchPage\(pages, page\);/);
-		assert.match(searchClientSource, /const firstPageToFetch = previousPage \? cachedPageNumber \+ 1 : 1;/);
+		assert.match(searchClientSource, /const cached = pages\.get\(page\);/);
+		assert.match(searchClientSource, /offset: \(page - 1\) \* pageSize/);
 		assert.match(searchClientSource, /const firstPageNumber = Math\.floor\(start \/ sourcePageSize\) \+ 1;/);
 		assert.match(searchClientSource, /const lastPageNumber = Math\.floor\(\(end - 1\) \/ sourcePageSize\) \+ 1;/);
 		assert.match(searchUiSource, /type: 'debugSnapshot'/);

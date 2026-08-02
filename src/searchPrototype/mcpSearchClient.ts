@@ -2,6 +2,7 @@ import { access } from 'node:fs/promises';
 import * as path from 'node:path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
+import { searchLimits } from '../extensionConfig/search';
 
 export type SearchSource = 'workspace' | 'gameData' | 'wiki';
 export type SearchSymbolKind =
@@ -77,6 +78,7 @@ export interface SearchPerformance {
 	rangeSearchMs: number;
 	mergeMs: number;
 	requestedPage: number;
+	paginationMode: 'offset';
 	pageSize: number;
 	sourcePageSize: number;
 	sources: SearchSourcePerformance[];
@@ -211,6 +213,7 @@ const requestTimeoutMs = 135_000;
 const maxSearchPageCaches = 32;
 const maxCachedPagesPerSearch = 32;
 const sourcePageSize = 100;
+export const maxSearchPages = searchLimits.maxPages;
 
 interface RecordValue {
 	[key: string]: unknown;
@@ -286,20 +289,11 @@ function finishSearchPerformance(
 		rangeSearchMs: trace.rangeSearchMs,
 		mergeMs: trace.mergeMs,
 		requestedPage,
+		paginationMode: 'offset',
 		pageSize,
 		sourcePageSize,
 		sources: sources.map(source => sourcePerformanceFor(trace, source)),
 	};
-}
-
-export function nearestCachedSearchPage(pages: ReadonlyMap<number, unknown>, requestedPage: number): number {
-	let nearest = 0;
-	for (const page of pages.keys()) {
-		if (page <= requestedPage && page > nearest) {
-			nearest = page;
-		}
-	}
-	return nearest;
 }
 
 export class McpSearchClient {
@@ -323,7 +317,7 @@ export class McpSearchClient {
 		await this.start();
 		trace.startupMs = performance.now() - trace.startedAt;
 		const normalizedPageSize = Math.min(100, Math.max(1, Number.isFinite(pageSize) ? Math.floor(pageSize) : 25));
-		const requestedPage = Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1);
+		const requestedPage = Math.min(maxSearchPages, Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1));
 		const searchableSources = symbolKinds?.length
 			? sources.filter(source => source !== 'wiki')
 			: sources;
@@ -553,76 +547,57 @@ export class McpSearchClient {
 			this.searchPageCaches.set(cacheKey, pages);
 		}
 
-		const cachedPageNumber = nearestCachedSearchPage(pages, page);
-		let previousPage = cachedPageNumber > 0 ? pages.get(cachedPageNumber) : undefined;
-		if (cachedPageNumber === page && previousPage) {
+		const cached = pages.get(page);
+		if (cached) {
 			if (sourceTrace) {
 				sourceTrace.cacheHits += 1;
 				recordVisitedPage(sourceTrace, page);
 				sourceTrace.cacheSize = pages.size;
 			}
-			return previousPage;
+			return cached;
 		}
-		const firstPageToFetch = previousPage ? cachedPageNumber + 1 : 1;
-		for (let pageNumber = firstPageToFetch; pageNumber <= page; pageNumber += 1) {
-			const cached = pages.get(pageNumber);
-			if (cached) {
-				if (sourceTrace) {
-					sourceTrace.cacheHits += 1;
-					recordVisitedPage(sourceTrace, pageNumber);
+		const argumentsValue: Record<string, unknown> = {
+			query,
+			limit: pageSize,
+			offset: (page - 1) * pageSize,
+			...(source !== 'wiki' && symbolKinds?.length ? { kinds: symbolKinds } : {}),
+		};
+		const remoteStartedAt = performance.now();
+		const value = asRecord(await this.callTool(searchToolFor(source), argumentsValue));
+		if (sourceTrace) {
+			sourceTrace.remoteRequests += 1;
+			sourceTrace.remoteMs += performance.now() - remoteStartedAt;
+			recordVisitedPage(sourceTrace, page);
+		}
+		const results = normalizeSearchPage(source, value);
+		const currentPage: CachedSearchPage = {
+			results,
+			total: asNumber(value.total, results.length),
+			...(typeof value.nextCursor === 'string' && value.nextCursor.length > 0
+				? { nextCursor: value.nextCursor }
+				: {}),
+		};
+		pages.set(page, currentPage);
+		while (pages.size > maxCachedPagesPerSearch) {
+			const oldest = pages.keys().next().value;
+			if (oldest !== 1) {
+				if (oldest !== undefined) {
+					pages.delete(oldest);
 				}
-				previousPage = cached;
 				continue;
 			}
-			if (pageNumber > 1 && !previousPage?.nextCursor) {
-				return { results: [], total: previousPage?.total ?? 0 };
+			const remaining = pages.keys();
+			remaining.next();
+			const nextOldest = remaining.next().value;
+			if (nextOldest === undefined) {
+				break;
 			}
-			const argumentsValue: Record<string, unknown> = {
-				query,
-				limit: pageSize,
-				...(source !== 'wiki' && symbolKinds?.length ? { kinds: symbolKinds } : {}),
-			};
-			if (previousPage?.nextCursor) {
-				argumentsValue.cursor = previousPage.nextCursor;
-			}
-			const remoteStartedAt = performance.now();
-			const value = asRecord(await this.callTool(searchToolFor(source), argumentsValue));
-			if (sourceTrace) {
-				sourceTrace.remoteRequests += 1;
-				sourceTrace.remoteMs += performance.now() - remoteStartedAt;
-				recordVisitedPage(sourceTrace, pageNumber);
-			}
-			const results = normalizeSearchPage(source, value);
-			const currentPage: CachedSearchPage = {
-				results,
-				total: asNumber(value.total, results.length),
-				...(typeof value.nextCursor === 'string' && value.nextCursor.length > 0
-					? { nextCursor: value.nextCursor }
-					: {}),
-			};
-			pages.set(pageNumber, currentPage);
-			while (pages.size > maxCachedPagesPerSearch) {
-				const oldest = pages.keys().next().value;
-				if (oldest !== 1) {
-					if (oldest !== undefined) {
-						pages.delete(oldest);
-					}
-					continue;
-				}
-				const remaining = pages.keys();
-				remaining.next();
-				const nextOldest = remaining.next().value;
-				if (nextOldest === undefined) {
-					break;
-				}
-				pages.delete(nextOldest);
-			}
-			previousPage = currentPage;
-			if (sourceTrace) {
-				sourceTrace.cacheSize = pages.size;
-			}
+			pages.delete(nextOldest);
 		}
-		return previousPage ?? { results: [], total: 0 };
+		if (sourceTrace) {
+			sourceTrace.cacheSize = pages.size;
+		}
+		return currentPage;
 	}
 
 	private request(method: string, params: unknown): Promise<JsonRpcResult> {

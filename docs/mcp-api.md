@@ -77,8 +77,8 @@ Find exact Enfusion declarations, relationships, examples, and source evidence.
 | Tool | Parameters | Returns | What it does / when to use |
 | --- | --- | --- | --- |
 | [`game_data_status`](mcp-api/tools/game_data_status.md) | — | `authorities`, `available`, `cache?`, `catalogueRevision?`, `counts`, `coverage`, `limits`, `recovery`, … | Check catalogue readiness before semantic lookup. |
-| [`search_game_data_symbols`](mcp-api/tools/search_game_data_symbols.md) | `cursor?`, `kinds?`, `limit?`, `owner?`, `query`, `sourceCategories?` | `appliedFilters`, `catalogueRevision`, `nextCursor?`, `query`, `results`, `returned`, `total` | Find exact Enfusion declarations by name, signature, or type. |
-| [`search_workspace_symbols`](mcp-api/tools/search_workspace_symbols.md) | `cursor?`, `kinds?`, `limit?`, `query` | `appliedFilters`, `catalogueRevision`, `nextCursor?`, `query`, `results`, `returned`, `total` | Find exact declarations in the configured user add-on workspace. |
+| [`search_game_data_symbols`](mcp-api/tools/search_game_data_symbols.md) | `cursor?`, `kinds?`, `limit?`, `offset?`, `owner?`, `query`, `sourceCategories?` | `appliedFilters`, `catalogueRevision`, `nextCursor?`, `query`, `results`, `returned`, `total` | Find exact Enfusion declarations by name, signature, or type. |
+| [`search_workspace_symbols`](mcp-api/tools/search_workspace_symbols.md) | `cursor?`, `kinds?`, `limit?`, `offset?`, `query` | `appliedFilters`, `catalogueRevision`, `nextCursor?`, `query`, `results`, `returned`, `total` | Find exact declarations in the configured user add-on workspace. |
 | [`inspect_workspace_symbol`](mcp-api/tools/inspect_workspace_symbol.md) | `symbolRef` | `attributes`, `baseType?`, `callableForm?`, `catalogueRevision`, `conditionalContext`, `container?`, `declarationRange`, `defaultValue?`, … | Inspect one exact user add-on symbol returned by workspace search. |
 | [`list_workspace_symbol_members`](mcp-api/tools/list_workspace_symbol_members.md) | `cursor?`, `kinds?`, `limit?`, `symbolRef` | `catalogueRevision`, `kinds`, `nextCursor?`, `ownerSymbolRef`, `results`, `returned`, `source`, `total` | List direct members of one user add-on symbol. |
 | [`query_workspace_symbol_relationships`](mcp-api/tools/query_workspace_symbol_relationships.md) | `cursor?`, `limit?`, `relationshipKinds?`, `symbolRef` | `catalogueRevision`, `nextCursor?`, `relationshipKinds`, `results`, `returned`, `source`, `targetSymbolRef`, `total` | Trace references and definitions in user add-on code. |
@@ -96,7 +96,7 @@ Find and read validated passages from the packaged official documentation.
 | Tool | Parameters | Returns | What it does / when to use |
 | --- | --- | --- | --- |
 | [`official_wiki_status`](mcp-api/tools/official_wiki_status.md) | — | `available`, `coldSearchTargetMs`, `corpusRevision?`, `excludedFiles`, `fileCount`, `invalidFileCount`, `invalidFiles`, `limits`, … | Check packaged official documentation availability and revision. |
-| [`search_official_wiki`](mcp-api/tools/search_official_wiki.md) | `cursor?`, `limit?`, `pathPrefix?`, `query` | `appliedFilters`, `corpusRevision`, `nextCursor?`, `query`, `results`, `returned`, `source`, `total` | Find authoritative documentation passages by terms and path. |
+| [`search_official_wiki`](mcp-api/tools/search_official_wiki.md) | `cursor?`, `limit?`, `offset?`, `pathPrefix?`, `query` | `appliedFilters`, `corpusRevision`, `nextCursor?`, `query`, `results`, `returned`, `source`, `total` | Find authoritative documentation passages by terms and path. |
 | [`read_official_wiki`](mcp-api/tools/read_official_wiki.md) | `corpusRevision`, `lineCount?`, `relativePath`, `startLine?` | `content`, `continuation?`, `corpusRevision`, `endLine`, `relativePath`, `source`, `sourceUrl`, `startLine`, … | Read an exact bounded passage returned by wiki search. |
 
 ### Workbench health

@@ -26,6 +26,7 @@ pub mod parser;
 pub mod preprocessor;
 pub mod reference_finder;
 pub mod resolver;
+pub(crate) mod search_limits;
 pub mod scope;
 pub mod semantic_file;
 pub mod symbol_display;

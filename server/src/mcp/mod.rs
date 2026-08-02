@@ -202,8 +202,8 @@ Use this guide to choose a tool family and establish the minimum live context. F
 - When a valid call returns a structured failure, follow its `recovery` and `retryable` fields instead of guessing another tool or parameter.
 "#;
 const GAME_DATA_STATUS_DESCRIPTION: &str = "Load and report the parser-owned Reforger Game Data Catalogue cache. Use this first when Game Data availability or coverage is uncertain. Returns the immutable catalogue revision, source provenance, semantic coverage and counts, cache outcome, bounded timings, limits, warnings, and recovery guidance without physical paths; it does not inspect source inputs, parse, rebuild, write the cache, or search symbols.";
-const SEARCH_GAME_DATA_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the immutable Reforger Game Data Catalogue. Results are ranked deterministically and contain opaque revision-bound symbol references plus ready-to-copy inspection and source-read inputs; this is not a source-text search.";
-const SEARCH_WORKSPACE_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the configured user add-on workspace index. Results use the same language-owned symbol references, deterministic pagination, and inspection handoffs as Game Data search; the index is built once per MCP process from --workspace-scripts roots. Identifier-prefix queries ending in `_` (for example, `SCR_`) match declared symbol names only, not containing names, signatures, or types.";
+const SEARCH_GAME_DATA_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the immutable Reforger Game Data Catalogue. Results are ranked deterministically and contain opaque revision-bound symbol references plus ready-to-copy inspection and source-read inputs; this is not a source-text search. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry.";
+const SEARCH_WORKSPACE_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the configured user add-on workspace index. Results use the same language-owned symbol references, deterministic pagination, and inspection handoffs as Game Data search; the index is built once per MCP process from --workspace-scripts roots. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry. Identifier-prefix queries ending in `_` (for example, `SCR_`) match declared symbol names only, not containing names, signatures, or types.";
 const INSPECT_WORKSPACE_SYMBOL_DESCRIPTION: &str = "Inspect one opaque workspace symbol reference returned by search_workspace_symbols. Returns parser-owned declaration, documentation, member, and source-location facts for the user add-on index.";
 const LIST_WORKSPACE_SYMBOL_MEMBERS_DESCRIPTION: &str = "List direct members of one revision-bound workspace symbol with semantic-kind filters and opaque pagination.";
 const QUERY_WORKSPACE_SYMBOL_RELATIONSHIPS_DESCRIPTION: &str = "Query bounded definitions, inheritance, references, and callers for one revision-bound workspace symbol. Reference results come from the language-owned workspace index, not an MCP text scan.";
@@ -215,7 +215,7 @@ const READ_GAME_DATA_SOURCE_DESCRIPTION: &str =
 const READ_WORKSPACE_SOURCE_DESCRIPTION: &str =
     "Read bounded source evidence from an exact logical user add-on workspace path returned by workspace symbol tools. The revision-bound snapshot is owned by the language engine and never exposes a physical path.";
 const OFFICIAL_WIKI_STATUS_DESCRIPTION: &str = "Validate and report the packaged Official Wiki Corpus. The copied Markdown files remain the source of truth; this reports their immutable revision, usable coverage, bounded exclusions, malformed-page facts, limits, and recovery without physical paths.";
-const SEARCH_OFFICIAL_WIKI_DESCRIPTION: &str = "Search validated packaged Official Wiki Markdown directly for deterministic, section-local passages. Results carry canonical source URLs, exact line ranges, and copy-ready read inputs; this never searches wiki-index.md or exposes an installed path.";
+const SEARCH_OFFICIAL_WIKI_DESCRIPTION: &str = "Search validated packaged Official Wiki Markdown directly for deterministic, section-local passages. Results carry canonical source URLs, exact line ranges, and copy-ready read inputs; this never searches wiki-index.md or exposes an installed path. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry.";
 const READ_OFFICIAL_WIKI_DESCRIPTION: &str = "Read bounded, validated verbatim Markdown from the packaged Official Wiki Corpus. Copy the corpus revision and logical path from search; results retain citation metadata and a continuation without exposing installation paths.";
 const WORKBENCH_STATUS_DESCRIPTION: &str = "Read Workbench Availability State through the configured loopback NET API. Returns only Workbench-authored running and script-compilation facts; a failed request means the configured endpoint is unavailable. It never inspects local installation files, enumerates processes, writes handler files, launches Workbench, or validates scripts.";
 const WORKBENCH_VALIDATE_SCRIPTS_DESCRIPTION: &str = "Validate the currently loaded Workbench project with Workbench's native compiler using the fixed WORKBENCH configuration. Returns a bounded page of normalized Workbench-authored errors and warnings; continue with the opaque cursor without recompiling.";
@@ -1020,6 +1020,8 @@ struct McpGameDataSearchInput {
     limit: Option<usize>,
     #[schemars(length(max = 2048))]
     cursor: Option<String>,
+    #[schemars(range(min = 0, max = 10000))]
+    offset: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1032,6 +1034,8 @@ struct McpWorkspaceSearchInput {
     limit: Option<usize>,
     #[schemars(length(max = 2048))]
     cursor: Option<String>,
+    #[schemars(range(min = 0, max = 10000))]
+    offset: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1101,6 +1105,8 @@ struct McpOfficialWikiSearchInput {
     limit: Option<usize>,
     #[schemars(length(max = 2048))]
     cursor: Option<String>,
+    #[schemars(range(min = 0, max = 10000))]
+    offset: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1136,6 +1142,7 @@ impl From<McpGameDataSearchInput> for GameDataSearchRequest {
             source_categories: input.source_categories,
             limit: input.limit,
             cursor: input.cursor,
+            offset: input.offset,
         }
     }
 }
@@ -1804,6 +1811,11 @@ fn official_wiki_search_error(error: OfficialWikiSearchError) -> CallToolResult 
             "pathPrefix must be a safe logical Markdown subtree.",
             "Use a relative logical prefix returned by Official Wiki search.",
         ),
+        OfficialWikiSearchError::InvalidRequest(message) => tool_error(
+            "invalid_arguments",
+            message,
+            "Correct or omit offset and retry the search.",
+        ),
         OfficialWikiSearchError::InvalidCursor => tool_error(
             "invalid_cursor",
             "cursor is invalid for this query or filter.",
@@ -2108,6 +2120,7 @@ impl ReforgerMcpServer {
                         source_categories: Some(vec!["workspace".to_string()]),
                         limit: input.limit,
                         cursor: input.cursor,
+                        offset: input.offset,
                     },
                     context,
                 )
@@ -3767,6 +3780,7 @@ impl ReforgerMcpServer {
                         path_prefix: input.path_prefix,
                         limit: input.limit,
                         cursor: input.cursor,
+                        offset: input.offset,
                     },
                     context,
                 )

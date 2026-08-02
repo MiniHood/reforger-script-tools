@@ -54,6 +54,7 @@ pub struct GameDataSearchRequest {
     pub source_categories: Option<Vec<String>>,
     pub limit: Option<usize>,
     pub cursor: Option<String>,
+    pub offset: Option<usize>,
 }
 
 impl GameDataSearchRequest {
@@ -65,6 +66,7 @@ impl GameDataSearchRequest {
             source_categories: None,
             limit: None,
             cursor: None,
+            offset: None,
         }
     }
 }
@@ -254,6 +256,19 @@ fn search_with_scope(
         ));
     }
     let limit = request.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    if request.cursor.is_some() && request.offset.is_some() {
+        return Err(GameDataSearchError::InvalidRequest(
+            "offset cannot be combined with cursor",
+        ));
+    }
+    if request
+        .offset
+        .is_some_and(|offset| offset > crate::search_limits::MAX_RANDOM_ACCESS_OFFSET)
+    {
+        return Err(GameDataSearchError::InvalidRequest(
+            "offset exceeds the random-access search limit",
+        ));
+    }
     let cursor = request.cursor.as_deref().map(decode_cursor).transpose()?;
     if let Some(cursor) = &cursor {
         if cursor.catalogue_revision != catalogue_revision {
@@ -267,7 +282,10 @@ fn search_with_scope(
             return Err(GameDataSearchError::InvalidCursor);
         }
     }
-    let offset = cursor.map(|cursor| cursor.offset).unwrap_or(0);
+    let offset = request
+        .offset
+        .or_else(|| cursor.as_ref().map(|cursor| cursor.offset))
+        .unwrap_or(0);
     let query_folded = query.to_lowercase();
     let mut candidates = Vec::new();
     for symbol in index.symbols() {

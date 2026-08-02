@@ -82,6 +82,7 @@ pub struct OfficialWikiSearchRequest {
     pub path_prefix: Option<String>,
     pub limit: Option<usize>,
     pub cursor: Option<String>,
+    pub offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -169,6 +170,7 @@ pub enum OfficialWikiSearchError {
     Unavailable,
     InvalidQuery,
     InvalidFilter,
+    InvalidRequest(&'static str),
     InvalidCursor,
     StaleCursor,
     Changed,
@@ -243,6 +245,20 @@ impl OfficialWikiCorpus {
             .limit
             .unwrap_or(DEFAULT_SEARCH_LIMIT)
             .clamp(1, MAX_SEARCH_LIMIT);
+        if request.cursor.is_some() && request.offset.is_some() {
+            return Err(OfficialWikiSearchError::InvalidRequest(
+                "offset cannot be combined with cursor",
+            ));
+        }
+        if request
+            .offset
+            .is_some_and(|offset| offset > crate::search_limits::MAX_RANDOM_ACCESS_OFFSET)
+        {
+            return Err(OfficialWikiSearchError::InvalidRequest(
+                "offset exceeds the random-access search limit",
+            ));
+        }
+        let direct_offset = request.offset.is_some();
         let offset = match request.cursor.as_deref() {
             Some(cursor) => {
                 if cursor.len() > MAX_CURSOR_BYTES {
@@ -259,7 +275,7 @@ impl OfficialWikiCorpus {
                 }
                 cursor.offset
             }
-            None => 0,
+            None => request.offset.unwrap_or(0),
         };
         let mut hits = Vec::new();
         for page in &corpus.pages {
@@ -282,7 +298,11 @@ impl OfficialWikiCorpus {
                 .then_with(|| left.1.start_line.cmp(&right.1.start_line))
         });
         if offset > hits.len() {
-            return Err(OfficialWikiSearchError::InvalidCursor);
+            return Err(if direct_offset {
+                OfficialWikiSearchError::InvalidRequest("offset is beyond the result set")
+            } else {
+                OfficialWikiSearchError::InvalidCursor
+            });
         }
         let total = hits.len();
         let mut results: Vec<_> = hits
@@ -1056,6 +1076,7 @@ mod tests {
                 path_prefix: Some("Guides/".to_string()),
                 limit: Some(1),
                 cursor: None,
+                offset: None,
             })
             .unwrap();
         assert_eq!(first.query, "search target");
@@ -1072,11 +1093,23 @@ mod tests {
                 path_prefix: Some("Guides".to_string()),
                 limit: Some(1000),
                 cursor: first.next_cursor,
+                offset: None,
             })
             .unwrap();
         assert_eq!(second.returned, 2);
         assert_eq!(second.results[0].heading, "Second");
         assert_eq!(second.results[1].relative_path, "Guides/Beta.md");
+
+        let direct = corpus
+            .search(OfficialWikiSearchRequest {
+                query: "search target".to_string(),
+                path_prefix: Some("Guides".to_string()),
+                limit: Some(1),
+                cursor: None,
+                offset: Some(1),
+            })
+            .unwrap();
+        assert_eq!(direct.results[0].heading, "Second");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1104,6 +1137,7 @@ mod tests {
                 path_prefix: None,
                 limit: None,
                 cursor: None,
+                offset: None,
             })
             .unwrap();
 
@@ -1152,7 +1186,8 @@ mod tests {
                     query: "needle".to_string(),
                     path_prefix: None,
                     limit: None,
-                    cursor: None
+                    cursor: None,
+                    offset: None,
                 },
                 &control
             ),

@@ -5,3 +5,7 @@ export const searchCommands = {
 export const searchContext = {
 	key: 'reforgerScriptTools.searchUi',
 } as const;
+
+export const searchLimits = {
+	maxPages: 100,
+} as const;

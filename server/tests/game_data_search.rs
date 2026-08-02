@@ -138,6 +138,36 @@ fn search_pages_a_canonical_filtered_result_set_with_a_bound_cursor() {
     assert_eq!(first.results[0].declaration_range.start_line, 2);
     assert_eq!(first.results[0].read_source_input.start_line, 2);
     assert_eq!(first.results[0].match_kind, "exactName");
+
+    let mut random_access = GameDataSearchRequest::new("Run");
+    random_access.kinds = Some(vec!["method".to_string()]);
+    random_access.source_categories = Some(vec!["game".to_string()]);
+    random_access.limit = Some(1);
+    random_access.offset = Some(1);
+    let direct = search(
+        &index,
+        &line_starts(&index),
+        &IndexBuildControl::default(),
+        "gd1:test",
+        random_access,
+    )
+    .expect("direct page");
+    assert_eq!(direct.results[0].qualified_name, "Beta.Run");
+
+    let mut conflicting = GameDataSearchRequest::new("Run");
+    conflicting.kinds = Some(vec!["method".to_string()]);
+    conflicting.source_categories = Some(vec!["game".to_string()]);
+    conflicting.limit = Some(1);
+    conflicting.cursor = first.next_cursor;
+    conflicting.offset = Some(1);
+    assert!(search(
+        &index,
+        &line_starts(&index),
+        &IndexBuildControl::default(),
+        "gd1:test",
+        conflicting,
+    )
+    .is_err());
 }
 
 #[test]

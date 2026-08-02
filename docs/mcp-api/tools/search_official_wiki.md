@@ -3,7 +3,7 @@
 
 [Back to the MCP API router](../../mcp-api.md)
 
-Search validated packaged Official Wiki Markdown directly for deterministic, section-local passages. Results carry canonical source URLs, exact line ranges, and copy-ready read inputs; this never searches wiki-index.md or exposes an installed path.
+Search validated packaged Official Wiki Markdown directly for deterministic, section-local passages. Results carry canonical source URLs, exact line ranges, and copy-ready read inputs; this never searches wiki-index.md or exposes an installed path. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry.
 
 ### Annotations
 
@@ -30,6 +30,14 @@ Search validated packaged Official Wiki Markdown directly for deterministic, sec
       ]
     },
     "limit": {
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "offset": {
+      "maximum": 10000,
       "minimum": 0,
       "type": [
         "integer",
