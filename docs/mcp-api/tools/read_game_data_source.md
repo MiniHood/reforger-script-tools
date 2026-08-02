@@ -3,7 +3,7 @@
 
 [Back to the MCP API router](../../mcp-api.md)
 
-Read parser-published bounded source evidence from an exact logical Game Data path. This operation is unavailable until the parser-owned cache publishes source evidence; it never opens Game Data files from MCP.
+Read bounded verbatim source evidence from an exact logical Game Data path returned by Game Data tools. The source is resolved from the immutable catalogue revision and never exposes a physical path.
 
 ### Input schema
 

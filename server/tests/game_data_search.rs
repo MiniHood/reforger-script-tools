@@ -1,4 +1,5 @@
 use reforger_language_server::game_data_catalogue::{GameDataCatalogue, GameDataCatalogueConfig};
+use reforger_language_server::game_data_inspection::GameDataSourceReadRequest;
 use reforger_language_server::game_data_search::{search, GameDataSearchRequest, SourceLineStarts};
 use reforger_language_server::index_build::{
     build_index, IndexBuildConfig, IndexBuildControl, IndexSourceRoot,
@@ -169,6 +170,50 @@ fn catalogue_search_keeps_source_lines_from_its_initialized_snapshot() {
         .expect("search");
 
     assert_eq!(page.results[0].declaration_range.start_line, 2);
+}
+
+#[test]
+fn catalogue_source_read_returns_the_authoritative_source_line() {
+    let fixture = TempFixture::new("source-read");
+    let scripts = fixture.path.join("Game");
+    fs::create_dir_all(&scripts).expect("create scripts");
+    fs::write(scripts.join("Source.c"), "// docs\nclass SourceTarget {}\n").expect("write source");
+    let cache_path = fixture.path.join("cache.bin");
+    load_or_build_game_data_index(&GameDataIndexCacheConfig {
+        scripts_root: fixture.path.clone(),
+        metadata_path: None,
+        cache_path: cache_path.clone(),
+    })
+    .expect("create cache fixture");
+    let catalogue = GameDataCatalogue::new(GameDataCatalogueConfig {
+        cache_path: Some(cache_path),
+    });
+    let revision = catalogue
+        .status(&IndexBuildControl::default())
+        .expect("initialize catalogue")
+        .catalogue_revision
+        .expect("catalogue revision");
+    let page = catalogue
+        .search(
+            &IndexBuildControl::default(),
+            GameDataSearchRequest::new("SourceTarget"),
+        )
+        .expect("search");
+    let input = &page.results[0].read_source_input;
+    let source = catalogue
+        .read_source(
+            &IndexBuildControl::default(),
+            GameDataSourceReadRequest {
+                catalogue_revision: revision,
+                relative_path: input.relative_path.clone(),
+                start_line: Some(input.start_line),
+                line_count: Some(1),
+            },
+        )
+        .expect("read source");
+
+    assert_eq!(source["content"], "class SourceTarget {}\n");
+    assert_eq!(source["startLine"], 2);
 }
 
 #[test]

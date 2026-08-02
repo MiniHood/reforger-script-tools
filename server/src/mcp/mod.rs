@@ -211,7 +211,7 @@ const INSPECT_GAME_DATA_SYMBOL_DESCRIPTION: &str = "Inspect one opaque Game Data
 const LIST_GAME_DATA_SYMBOL_MEMBERS_DESCRIPTION: &str = "List every direct member of one revision-bound Game Data symbol with semantic-kind filters and opaque pagination. Use this after inspection when its compact member preview is truncated.";
 const QUERY_GAME_DATA_SYMBOL_RELATIONSHIPS_DESCRIPTION: &str = "Query parser-published bounded semantic relationships for one revision-bound Game Data symbol. This operation is unavailable until the parser-owned cache publishes relationship facts; it never scans Game Data source from MCP.";
 const READ_GAME_DATA_SOURCE_DESCRIPTION: &str =
-    "Read parser-published bounded source evidence from an exact logical Game Data path. This operation is unavailable until the parser-owned cache publishes source evidence; it never opens Game Data files from MCP.";
+    "Read bounded verbatim source evidence from an exact logical Game Data path returned by Game Data tools. The source is resolved from the immutable catalogue revision and never exposes a physical path.";
 const READ_WORKSPACE_SOURCE_DESCRIPTION: &str =
     "Read bounded source evidence from an exact logical user add-on workspace path returned by workspace symbol tools. The revision-bound snapshot is owned by the language engine and never exposes a physical path.";
 const OFFICIAL_WIKI_STATUS_DESCRIPTION: &str = "Validate and report the packaged Official Wiki Corpus. The copied Markdown files remain the source of truth; this reports their immutable revision, usable coverage, bounded exclusions, malformed-page facts, limits, and recovery without physical paths.";
@@ -1732,6 +1732,11 @@ fn inspection_error(error: crate::game_data_inspection::GameDataInspectionError)
             &message,
             "Use an exact path and one-based range returned by Game Data.",
         ),
+        SourceReadFailed(message) => tool_error(
+            "source_evidence_unavailable",
+            &message,
+            "Restart the MCP process after verifying the immutable Game Data source cache.",
+        ),
         GameDataChanged => tool_error(
             "game_data_changed",
             "Backing Game Data changed after this MCP process started.",
@@ -1739,8 +1744,8 @@ fn inspection_error(error: crate::game_data_inspection::GameDataInspectionError)
         ),
         SourceEvidenceUnavailable => tool_error(
             "source_evidence_unavailable",
-            "This parser-owned cache does not publish source text.",
-            "Use semantic Game Data tools, or activate a language engine version that publishes source evidence.",
+            "Source text is unavailable for this catalogue entry.",
+            "Repeat the search against a catalogue that publishes source identities and source bytes.",
         ),
         Unavailable => tool_error(
             "game_data_unavailable",

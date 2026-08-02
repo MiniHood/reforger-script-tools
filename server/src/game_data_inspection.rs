@@ -26,6 +26,7 @@ pub enum GameDataInspectionError {
     InvalidSymbolRef,
     StaleSymbolRef,
     InvalidSource(String),
+    SourceReadFailed(String),
     GameDataChanged,
     Cancelled,
 }

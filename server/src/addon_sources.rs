@@ -2114,6 +2114,32 @@ pub fn read_virtual_source(uri: &str) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| format!("Pack source {logical_path} is not UTF-8"))
 }
 
+/// Reads a virtual source document from the immutable cache that published its
+/// index. MCP starts in a separate process from the language server, so it
+/// must register the cache root before resolving a `reforger-pak` URI.
+pub fn read_cached_virtual_source(uri: &str, cache_path: &Path) -> Result<String, String> {
+    let parsed = Url::parse(uri).map_err(|error| format!("Invalid pack source URI: {error}"))?;
+    if parsed.scheme() != VIRTUAL_SOURCE_SCHEME {
+        return Err(format!(
+            "Unsupported source URI scheme '{}'",
+            parsed.scheme()
+        ));
+    }
+    let guid = parsed
+        .host_str()
+        .ok_or_else(|| "Pack source URI has no add-on GUID".to_string())?;
+    let revision = parsed
+        .path()
+        .trim_start_matches('/')
+        .split('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Pack source URI has no revision".to_string())?;
+    let cache_root = cache_path.parent().unwrap_or_else(|| Path::new("."));
+    register_cached_source_revision_root(guid, revision, cache_root);
+    read_virtual_source(uri)
+}
+
 impl PackedSourceRevision {
     fn source_entry(&self, logical_path: &str) -> Option<&PackedSourceEntry> {
         self.entries
@@ -4106,6 +4132,10 @@ mod tests {
             .clone();
         assert_eq!(
             read_virtual_source(&feature_uri).unwrap(),
+            "class Feature {}"
+        );
+        assert_eq!(
+            read_cached_virtual_source(&feature_uri, &addon_cache.join("symbols.bin")).unwrap(),
             "class Feature {}"
         );
         let editor_normalized_uri =

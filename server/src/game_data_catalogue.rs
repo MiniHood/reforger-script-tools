@@ -1,5 +1,7 @@
+use crate::addon_sources::read_cached_virtual_source;
 use crate::game_data_inspection::{
-    inspect, GameDataInspectionError, GameDataInspectionOutput, GameDataSourceReadRequest,
+    inspect, read_source as read_source_evidence, GameDataInspectionError,
+    GameDataInspectionOutput, GameDataSourceReadRequest,
 };
 use crate::game_data_research::{
     list_members, GameDataExamplePage, GameDataExampleSearchRequest, GameDataMemberPage,
@@ -199,9 +201,55 @@ impl GameDataCatalogue {
             .index
             .clone()
             .ok_or(GameDataInspectionError::Unavailable)?;
+        let (source_file_id, virtual_source, absolute_path) = index
+            .files()
+            .iter()
+            .find(|file| {
+                file.metadata.relative_path.as_ref().is_some_and(|path| {
+                    path.to_string_lossy().replace('\\', "/") == request.relative_path
+                })
+            })
+            .map(|file| {
+                (
+                    file.id,
+                    file.metadata.virtual_source.clone(),
+                    file.metadata.absolute_path.clone(),
+                )
+            })
+            .ok_or_else(|| {
+                GameDataInspectionError::InvalidSource(
+                    "relativePath is not in the catalogue".to_string(),
+                )
+            })?;
         drop(state);
-        let _ = (index, revision, request);
-        Err(GameDataInspectionError::SourceEvidenceUnavailable)
+        let source = if let Some(virtual_source) = &virtual_source {
+            let cache_path = resolve_current_index_pointer(
+                self.config
+                    .cache_path
+                    .as_ref()
+                    .ok_or(GameDataInspectionError::Unavailable)?,
+            )
+            .map_err(GameDataInspectionError::Initialization)?;
+            read_cached_virtual_source(&virtual_source.uri, &cache_path).map_err(|error| {
+                GameDataInspectionError::SourceReadFailed(format!(
+                    "Failed to read Game Data source {}: {error}",
+                    virtual_source.uri
+                ))
+            })?
+        } else if let Some(path) = absolute_path {
+            String::from_utf8_lossy(&fs::read(&path).map_err(|error| {
+                GameDataInspectionError::SourceReadFailed(format!(
+                    "Failed to read Game Data source {}: {error}",
+                    path.display()
+                ))
+            })?)
+            .into_owned()
+        } else {
+            return Err(GameDataInspectionError::SourceEvidenceUnavailable);
+        };
+        let mut source_texts = BTreeMap::new();
+        source_texts.insert(source_file_id, Arc::<str>::from(source));
+        read_source_evidence(&index, control, revision, &source_texts, request)
     }
 
     fn research_snapshot(

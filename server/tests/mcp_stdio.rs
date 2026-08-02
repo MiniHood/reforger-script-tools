@@ -344,11 +344,11 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         "params": { "name": "read_game_data_source", "arguments": results[0]["readSourceInput"] }
     }));
     let source = client.response(6);
-    assert_eq!(source.pointer("/result/isError"), Some(&json!(true)));
-    assert_eq!(
-        source.pointer("/result/structuredContent/code"),
-        Some(&json!("source_evidence_unavailable"))
-    );
+    assert_eq!(source.pointer("/result/isError"), Some(&json!(false)));
+    assert!(source
+        .pointer("/result/structuredContent/content")
+        .and_then(Value::as_str)
+        .is_some_and(|content| content.contains("class McpFixture")));
 
     for (offset, tool) in listed.iter().enumerate() {
         let name = tool
@@ -437,13 +437,16 @@ fn mcp_inspection_and_source_read_reject_stale_and_changed_handoffs() {
     client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"../Inspectable.c"}}}));
     let invalid_path = client.response(5);
     assert_eq!(invalid_path.pointer("/result/isError"), Some(&json!(true)));
-    assert_tool_error_code(&invalid_path, "source_evidence_unavailable");
+    assert_tool_error_code(&invalid_path, "invalid_arguments");
 
     fs::write(&source_path, "class Inspectable { int changed; }\n").expect("change backing data");
     client.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Inspectable.c"}}}));
     let changed = client.response(6);
-    assert_eq!(changed.pointer("/result/isError"), Some(&json!(true)));
-    assert_tool_error_code(&changed, "source_evidence_unavailable");
+    assert_eq!(changed.pointer("/result/isError"), Some(&json!(false)));
+    assert!(changed
+        .pointer("/result/structuredContent/content")
+        .and_then(Value::as_str)
+        .is_some_and(|content| content.contains("class Inspectable { int changed; }")));
 }
 
 #[test]
@@ -512,15 +515,18 @@ fn mcp_progressive_retrieval_enforces_member_documentation_and_source_bounds() {
         .is_some_and(|text| text.contains("list_game_data_symbol_members")));
 
     client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Missing.c"}}}));
-    assert_tool_error_code(&client.response(4), "source_evidence_unavailable");
+    assert_tool_error_code(&client.response(4), "invalid_arguments");
     client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":"gd1:stale","relativePath":"Game/Bounds.c"}}}));
-    assert_tool_error_code(&client.response(5), "source_evidence_unavailable");
+    assert_tool_error_code(&client.response(5), "stale_symbol_ref");
     client.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Bounds.c","startLine":0}}}));
-    assert_tool_error_code(&client.response(6), "source_evidence_unavailable");
+    assert_tool_error_code(&client.response(6), "invalid_arguments");
     client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Bounds.c","startLine":1,"lineCount":999}}}));
     let read = client.response(7);
-    assert_eq!(read.pointer("/result/isError"), Some(&json!(true)));
-    assert_tool_error_code(&read, "source_evidence_unavailable");
+    assert_eq!(read.pointer("/result/isError"), Some(&json!(false)));
+    assert_eq!(
+        read.pointer("/result/structuredContent/truncated"),
+        Some(&json!(true))
+    );
 }
 
 #[test]
@@ -685,7 +691,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         .and_then(Value::as_str)
         .is_some_and(|text| text.contains("Workbench")));
     client.send(json!({"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"read_game_data_source","arguments":first_page["results"][0]["readSourceInput"]}}));
-    assert_tool_error_code(&client.response(20), "source_evidence_unavailable");
+    assert_eq!(client.response(20).pointer("/result/isError"), Some(&json!(false)));
     let example_cursor = first_page
         .get("nextCursor")
         .cloned()
@@ -1116,8 +1122,11 @@ fn lossy_utf8_game_data_remains_searchable_and_readable() {
         }
     }));
     let read = client.response(4);
-    assert_eq!(read.pointer("/result/isError"), Some(&json!(true)));
-    assert_tool_error_code(&read, "source_evidence_unavailable");
+    assert_eq!(read.pointer("/result/isError"), Some(&json!(false)));
+    assert!(read
+        .pointer("/result/structuredContent/content")
+        .and_then(Value::as_str)
+        .is_some_and(|content| content.contains('\u{fffd}')));
 }
 
 #[test]
