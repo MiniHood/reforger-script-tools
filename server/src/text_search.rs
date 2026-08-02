@@ -2,6 +2,7 @@ use crate::index_build::IndexBuildControl;
 use regex::{Regex, RegexBuilder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
@@ -257,7 +258,7 @@ pub fn page(
         }
         if cursor.query != query
             || cursor.options != request.options
-            || cursor.addon_guids != addon_guids
+            || cursor.addon_scope_signature != addon_scope_signature(&addon_guids)
         {
             return Err(TextSearchError::InvalidCursor);
         }
@@ -280,11 +281,11 @@ pub fn page(
     }
     let next_cursor = (offset + returned < total).then(|| {
         encode_cursor(&Cursor {
-            version: 3,
+            version: 4,
             catalogue_revision: result_set.catalogue_revision.clone(),
             query: query.clone(),
             options: request.options,
-            addon_guids: addon_guids.clone(),
+            addon_scope_signature: addon_scope_signature(&addon_guids),
             offset: offset + returned,
         })
     });
@@ -309,11 +310,11 @@ pub fn page(
         page.results.pop();
         page.returned = page.results.len();
         page.next_cursor = Some(encode_cursor(&Cursor {
-            version: 3,
+            version: 4,
             catalogue_revision: page.catalogue_revision.clone(),
             query: page.query.clone(),
             options: request.options,
-            addon_guids: addon_guids.clone(),
+            addon_scope_signature: addon_scope_signature(&addon_guids),
             offset: offset + page.returned,
         }));
     }
@@ -467,7 +468,7 @@ struct Cursor {
     catalogue_revision: String,
     query: String,
     options: TextSearchOptions,
-    addon_guids: Vec<String>,
+    addon_scope_signature: String,
     offset: usize,
 }
 
@@ -482,9 +483,18 @@ fn decode_cursor(value: &str) -> Result<Cursor, TextSearchError> {
     let bytes = unhex(value).ok_or(TextSearchError::InvalidCursor)?;
     let cursor =
         serde_json::from_slice::<Cursor>(&bytes).map_err(|_| TextSearchError::InvalidCursor)?;
-    (cursor.version == 3)
+    (cursor.version == 4)
         .then_some(cursor)
         .ok_or(TextSearchError::InvalidCursor)
+}
+
+fn addon_scope_signature(addon_guids: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    for addon_guid in addon_guids {
+        hasher.update((addon_guid.len() as u64).to_le_bytes());
+        hasher.update(addon_guid.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -803,6 +813,43 @@ mod tests {
             ),
             Err(TextSearchError::StaleCursor)
         );
+    }
+
+    #[test]
+    fn cursor_remains_within_its_limit_for_large_addon_scopes() {
+        let addon_guids = (0..200)
+            .map(|index| format!("{index:016X}"))
+            .collect::<Vec<_>>();
+        let first = search(
+            corpus(),
+            &IndexBuildControl::default(),
+            "ws1:test",
+            TextSearchRequest {
+                query: "SCR_".to_string(),
+                addon_guids: Some(addon_guids.clone()),
+                options: TextSearchOptions::default(),
+                limit: Some(1),
+                cursor: None,
+            },
+        )
+        .expect("first page with a large add-on scope");
+        let cursor = first.next_cursor.clone().expect("continuation");
+        assert!(cursor.len() <= MAX_CURSOR_BYTES);
+
+        let second = search(
+            corpus(),
+            &IndexBuildControl::default(),
+            "ws1:test",
+            TextSearchRequest {
+                query: "SCR_".to_string(),
+                addon_guids: Some(addon_guids),
+                options: TextSearchOptions::default(),
+                limit: Some(1),
+                cursor: Some(cursor),
+            },
+        )
+        .expect("second page with a large add-on scope");
+        assert_eq!(second.results[0].relative_path, "Game/Z.c");
     }
 
     #[test]
