@@ -348,10 +348,12 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /class="control-block search-scope-control"><div class="group-label">SEARCH SCOPE<\/div>' \+ searchScope\(\)/);
 	});
 
-	test('promotes the Signal Bar header over the shared grouped match surface', () => {
+	test('uses one concise Source Search heading over the shared grouped match surface', () => {
 		assert.match(searchUiSource, /function renderSearchUi\(webview: vscode\.Webview\): string/);
 		assert.doesNotMatch(searchUiSource, /prototypeSwitcher|pageRenderers|prototypeVariant/);
 		assert.match(searchUiSource, /class="search-masthead"/);
+		assert.match(searchUiSource, /<section class="search-masthead"><h1>Source Search<\/h1><\/section>/);
+		assert.doesNotMatch(searchUiSource, /Source intelligence|Search the source atlas|Trace symbols, text, and resources/);
 		assert.match(searchUiSource, /class="search-primary"[\s\S]*?class="search-query"[\s\S]*?class="search-count"/);
 		assert.match(searchUiSource, /class="search-secondary"[\s\S]*?SEARCH SCOPE[\s\S]*?SEARCH MODE[\s\S]*?typeControl \+ pageControls\(true\)/);
 		assert.match(searchUiSource, /\.search-scope-control \{ width: 180px;/);

@@ -1120,10 +1120,8 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .atlas-card:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 .atlas-card-head { display: flex; justify-content: space-between; gap: 10px; }
 .atlas-card .result-path { max-width: none; margin: 4px 0 0; text-align: left; }
-.search-masthead { padding: 4px 2px 18px; }
-.search-masthead-kicker { color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
-.search-masthead h1 { margin: 5px 0 5px; font-size: 23px; }
-.search-masthead p { margin: 0; }
+.search-masthead { padding: 4px 2px 12px; }
+.search-masthead h1 { margin: 0; font-size: 23px; }
 .search-header { margin-bottom: 12px; border-bottom: 1px solid var(--border); }
 .search-primary { display: grid; grid-template-columns: minmax(320px, 1fr) max-content; align-items: center; gap: 14px; padding: 10px 12px; border: 1px solid var(--border); background: var(--alt); box-shadow: inset 3px 0 0 var(--accent); }
 .search-query { display: flex; min-width: 0; }
@@ -1434,7 +1432,7 @@ function render(focusQuery = false) {
   const sourceNoun = sourceCount === 1 ? ' source' : ' sources';
   const sharedMatchArea = () => warnings + resultBody(resultGroups()) + bottomPager;
   const typeControl = state.mode === 'text' ? '' : '<div class="control-block search-types"><div class="group-label">RESULT TYPE</div>' + typeControls() + '</div>';
-  const page = '<div class="shell search-atlas"><section class="search-masthead"><div class="search-masthead-kicker">Source intelligence</div><h1>Search the source atlas</h1><p class="muted">Trace symbols, text, and resources across every selected source.</p></section><header class="search-header"><div class="search-primary"><div class="search-query">' + queryField() + textSearchOptions() + '</div><div class="search-count"><strong>' + totalMatchesLabel() + '</strong>matches / ' + sourceCount + sourceNoun + '</div></div><div class="search-secondary"><div class="control-block search-scope-control"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '</div><div class="control-block"><div class="group-label">SEARCH MODE</div>' + modeControls() + '</div>' + typeControl + pageControls(true) + '</div></header>' + sharedMatchArea() + '</div>';
+  const page = '<div class="shell search-atlas"><section class="search-masthead"><h1>Source Search</h1></section><header class="search-header"><div class="search-primary"><div class="search-query">' + queryField() + textSearchOptions() + '</div><div class="search-count"><strong>' + totalMatchesLabel() + '</strong>matches / ' + sourceCount + sourceNoun + '</div></div><div class="search-secondary"><div class="control-block search-scope-control"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '</div><div class="control-block"><div class="group-label">SEARCH MODE</div>' + modeControls() + '</div>' + typeControl + pageControls(true) + '</div></header>' + sharedMatchArea() + '</div>';
   document.getElementById('app').innerHTML = page;
   const query = document.getElementById('query');
   const focusSearchQuery = () => { query.focus(); query.setSelectionRange(state.query.length, state.query.length); };
