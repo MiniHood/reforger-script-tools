@@ -13,9 +13,9 @@ export const wikiScopeId = 'wiki';
 export function addonScopeLabel(title: string, displayId: string, fallbackId: string): string {
 	const normalizedTitle = title.trim();
 	const normalizedDisplayId = displayId.trim();
-	const compositePrefix = `${normalizedDisplayId} (`;
-	if (normalizedDisplayId && normalizedTitle.startsWith(compositePrefix) && normalizedTitle.endsWith(')')) {
-		const humanTitle = normalizedTitle.slice(compositePrefix.length, -1).trim();
+	const parentheticalStart = normalizedTitle.indexOf(' (');
+	if (parentheticalStart > 0 && normalizedTitle.endsWith(')')) {
+		const humanTitle = normalizedTitle.slice(parentheticalStart + 2, -1).trim();
 		if (humanTitle) {
 			return humanTitle;
 		}

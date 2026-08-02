@@ -20,6 +20,14 @@ suite('Reforger search UI MCP mapping', () => {
 			addonScopeLabel('GlobalConflictsCore (Global Conflicts CORE)', 'GlobalConflictsCore', '623555110E2B2CA0'),
 			'Global Conflicts CORE',
 		);
+		assert.strictEqual(
+			addonScopeLabel('ACE_Captives_Dev (ACE Captives Dev)', 'ACE Captives Dev', '0000000000000000'),
+			'ACE Captives Dev',
+		);
+		assert.strictEqual(
+			addonScopeLabel('core (Enfusion core data)', 'Enfusion core data', '0000000000000000'),
+			'Enfusion core data',
+		);
 		assert.strictEqual(addonScopeLabel('Arma Reforger', 'ArmaReforger', '58D0FB3206B6F859'), 'Arma Reforger');
 	});
 
