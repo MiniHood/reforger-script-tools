@@ -885,6 +885,7 @@ function normalizeSymbolHit(source: SearchSource, hit: RecordValue, index: numbe
 	const excerpt = documentation ? `${signature}\n\n${documentation}` : signature;
 	const readInput = asRecord(hit.readSourceInput);
 	const addonGuid = asOptionalString(hit.addonGuid);
+	const addonLabel = normalizedAddonLabel(hit);
 	if (!readInput.relativePath) {
 		return [];
 	}
@@ -902,7 +903,7 @@ function normalizeSymbolHit(source: SearchSource, hit: RecordValue, index: numbe
 		selectionEndLine: asNumber(asRecord(hit.selectionRange).endLine, line),
 		readInput,
 		...(addonGuid ? { addonGuid } : {}),
-		...(asOptionalString(hit.addonLabel) ? { addonLabel: asOptionalString(hit.addonLabel) } : {}),
+		...(addonLabel ? { addonLabel } : {}),
 	}];
 }
 
@@ -914,6 +915,7 @@ function normalizeTextHit(source: SearchSource, hit: RecordValue, index: number)
 	const matchText = asString(hit.matchText, '');
 	const readInput = asRecord(hit.readSourceInput);
 	const addonGuid = asOptionalString(hit.addonGuid);
+	const addonLabel = normalizedAddonLabel(hit);
 	if (!readInput.relativePath) {
 		return [];
 	}
@@ -931,10 +933,15 @@ function normalizeTextHit(source: SearchSource, hit: RecordValue, index: number)
 		selectionEndLine: asNumber(range.endLine, startLine),
 		readInput,
 		...(addonGuid ? { addonGuid } : {}),
-		...(asOptionalString(hit.addonLabel) ? { addonLabel: asOptionalString(hit.addonLabel) } : {}),
+		...(addonLabel ? { addonLabel } : {}),
 		textMatchStart: matchStart >= 0 ? matchStart : asNumber(range.startCharacter, 0),
 		textMatchLength: matchText.length,
 	}];
+}
+
+function normalizedAddonLabel(hit: RecordValue): string | undefined {
+	const label = asOptionalString(hit.addonLabel);
+	return label ? addonScopeLabel(label, '', label) : undefined;
 }
 
 function normalizeWikiHit(hit: RecordValue, index: number): SearchHit[] {

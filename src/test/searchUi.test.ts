@@ -295,7 +295,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.strictEqual(results[0].selectionEndLine, 12);
 	});
 
-	test('preserves add-on identity in game-data rows and source handoffs', () => {
+	test('preserves add-on identity while showing one display name in game-data rows', () => {
 		const results = normalizeSearchPage('gameData', {
 			results: [{
 				name: 'SCR_AddonClass',
@@ -306,7 +306,7 @@ suite('Reforger search UI MCP mapping', () => {
 				declarationRange: { startLine: 7 },
 				symbolRef: 'sr2:addon-symbol',
 				addonGuid: 'A1B2C3D4E5F60718',
-				addonLabel: 'Example Add-on',
+				addonLabel: 'ExampleAddon (Example Add-on)',
 				sourceUri: 'file:///C:/Addons/Example/Scripts/SCR_AddonClass.c',
 				readSourceInput: {
 					catalogueRevision: 'gd2:revision',
