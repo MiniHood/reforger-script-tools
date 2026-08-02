@@ -118,3 +118,74 @@ node tools/lsp-startup-baseline.mjs <release-server-path> 7
 The semantic benchmark rejects token-count, resolver-call, or encoded-token
 fingerprint drift between iterations. The formatting benchmark rejects edit
 fingerprint drift.
+
+## Completion Follow-Up
+
+A deeper completion review on the same date parsed the expanded 64,154-record
+runtime log and then exercised 1,594 real completion positions sampled from
+2,000 extracted game-data files. The live capture still contains only 11
+completion requests, so it establishes user-path shape but not a controlled
+before/after result.
+
+| Live operation | Samples | Average | P95 | Maximum |
+| --- | ---: | ---: | ---: | ---: |
+| Rich semantic coloring | 6,563 | 18 ms | 75 ms | 204 ms |
+| Document analysis | 6,324 | 3 ms | 10 ms | 61 ms |
+| Foreground analysis publication | 6,326 | 1 ms | 3 ms | 20 ms |
+| Completion | 11 | 18 ms | 55 ms | 55 ms |
+| Foreground semantic-token return | 5,274 | below 1 ms | 1 ms | 16 ms |
+
+Candidate lookup accounted for 155 of the 203 completion milliseconds in that
+capture. The controlled corpus made the same boundary much clearer: lookup
+accounted for 22,310 of 23,348 reported completion milliseconds in the first
+release run. Context detection, receiver inference, and item rendering were
+not competitive hotspots.
+
+Top-level completion previously collected fuzzy matches into an ordered map,
+fully sorted every surviving match, and only then retained the editor's first
+251 candidates. The replacement uses the existing fast hash map for temporary
+grouping, partitions to the bounded candidate set, and sorts only that set.
+The final comparator and candidate rendering are unchanged. A direct repeated
+query produced the same SHA-256 completion-list fingerprint before and after.
+
+Three alternating full-corpus pairs separated baseline and candidate
+executables. The table reports the median of each run's aggregate time over the
+same 1,594 requests.
+
+| Completion corpus phase | Baseline | Candidate | Change |
+| --- | ---: | ---: | ---: |
+| Projection wall time | 12,360 ms | 8,966 ms | 27.5% faster |
+| Candidate lookup | 10,851 ms | 7,447 ms | 31.4% faster |
+| Reported completion total | 11,462 ms | 8,046 ms | 29.8% faster |
+
+The retained repeated query returned 250 items with fingerprint
+`9e4eb0af5929687152489f67a68a977f3ffa4a005f93e0277698ea99bcd5b540`.
+Its wall median moved from 13,208 us to 8,874 us (32.8%) and P95 from
+17,372 us to 13,306 us (23.4%).
+
+No cost moved into the other measured projections. Current-candidate checks
+reported 9 ms semantic-coloring median for a 32 KB source, 24 ms for an 85 KB
+source, 148 us formatting median for the retained 500-line workload, and
+12.43 ms median over seven server starts. The completion code does not execute
+on those paths, so these checks are regression evidence rather than claimed
+completion-derived gains.
+
+Background rich semantic coloring remains the largest recurring runtime cost.
+Member resolution is still its largest measured resolver subphase; on the
+current 85 KB workload, resolver work used 15 of 24 median milliseconds and
+member lookup used 5 milliseconds. Completion candidate lookup remains the
+largest completion subphase even after this change. Further work should start
+at those two boundaries, but the cached-analysis re-lexing helpers are not a
+current priority: completion context detection was only 251 milliseconds over
+the full candidate corpus.
+
+For a repeated completion measurement with output and latency gates, run:
+
+```powershell
+cargo run --release --manifest-path server/Cargo.toml `
+  --example lsp_completion_benchmark -- `
+  --scripts <external-scripts-root> `
+  --file <source-file> --line <one-based-line> `
+  --character <zero-based-character> --iterations 31 `
+  --expect-fingerprint <sha256> --max-median-us <local-budget>
+```

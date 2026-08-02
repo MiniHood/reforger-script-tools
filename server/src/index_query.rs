@@ -240,7 +240,7 @@ impl<'index> IndexQuery<'index> {
         ids: impl IntoIterator<Item = GlobalSymbolId>,
         limit: usize,
     ) -> Vec<EditorCompletionCandidate> {
-        let mut ids_by_key = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
+        let mut ids_by_key = ahash::AHashMap::<String, Vec<GlobalSymbolId>>::new();
 
         for id in ids {
             let Some(symbol) = self.index.symbol(id) else {
@@ -268,37 +268,54 @@ impl<'index> IndexQuery<'index> {
         }
 
         // Rank the cheap indexed facts first so doc-rich editor displays are built
-        // only for candidates that can survive the completion cap.
-        preferred_ids.sort_by(|left, right| {
-            let left_symbol = self.index.symbol(*left);
-            let right_symbol = self.index.symbol(*right);
-            let left_name = left_symbol
-                .and_then(|symbol| symbol.name.as_deref())
-                .unwrap_or("");
-            let right_name = right_symbol
-                .and_then(|symbol| symbol.name.as_deref())
-                .unwrap_or("");
-            let left_kind = left_symbol
-                .map(|symbol| symbol.kind)
-                .unwrap_or(SymbolKind::Class);
-            let right_kind = right_symbol
-                .map(|symbol| symbol.kind)
-                .unwrap_or(SymbolKind::Class);
-
-            completion_name_match_rank(left_name, prefix)
-                .unwrap_or(u16::MAX)
-                .cmp(&completion_name_match_rank(right_name, prefix).unwrap_or(u16::MAX))
-                .then_with(|| left_name.cmp(right_name))
-                .then_with(|| {
-                    completion_kind_rank(left_kind).cmp(&completion_kind_rank(right_kind))
-                })
-                .then_with(|| self.compare_symbol_preference(*left, *right))
+        // only for candidates that can survive the completion cap. Partitioning
+        // before the final sort keeps a bounded editor request from sorting the
+        // complete fuzzy-match universe.
+        if preferred_ids.len() > limit {
+            preferred_ids.select_nth_unstable_by(limit, |left, right| {
+                self.compare_top_level_completion_ids(prefix, *left, *right)
+            });
+            preferred_ids.truncate(limit);
+        }
+        preferred_ids.sort_unstable_by(|left, right| {
+            self.compare_top_level_completion_ids(prefix, *left, *right)
         });
         preferred_ids
             .into_iter()
-            .filter_map(|id| self.editor_symbol_completion_candidate(id, EditorCompletionOrigin::Unknown))
+            .filter_map(|id| {
+                self.editor_symbol_completion_candidate(id, EditorCompletionOrigin::Unknown)
+            })
             .take(limit)
             .collect()
+    }
+
+    fn compare_top_level_completion_ids(
+        &self,
+        prefix: &str,
+        left: GlobalSymbolId,
+        right: GlobalSymbolId,
+    ) -> std::cmp::Ordering {
+        let left_symbol = self.index.symbol(left);
+        let right_symbol = self.index.symbol(right);
+        let left_name = left_symbol
+            .and_then(|symbol| symbol.name.as_deref())
+            .unwrap_or("");
+        let right_name = right_symbol
+            .and_then(|symbol| symbol.name.as_deref())
+            .unwrap_or("");
+        let left_kind = left_symbol
+            .map(|symbol| symbol.kind)
+            .unwrap_or(SymbolKind::Class);
+        let right_kind = right_symbol
+            .map(|symbol| symbol.kind)
+            .unwrap_or(SymbolKind::Class);
+
+        completion_name_match_rank(left_name, prefix)
+            .unwrap_or(u16::MAX)
+            .cmp(&completion_name_match_rank(right_name, prefix).unwrap_or(u16::MAX))
+            .then_with(|| left_name.cmp(right_name))
+            .then_with(|| completion_kind_rank(left_kind).cmp(&completion_kind_rank(right_kind)))
+            .then_with(|| self.compare_symbol_preference(left, right))
     }
 
     pub fn completion_symbols(
@@ -1117,8 +1134,12 @@ int SCR_Global;
 
         let completion =
             query.completion_top_level_limited("rp", EditorTopLevelCompletionMode::Type, 250);
+        let mut authoritative =
+            query.completion_top_level("rp", EditorTopLevelCompletionMode::Type);
+        authoritative.truncate(250);
 
         assert_eq!(completion.len(), 250);
+        assert_eq!(completion, authoritative);
         assert_eq!(completion.first().unwrap().name.as_deref(), Some("RplProp"));
         assert!(completion
             .iter()

@@ -220,6 +220,26 @@ between iterations. The optional latency budget makes the command fail for a
 local regression loop; it is deliberately supplied by the caller rather than
 treated as a portable machine-independent threshold.
 
+For a repeated autocomplete measurement against one real source position, use
+the completion benchmark:
+
+```powershell
+cargo run --release --manifest-path server/Cargo.toml `
+  --example lsp_completion_benchmark -- `
+  --scripts <game-data-scripts-path> `
+  --file <source-file> `
+  --line <one-based-line> `
+  --character <zero-based-character> `
+  --iterations 31 `
+  --expect-fingerprint <sha256> `
+  --max-median-us <local-budget>
+```
+
+The external index and document analysis are built once. The command warms the
+completion path, reports wall and completion-phase latency in microseconds,
+and fails when the serialized LSP completion-list fingerprint changes or the
+caller-supplied median budget is exceeded.
+
 For repeatable game-data cache startup measurements, use:
 
 ```powershell

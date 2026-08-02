@@ -84,6 +84,10 @@ name = "lsp_completion_corpus_report"
 path = "../tools/server-reports/lsp_completion_corpus_report.rs"
 
 [[example]]
+name = "lsp_completion_benchmark"
+path = "../tools/server-reports/lsp_completion_benchmark.rs"
+
+[[example]]
 name = "lsp_completion_report"
 path = "../tools/server-reports/lsp_completion_report.rs"
 
