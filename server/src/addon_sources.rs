@@ -2111,7 +2111,7 @@ pub fn read_virtual_source(uri: &str) -> Result<String, String> {
             || false,
         )
         .map_err(|error| error.to_string())?;
-    String::from_utf8(bytes).map_err(|_| format!("Pack source {logical_path} is not UTF-8"))
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Reads a virtual source document from the immutable cache that published its
@@ -2138,6 +2138,207 @@ pub fn read_cached_virtual_source(uri: &str, cache_path: &Path) -> Result<String
     let cache_root = cache_path.parent().unwrap_or_else(|| Path::new("."));
     register_cached_source_revision_root(guid, revision, cache_root);
     read_virtual_source(uri)
+}
+
+#[derive(Debug)]
+pub struct CachedVirtualSourceBatch {
+    pub sources: Vec<Result<String, String>>,
+    pub revisions_validated: usize,
+    pub archives_inspected: usize,
+}
+
+#[derive(Debug)]
+struct CachedVirtualSourceRequest {
+    output_index: usize,
+    logical_path: String,
+}
+
+#[derive(Debug)]
+struct CachedVirtualSourceRevisionRequest {
+    guid: String,
+    revision: String,
+    sources: Vec<CachedVirtualSourceRequest>,
+}
+
+/// Reads many immutable virtual documents while validating each source
+/// revision once and opening each referenced PAC archive once. Results remain
+/// aligned with `uris`, so one unreadable source does not discard the rest.
+pub fn read_cached_virtual_sources(
+    uris: &[String],
+    cache_path: &Path,
+    control: &IndexBuildControl,
+) -> Result<CachedVirtualSourceBatch, String> {
+    let mut results = uris
+        .iter()
+        .map(|_| Err("Packed source was not read".to_string()))
+        .collect::<Vec<_>>();
+    let mut revisions = BTreeMap::<String, CachedVirtualSourceRevisionRequest>::new();
+    for (output_index, uri) in uris.iter().enumerate() {
+        control.check()?;
+        let parsed = match Url::parse(uri) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                results[output_index] = Err(format!("Invalid pack source URI: {error}"));
+                continue;
+            }
+        };
+        if parsed.scheme() != VIRTUAL_SOURCE_SCHEME {
+            results[output_index] = Err(format!(
+                "Unsupported source URI scheme '{}'",
+                parsed.scheme()
+            ));
+            continue;
+        }
+        let Some(guid) = parsed.host_str() else {
+            results[output_index] = Err("Pack source URI has no add-on GUID".to_string());
+            continue;
+        };
+        let mut path = parsed.path().trim_start_matches('/').splitn(2, '/');
+        let Some(revision) = path.next().filter(|value| !value.is_empty()) else {
+            results[output_index] = Err("Pack source URI has no revision".to_string());
+            continue;
+        };
+        let Some(logical_path) = path.next().filter(|value| !value.is_empty()) else {
+            results[output_index] = Err("Pack source URI has no logical path".to_string());
+            continue;
+        };
+        let guid = guid.to_ascii_uppercase();
+        let key = revision_key(&guid, revision);
+        let request = revisions
+            .entry(key)
+            .or_insert_with(|| CachedVirtualSourceRevisionRequest {
+                guid,
+                revision: revision.to_string(),
+                sources: Vec::new(),
+            });
+        request.sources.push(CachedVirtualSourceRequest {
+            output_index,
+            logical_path: logical_path.to_string(),
+        });
+    }
+
+    let cache_root = cache_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut revisions_validated = 0;
+    let mut archives_inspected = 0;
+    for (key, request) in revisions {
+        control.check()?;
+        register_cached_source_revision_root(&request.guid, &request.revision, cache_root);
+        let source_revision = match loaded_source_revision(&key) {
+            Ok(source_revision) => source_revision,
+            Err(error) => {
+                set_batch_source_errors(&mut results, &request.sources, &error);
+                continue;
+            }
+        };
+        if let Err(error) = source_revision.validate_artifacts() {
+            set_batch_source_errors(&mut results, &request.sources, &error);
+            continue;
+        }
+        revisions_validated += 1;
+
+        let mut archives = BTreeMap::<PathBuf, Vec<(usize, PakEntry, String)>>::new();
+        for source in &request.sources {
+            let Some(entry) = source_revision.source_entry(&source.logical_path) else {
+                results[source.output_index] = Err(format!(
+                    "Pack source does not exist: {}",
+                    source.logical_path
+                ));
+                continue;
+            };
+            archives
+                .entry(entry.entry.archive_path().to_path_buf())
+                .or_default()
+                .push((
+                    source.output_index,
+                    entry.entry.clone(),
+                    entry.compressed_payload_sha256.clone(),
+                ));
+        }
+
+        for (archive_path, mut entries) in archives {
+            control.check()?;
+            let archive =
+                match PakArchive::inspect_with_cancel(&archive_path, || control.is_cancelled()) {
+                    Ok(archive) => archive,
+                    Err(error) => {
+                        control.check()?;
+                        set_archive_source_errors(&mut results, &entries, &error.to_string());
+                        continue;
+                    }
+                };
+            archives_inspected += 1;
+            let mut reader = match archive.reader() {
+                Ok(reader) => reader,
+                Err(error) => {
+                    set_archive_source_errors(&mut results, &entries, &error.to_string());
+                    continue;
+                }
+            };
+            entries.sort_by_key(|(_, entry, _)| entry.offset());
+            for (output_index, entry, compressed_payload_sha256) in entries {
+                control.check()?;
+                let mut bytes = Vec::with_capacity(entry.original_length() as usize);
+                if let Err(error) = reader.read_verified_to_with_cancel(
+                    &entry,
+                    &compressed_payload_sha256,
+                    &mut bytes,
+                    || control.is_cancelled(),
+                ) {
+                    control.check()?;
+                    results[output_index] = Err(error.to_string());
+                    continue;
+                }
+                results[output_index] = Ok(String::from_utf8_lossy(&bytes).into_owned());
+            }
+        }
+    }
+
+    Ok(CachedVirtualSourceBatch {
+        sources: results,
+        revisions_validated,
+        archives_inspected,
+    })
+}
+
+fn loaded_source_revision(key: &str) -> Result<Arc<PackedSourceRevision>, String> {
+    let sources = SOURCE_REVISIONS
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| "Packed source revisions are unavailable".to_string())?
+        .get(key)
+        .cloned();
+    if sources.is_none() {
+        load_cached_source_revision(key)?;
+    }
+    sources
+        .or_else(|| {
+            SOURCE_REVISIONS
+                .get_or_init(Default::default)
+                .lock()
+                .ok()
+                .and_then(|revisions| revisions.get(key).cloned())
+        })
+        .ok_or_else(|| format!("Packed source revision {key} is not loaded"))
+}
+
+fn set_batch_source_errors(
+    results: &mut [Result<String, String>],
+    requests: &[CachedVirtualSourceRequest],
+    error: &str,
+) {
+    for request in requests {
+        results[request.output_index] = Err(error.to_string());
+    }
+}
+
+fn set_archive_source_errors(
+    results: &mut [Result<String, String>],
+    entries: &[(usize, PakEntry, String)],
+    error: &str,
+) {
+    for (output_index, _, _) in entries {
+        results[*output_index] = Err(error.to_string());
+    }
 }
 
 impl PackedSourceRevision {
@@ -4080,6 +4281,68 @@ mod tests {
             virtual_source_uri(BASE_GAME_GUID, "abc123", "scripts/Game/My File.c").unwrap(),
             "reforger-pak://58D0FB3206B6F859/abc123/scripts/Game/My%20File.c"
         );
+    }
+
+    #[test]
+    fn reads_cached_virtual_sources_with_one_revision_validation_and_archive_inspection() {
+        let root = test_root("batch-source-read");
+        let addons = root.join("addons");
+        let data = addons.join("data");
+        let core = addons.join("core");
+        fs::create_dir_all(&data).unwrap();
+        fs::create_dir_all(&core).unwrap();
+        write_fixture_pak(
+            &data.join("data007.pak"),
+            &[
+                ("First.c", b"class First {}"),
+                ("Second.c", b"class Second {}"),
+                ("Lossy.c", b"class Lossy { string Value = \"\x80\"; }"),
+            ],
+        );
+        write_fixture_pak(&core.join("data.pak"), &[("Core.c", b"class Core {}")]);
+        let inventory = root.join("inventory.json");
+        write_workbench_graph_fixture(&inventory, &data);
+        let storage = root.join("indexes");
+        load_or_build_base_game_index(&inventory, &storage, &IndexBuildControl::default()).unwrap();
+        let addon_cache = fs::read_dir(&storage)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let manifest: AddonIndexManifest =
+            serde_json::from_slice(&fs::read(addon_cache.join("manifest.json")).unwrap()).unwrap();
+        let uris = manifest
+            .scripts
+            .iter()
+            .filter(|script| {
+                script.logical_path.ends_with("First.c")
+                    || script.logical_path.ends_with("Second.c")
+                    || script.logical_path.ends_with("Lossy.c")
+            })
+            .map(|script| script.uri.clone())
+            .collect::<Vec<_>>();
+
+        let batch = read_cached_virtual_sources(
+            &uris,
+            &addon_cache.join("symbols.bin"),
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+
+        assert_eq!(batch.revisions_validated, 1);
+        assert_eq!(batch.archives_inspected, 1);
+        assert_eq!(batch.sources.len(), 3);
+        assert!(batch.sources.iter().all(Result::is_ok));
+        let source_text = batch
+            .sources
+            .into_iter()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        assert!(source_text.contains(&"class First {}".to_string()));
+        assert!(source_text.contains(&"class Second {}".to_string()));
+        assert!(source_text.iter().any(|source| source.contains('\u{fffd}')));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

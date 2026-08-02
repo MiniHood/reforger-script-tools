@@ -74,7 +74,10 @@ npm run report:text-search -- --server <server.exe> --source game-data `
 The report initializes a dedicated MCP process, warms Game Data explicitly
 when applicable, and records initialization, status, search, result-count, and
 server-provided scan statistics without printing the query or source text. It
-defaults to a 5,000 ms performance budget and a 35,000 ms hard timeout. Use
+also reports `outsideScannerMs`, the end-to-end search time not accounted for
+by the literal scanner, which primarily exposes source acquisition and MCP
+projection overhead. The command defaults to a 5,000 ms performance budget and
+a 35,000 ms hard timeout. Use
 `--budget-ms` or `--timeout-ms` to change either bound. The command exits
 nonzero for a timeout, structured tool failure, or over-budget search, making
 it suitable for a local red/green optimization loop against real installed

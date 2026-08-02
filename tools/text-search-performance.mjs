@@ -49,6 +49,11 @@ async function main() {
 		}, options.timeoutMs));
 		report.searchMs = round(search.elapsedMs);
 		report.search = summarizeToolResult(search.value);
+		if (typeof report.search.stats?.scanMs === 'number') {
+			report.search.outsideScannerMs = round(
+				Math.max(0, search.elapsedMs - report.search.stats.scanMs),
+			);
+		}
 		report.verdict = search.value.isError
 			? 'tool-error'
 			: search.elapsedMs > options.budgetMs

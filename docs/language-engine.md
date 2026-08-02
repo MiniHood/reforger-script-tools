@@ -70,6 +70,12 @@ cache's source identity without reading the locator-rich `manifest.json`;
 hover and definition navigation lazily materialize that registry on the first
 `reforger-pak:` source read, which still validates its PAC artifacts at
 navigation time.
+Explicit Game Data full-text search uses that same immutable locator registry
+as one batch: it validates each referenced source revision once, groups entries
+by PAC archive, opens each archive once, and reads selected scripts in archive
+offset order before scanning. Individual navigation remains a one-entry lazy
+read; full-text search does not repeat navigation-time PAC inspection for every
+script.
 The later authoritative Workbench graph validates the exact packed and loose
 sources and atomically replaces only changed instances. Unchanged validation
 inspects bounded PAC catalogues and hashes only selected compressed script

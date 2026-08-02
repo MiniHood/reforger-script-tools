@@ -1,4 +1,4 @@
-use crate::addon_sources::read_cached_virtual_source;
+use crate::addon_sources::{read_cached_virtual_source, read_cached_virtual_sources};
 use crate::game_data_inspection::{
     inspect, read_source as read_source_evidence, GameDataInspectionError,
     GameDataInspectionOutput, GameDataSourceReadRequest,
@@ -186,6 +186,7 @@ impl GameDataCatalogue {
         drop(state);
 
         let mut sources = Vec::new();
+        let mut virtual_sources = Vec::new();
         let mut source_read_failures = 0;
         for file in index.files() {
             control.check().map_err(|_| {
@@ -200,11 +201,11 @@ impl GameDataCatalogue {
                 source_read_failures += 1;
                 continue;
             };
-            let source = if let Some(virtual_source) = &file.metadata.virtual_source {
-                cache_path
-                    .as_ref()
-                    .and_then(|path| read_cached_virtual_source(&virtual_source.uri, path).ok())
-            } else if let Some(path) = &file.metadata.absolute_path {
+            if let Some(virtual_source) = &file.metadata.virtual_source {
+                virtual_sources.push((relative_path, virtual_source.uri.clone()));
+                continue;
+            }
+            let source = if let Some(path) = &file.metadata.absolute_path {
                 fs::read(path)
                     .ok()
                     .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
@@ -219,6 +220,34 @@ impl GameDataCatalogue {
                 relative_path,
                 content: Arc::<str>::from(source),
             });
+        }
+        if !virtual_sources.is_empty() {
+            let cache_path = cache_path
+                .as_ref()
+                .ok_or(GameDataCatalogueTextSearchError::Unavailable)?;
+            let uris = virtual_sources
+                .iter()
+                .map(|(_, uri)| uri.clone())
+                .collect::<Vec<_>>();
+            let batch =
+                read_cached_virtual_sources(&uris, cache_path, control).map_err(|error| {
+                    if error == INDEX_BUILD_CANCELLED {
+                        GameDataCatalogueTextSearchError::TextSearch(TextSearchError::Cancelled)
+                    } else {
+                        GameDataCatalogueTextSearchError::Initialization(error)
+                    }
+                })?;
+            for ((relative_path, _), source) in
+                virtual_sources.into_iter().zip(batch.sources.into_iter())
+            {
+                match source {
+                    Ok(source) => sources.push(TextSource {
+                        relative_path,
+                        content: Arc::<str>::from(source),
+                    }),
+                    Err(_) => source_read_failures += 1,
+                }
+            }
         }
         let result_set = scan_text(
             TextSearchCorpus {
