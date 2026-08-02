@@ -915,9 +915,13 @@ const modeButtons = () => '<button class="' + (state.mode === 'semantic' ? 'acti
 const textSearchOptions = () => state.mode !== 'text' ? '' : '<div class="text-options" aria-label="Text search options"><label class="text-option"><input type="checkbox" data-text-option="matchCase"' + (state.matchCase ? ' checked' : '') + '>Match case</label><label class="text-option"><input type="checkbox" data-text-option="matchWholeWord"' + (state.matchWholeWord ? ' checked' : '') + '>Match whole word</label><label class="text-option"><input type="checkbox" data-text-option="useRegex"' + (state.useRegex ? ' checked' : '') + '>Regular expression</label></div>';
 const eligibleScopeSources = () => state.scopeSources.filter(source => source.kind !== 'wiki' || state.mode === 'text');
 const selectedEligibleScopeIds = () => state.selectedScopeIds.filter(id => eligibleScopeSources().some(source => source.id === id));
+const allEligibleScopesSelected = () => {
+  const eligible = eligibleScopeSources();
+  return eligible.length > 0 && eligible.every(source => state.selectedScopeIds.includes(source.id));
+};
 const scopeChoices = () => {
   const eligible = eligibleScopeSources();
-  const allSelected = eligible.length > 0 && eligible.every(source => state.selectedScopeIds.includes(source.id));
+  const allSelected = allEligibleScopesSelected();
   const filter = state.scopeFilter.trim().toLowerCase();
   const filtered = eligible.filter(source => !filter || source.label.toLowerCase().includes(filter));
   const choices = filtered.map((source, index) => '<label class="addon-choice' + (source.pinned && !filtered[index + 1]?.pinned ? ' pinned-boundary' : '') + '"><input type="checkbox" data-scope-choice="' + esc(source.id) + '"' + (state.selectedScopeIds.includes(source.id) ? ' checked' : '') + '><span>' + esc(source.label) + '</span><small>' + esc(source.detail) + '</small></label>').join('');
@@ -1121,7 +1125,7 @@ function render(focusQuery = true) {
   document.querySelectorAll('[data-type]').forEach(element => element.addEventListener('click', () => { state.type = element.dataset.type; state.page = 1; search(true); }));
   document.querySelectorAll('[data-scope-open]').forEach(element => element.addEventListener('click', () => { state.scopeOpen = !state.scopeOpen; render(false); }));
   document.querySelectorAll('[data-scope-choice]').forEach(element => element.addEventListener('change', () => { state.selectionTouched = true; state.selectedScopeIds = element.checked ? [...new Set([...state.selectedScopeIds, element.dataset.scopeChoice])] : state.selectedScopeIds.filter(value => value !== element.dataset.scopeChoice); render(false); search(true); }));
-  document.querySelectorAll('[data-scope-all]').forEach(element => element.addEventListener('click', () => { const eligible = eligibleScopeSources(); const allSelected = eligible.length > 0 && eligible.every(source => state.selectedScopeIds.includes(source.id)); const eligibleIds = new Set(eligible.map(source => source.id)); state.selectionTouched = true; state.selectedScopeIds = allSelected ? state.selectedScopeIds.filter(id => !eligibleIds.has(id)) : [...new Set([...state.selectedScopeIds, ...eligibleIds])]; render(false); search(true); }));
+  document.querySelectorAll('[data-scope-all]').forEach(element => element.addEventListener('click', () => { const eligible = eligibleScopeSources(); const allSelected = allEligibleScopesSelected(); const eligibleIds = new Set(eligible.map(source => source.id)); state.selectionTouched = true; state.selectedScopeIds = allSelected ? state.selectedScopeIds.filter(id => !eligibleIds.has(id)) : [...new Set([...state.selectedScopeIds, ...eligibleIds])]; render(false); search(true); }));
   document.querySelectorAll('[data-scope-refresh]').forEach(element => element.addEventListener('click', () => vscode.postMessage({ type: 'refreshScope' })));
   document.querySelectorAll('[data-scope-filter]').forEach(element => element.addEventListener('input', () => { state.scopeFilter = element.value; render(false); const filter = document.querySelector('[data-scope-filter]'); if (filter) { filter.focus(); filter.setSelectionRange(filter.value.length, filter.value.length); } }));
   document.querySelectorAll('[data-page-prev]').forEach(element => element.addEventListener('click', () => requestPage(state.page - 1)));

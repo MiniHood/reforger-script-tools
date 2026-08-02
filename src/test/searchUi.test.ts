@@ -150,6 +150,10 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /\(await previousClient\)\.dispose\(\)/);
 		assert.match(searchUiSource, /Select all/);
 		assert.match(searchUiSource, /Unselect all/);
+		assert.match(searchUiSource, /const allEligibleScopesSelected = \(\) => \{/);
+		assert.match(searchUiSource, /eligible\.every\(source => state\.selectedScopeIds\.includes\(source\.id\)\)/);
+		assert.match(searchUiSource, /const allSelected = allEligibleScopesSelected\(\);/);
+		assert.match(searchUiSource, /allSelected \? 'Unselect all' : 'Select all'/);
 		assert.match(searchUiSource, /selectedScopeIds/);
 		assert.match(searchUiSource, /selectionTouched/);
 		assert.match(searchUiSource, /message\.type === 'scope'/);
