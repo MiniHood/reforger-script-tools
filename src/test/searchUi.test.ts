@@ -180,10 +180,14 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.strictEqual(sourceContextPreview(document, 4, 1), 'three');
 		assert.strictEqual(sourceContextPreview(document, 4, 2), '  two\n\nthree\nfour\nfive');
 		assert.match(searchUiSource, /data-preview-context-down/);
+		assert.match(searchUiSource, /data-preview-context-auto/);
 		assert.match(searchUiSource, /data-preview-context-up/);
 		assert.match(searchUiSource, /previewContextLines === 0 \? 'Auto' : previewContextLines/);
+		assert.match(searchUiSource, /class="context-auto-icon" aria-hidden="true"/);
+		assert.doesNotMatch(searchUiSource, /context-stepper-label[^\n]*>Context</);
 		assert.match(searchUiSource, /type: 'previewContext', contextLines: nextContextLines/);
 		assert.match(searchUiSource, /vscode\.postMessage\(\{ type: 'previewContext', contextLines: nextContextLines \}\)/);
+		assert.match(searchUiSource, /\[data-preview-context-auto\][\s\S]*?setPreviewContext\(0\)/);
 		assert.match(searchUiSource, /previewContextLines: numberField\(snapshot\.previewContextLines\)/);
 	});
 
@@ -279,8 +283,9 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /query\.focus\(\);\s+query\.setSelectionRange\(query\.value\.length, query\.value\.length\);\s+query\.setRangeText\(event\.key/);
 	});
 
-	test('removes the result-limit status after a search completes', () => {
-		assert.match(searchUiSource, /state\.status === 'loading' \? 'Query running' : 'Index ready'/);
+	test('keeps the primary search row free of decorative readiness status', () => {
+		assert.doesNotMatch(searchUiSource, /Index ready|Query running/);
+		assert.doesNotMatch(searchUiSource, /search-brand-mark|<span class="search-brand"/);
 		assert.doesNotMatch(searchUiSource, /Limited to|result-limit/);
 	});
 

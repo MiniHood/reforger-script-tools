@@ -1123,11 +1123,7 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .search-masthead h1 { margin: 5px 0 5px; font-size: 23px; }
 .search-masthead p { margin: 0; }
 .search-header { margin-bottom: 12px; border-bottom: 1px solid var(--border); }
-.search-primary { display: grid; grid-template-columns: max-content minmax(320px, 1fr) max-content; align-items: center; gap: 14px; padding: 10px 12px; border: 1px solid var(--border); background: var(--alt); box-shadow: inset 3px 0 0 var(--accent); }
-.search-brand { display: flex; align-items: center; gap: 9px; white-space: nowrap; }
-.search-brand-mark { display: grid; width: 25px; height: 25px; place-items: center; border: 1px solid var(--accent); color: var(--accent); font-weight: 800; }
-.search-brand strong { display: block; font-size: 12px; }
-.search-brand small { display: block; color: var(--muted); }
+.search-primary { display: grid; grid-template-columns: minmax(320px, 1fr) max-content; align-items: center; gap: 14px; padding: 10px 12px; border: 1px solid var(--border); background: var(--alt); box-shadow: inset 3px 0 0 var(--accent); }
 .search-query { display: flex; min-width: 0; }
 .search-query .query-field { min-height: 38px; background: var(--bg); }
 .text-option-buttons { display: inline-flex; margin-left: -1px; }
@@ -1145,11 +1141,18 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .search-secondary .search-types { min-width: 0; }
 .search-secondary .page-controls { margin-left: auto; align-self: end; }
 .search-secondary .group-label { min-height: auto; padding-bottom: 4px; font-size: 9px; }
-.context-stepper { display: inline-flex; align-items: center; gap: 2px; white-space: nowrap; }
-.context-stepper-label { margin-right: 4px; }
-.context-stepper output { min-width: 34px; text-align: center; color: var(--text); }
+.context-stepper { display: inline-flex; align-items: stretch; overflow: hidden; border: 1px solid var(--border); background: var(--alt); white-space: nowrap; }
+.context-stepper button { min-width: 27px; min-height: 26px; padding: 2px 6px; border: 0; background: transparent; }
+.context-stepper button + button { border-left: 1px solid var(--border); }
+.context-stepper [data-preview-context-auto] { display: inline-flex; min-width: 58px; align-items: center; justify-content: center; gap: 5px; color: var(--text); }
+.context-stepper [data-preview-context-auto].active { color: var(--accent); background: var(--selected); }
+.context-auto-icon { display: inline-flex; width: 13px; flex-direction: column; align-items: center; gap: 2px; }
+.context-auto-icon i { display: block; height: 1px; background: currentColor; }
+.context-auto-icon i:nth-child(1) { width: 8px; }
+.context-auto-icon i:nth-child(2) { width: 13px; }
+.context-auto-icon i:nth-child(3) { width: 6px; }
 @media (max-width: 980px) { .atlas-results.two-column { column-count: 1; } }
-@media (max-width: 1100px) { .search-primary { grid-template-columns: max-content minmax(260px, 1fr); } .search-count { display: none; } .search-secondary { flex-wrap: wrap; } .search-secondary .page-controls { flex-basis: 100%; margin-left: 0; } }
+@media (max-width: 1100px) { .search-primary { grid-template-columns: minmax(0, 1fr); } .search-count { display: none; } .search-secondary { flex-wrap: wrap; } .search-secondary .page-controls { flex-basis: 100%; margin-left: 0; } }
 @media (max-width: 720px) { .shell { padding: 18px 14px 60px; } .search-primary { grid-template-columns: 1fr; } .search-secondary { flex-direction: column; } .search-query { flex-wrap: wrap; } .text-option-buttons { margin: -1px 0 0; } .atlas-card-head { align-items: flex-start; flex-wrap: wrap; } .result-path { max-width: 100%; margin-left: 0; text-align: left; } }
 </style>
 </head>
@@ -1210,7 +1213,9 @@ const pageControls = (includeLayoutToggle = false) => {
   const pageTotal = totalPages();
   const sizes = pageSizeOptions.map(size => '<option value="' + size + '"' + (state.pageSize === size ? ' selected' : '') + '>' + size + ' results</option>').join('');
   const layoutToggle = includeLayoutToggle ? '<button type="button" data-result-layout class="' + (state.resultColumns === 2 ? 'active' : '') + '" aria-label="Toggle packed result columns" aria-pressed="' + (state.resultColumns === 2) + '" title="Toggle packed result columns"><span class="layout-toggle" aria-hidden="true"><span></span><span></span><span></span><span></span></span></button>' : '';
-  const previewControl = includeLayoutToggle ? '<div class="context-stepper" aria-label="Preview context"><span class="muted context-stepper-label">Context</span><button type="button" data-preview-context-down aria-label="Decrease preview context"' + (previewContextLines === 0 ? ' disabled' : '') + '>&minus;</button><output aria-live="polite" title="' + (previewContextLines === 0 ? 'Automatic enclosing scope' : previewContextLines + ' surrounding lines') + '">' + (previewContextLines === 0 ? 'Auto' : previewContextLines) + '</output><button type="button" data-preview-context-up aria-label="Increase preview context">+</button></div>' : '';
+  const previewContextValue = previewContextLines === 0 ? 'Auto' : previewContextLines;
+  const previewContextIcon = previewContextLines === 0 ? '<span class="context-auto-icon" aria-hidden="true"><i></i><i></i><i></i></span>' : '';
+  const previewControl = includeLayoutToggle ? '<div class="context-stepper" aria-label="Result preview context"><button type="button" data-preview-context-down aria-label="Decrease preview context" title="Decrease preview context"' + (previewContextLines === 0 ? ' disabled' : '') + '>&minus;</button><button type="button" data-preview-context-auto class="' + (previewContextLines === 0 ? 'active' : '') + '" aria-pressed="' + (previewContextLines === 0) + '" aria-label="' + (previewContextLines === 0 ? 'Automatic enclosing scope' : 'Reset preview context to automatic') + '" title="' + (previewContextLines === 0 ? 'Automatic enclosing scope' : 'Reset to automatic enclosing scope') + '">' + previewContextIcon + '<span aria-live="polite">' + previewContextValue + '</span></button><button type="button" data-preview-context-up aria-label="Increase preview context" title="Increase preview context">+</button></div>' : '';
   return '<div class="page-controls" aria-label="Search result pages">' + previewControl + layoutToggle + '<select data-page-size aria-label="Total results per page"' + (state.status === 'loading' ? ' disabled' : '') + '>' + sizes + '</select><span class="page-status"><span class="muted">Page</span><input data-page-input type="number" min="1" max="' + pageTotal + '" value="' + state.page + '" aria-label="Current result page"' + (navigationDisabled ? ' disabled' : '') + '><span class="muted">of ' + pageTotal + '</span></span><span class="page-arrows"><button type="button" data-page-prev' + (navigationDisabled || state.page <= 1 ? ' disabled' : '') + ' aria-label="Previous page">‹</button><button type="button" data-page-next' + (navigationDisabled || state.page >= pageTotal ? ' disabled' : '') + ' aria-label="Next page">›</button></span></div>';
 };
 const inlineMarkdown = value => value
@@ -1427,7 +1432,7 @@ function render(focusQuery = false) {
   const sourceNoun = sourceCount === 1 ? ' source' : ' sources';
   const sharedMatchArea = () => warnings + resultBody(resultGroups()) + bottomPager;
   const typeControl = state.mode === 'text' ? '' : '<div class="control-block search-types"><div class="group-label">RESULT TYPE</div>' + typeControls() + '</div>';
-  const page = '<div class="shell search-atlas"><section class="search-masthead"><div class="search-masthead-kicker">Source intelligence</div><h1>Search the source atlas</h1><p class="muted">Trace symbols, text, and resources across every selected source.</p></section><header class="search-header"><div class="search-primary"><div class="search-brand"><span class="search-brand-mark">S</span><span><strong>Reforger Search</strong><small>' + (state.status === 'loading' ? 'Query running' : 'Index ready') + '</small></span></div><div class="search-query">' + queryField() + textSearchOptions() + '</div><div class="search-count"><strong>' + totalMatchesLabel() + '</strong>matches / ' + sourceCount + sourceNoun + '</div></div><div class="search-secondary"><div class="control-block search-scope-control"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '</div><div class="control-block"><div class="group-label">SEARCH MODE</div>' + modeControls() + '</div>' + typeControl + pageControls(true) + '</div></header>' + sharedMatchArea() + '</div>';
+  const page = '<div class="shell search-atlas"><section class="search-masthead"><div class="search-masthead-kicker">Source intelligence</div><h1>Search the source atlas</h1><p class="muted">Trace symbols, text, and resources across every selected source.</p></section><header class="search-header"><div class="search-primary"><div class="search-query">' + queryField() + textSearchOptions() + '</div><div class="search-count"><strong>' + totalMatchesLabel() + '</strong>matches / ' + sourceCount + sourceNoun + '</div></div><div class="search-secondary"><div class="control-block search-scope-control"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '</div><div class="control-block"><div class="group-label">SEARCH MODE</div>' + modeControls() + '</div>' + typeControl + pageControls(true) + '</div></header>' + sharedMatchArea() + '</div>';
   document.getElementById('app').innerHTML = page;
   const query = document.getElementById('query');
   const focusSearchQuery = () => { query.focus(); query.setSelectionRange(state.query.length, state.query.length); };
@@ -1447,6 +1452,7 @@ function render(focusQuery = false) {
   document.querySelectorAll('[data-page-size]').forEach(element => element.addEventListener('change', event => { state.pageSize = Number(event.target.value); search(true); }));
   const setPreviewContext = value => { const nextContextLines = Math.max(0, Math.min(249, value)); previewContextLines = nextContextLines; render(false); vscode.postMessage({ type: 'previewContext', contextLines: nextContextLines }); };
   document.querySelectorAll('[data-preview-context-down]').forEach(element => element.addEventListener('click', () => setPreviewContext(previewContextLines - 1)));
+  document.querySelectorAll('[data-preview-context-auto]').forEach(element => element.addEventListener('click', () => setPreviewContext(0)));
   document.querySelectorAll('[data-preview-context-up]').forEach(element => element.addEventListener('click', () => setPreviewContext(previewContextLines + 1)));
   document.querySelectorAll('[data-result-layout]').forEach(element => element.addEventListener('click', () => { state.resultColumns = state.resultColumns === 2 ? 1 : 2; render(false); }));
   document.querySelectorAll('[data-page-input]').forEach(element => {
