@@ -90,3 +90,6 @@ implementation slice is progress, not a completed ticket.
 - [MCP search path-forward research](research/mcp-search-path-forward-research.md):
   proposed phases for workspace semantic search, text evidence, Wiki match
   quality, and AI routing.
+- [Multi-add-on search-scope research](research/multi-addon-search-scope-research.md):
+  authoritative add-on discovery, Prototype C behavior, multi-add-on MCP
+  identity, filtering, source-read safety, and the staged implementation plan.
