@@ -1,7 +1,7 @@
 import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { formatSearchKind, nearestCachedSearchPage, normalizeSearchPage, searchKindFilters, searchToolFor, sourceLinePreview } from '../searchPrototype/mcpSearchClient';
+import { formatSearchKind, nearestCachedSearchPage, normalizeSearchPage, searchKindFilters, searchToolFor, sourceLinePreview, sourceMatchRange } from '../searchPrototype/mcpSearchClient';
 import { semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
 
 const searchUiSource = fs.readFileSync(
@@ -31,6 +31,13 @@ suite('Reforger search UI MCP mapping', () => {
 	test('extracts the authoritative source line for a symbol preview', () => {
 		assert.strictEqual(sourceLinePreview({ content: '    class SCR_Mode\n', startLine: 18, endLine: 18 }, 18), 'class SCR_Mode');
 		assert.strictEqual(sourceLinePreview({ content: 'only line', startLine: 0, endLine: 0 }, 1), 'only line');
+	});
+
+	test('finds the selected symbol occurrence instead of every query occurrence', () => {
+		assert.deepStrictEqual(sourceMatchRange('void Foo(Foo value)', 'Foo'), { start: 5, length: 3 });
+		assert.deepStrictEqual(sourceMatchRange('void foo()', 'FOO'), { start: 5, length: 3 });
+		assert.strictEqual(sourceMatchRange('void Bar()', 'Foo'), undefined);
+		assert.doesNotMatch(searchUiSource, /highlightText\(result\.excerpt, state\.query \+ ' ' \+ result\.title\)/);
 	});
 
 	test('decodes the language server semantic token legend for a preview line', () => {
@@ -131,7 +138,8 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /<div class="result-head"><h3>/);
 		assert.match(searchUiSource, /const highlightText = \(value, query\) =>/);
 		assert.match(searchUiSource, /<mark>/);
-		assert.match(searchUiSource, /highlightText\(result\.excerpt, state\.query \+ ' ' \+ result\.title\)/);
+		assert.match(searchUiSource, /highlightRange\(result\.excerpt, matchRange\)/);
+		assert.match(searchUiSource, /state\.matchRanges = \{ \.\.\.state\.matchRanges/);
 		assert.match(searchUiSource, /message\.type === 'previews'/);
 		assert.match(searchUiSource, /hydrateSymbolPreviews/);
 		assert.match(searchUiSource, /provideLanguageServerSemanticTokens/);

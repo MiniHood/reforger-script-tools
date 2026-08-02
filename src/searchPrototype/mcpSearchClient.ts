@@ -95,6 +95,23 @@ export function sourceLinePreview(document: SearchDocument, line: number | undef
 	return (lines[lineIndex] ?? lines[0] ?? '').trimStart();
 }
 
+export interface SourceMatchRange {
+	start: number;
+	length: number;
+}
+
+export function sourceMatchRange(text: string, title: string): SourceMatchRange | undefined {
+	if (!text || !title) {
+		return undefined;
+	}
+	const exactStart = text.indexOf(title);
+	if (exactStart >= 0) {
+		return { start: exactStart, length: title.length };
+	}
+	const foldedStart = text.toLowerCase().indexOf(title.toLowerCase());
+	return foldedStart >= 0 ? { start: foldedStart, length: title.length } : undefined;
+}
+
 export interface McpSearchClientOptions {
 	serverPath: string;
 	indexCache: string;

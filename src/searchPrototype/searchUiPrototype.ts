@@ -12,10 +12,12 @@ import {
 	McpSearchClient,
 	searchKindFilters,
 	sourceLinePreview,
+	sourceMatchRange,
 	type SearchDocument,
 	type SearchHit,
 	type SearchSymbolKind,
 	type SearchSource,
+	type SourceMatchRange,
 } from './mcpSearchClient';
 
 const searchScheme = 'reforger-search';
@@ -278,6 +280,7 @@ async function hydrateSymbolPreviews(
 	}
 	const startedAt = Date.now();
 	const previews: Record<string, string> = {};
+	const matchRanges: Record<string, SourceMatchRange> = {};
 	const semanticPreviews: Record<string, SemanticPreview> = {};
 	let readMs = 0;
 	let semanticMs = 0;
@@ -289,7 +292,12 @@ async function hydrateSymbolPreviews(
 				const readStartedAt = performance.now();
 				const document = await client.read(hit);
 				readMs += performance.now() - readStartedAt;
-				previews[hit.id] = sourceLinePreview(document, hit.selectionStartLine);
+				const preview = sourceLinePreview(document, hit.selectionStartLine);
+				previews[hit.id] = preview;
+				const matchRange = sourceMatchRange(preview, hit.title);
+				if (matchRange) {
+					matchRanges[hit.id] = matchRange;
+				}
 				const semanticStartedAt = performance.now();
 				const semanticDocument = await semanticSourceDocument(active, client, hit, document);
 				semanticMs += performance.now() - semanticStartedAt;
@@ -327,7 +335,7 @@ async function hydrateSymbolPreviews(
 		loadedCount: Object.keys(previews).length,
 		semanticCount: Object.keys(semanticPreviews).length,
 	};
-	active.panel.webview.postMessage({ type: 'previews', requestId, previews, performance: previewPerformance });
+	active.panel.webview.postMessage({ type: 'previews', requestId, previews, matches: matchRanges, performance: previewPerformance });
 	if (Object.keys(semanticPreviews).length > 0) {
 		active.panel.webview.postMessage({ type: 'semanticPreviews', requestId, previews: semanticPreviews });
 	}
@@ -615,7 +623,7 @@ window.__reforgerSearchVscode.postMessage({ type: 'webviewReady', width: window.
 </script>
 <script nonce="${nonce}">
 const vscode = window.__reforgerSearchVscode;
-const state = { query: '', source: 'all', type: 'all', results: [], semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, uiPerformance: { renderCount: 0, lastRenderMs: 0, searchStartedAt: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0 } };
+const state = { query: '', source: 'all', type: 'all', results: [], matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, uiPerformance: { renderCount: 0, lastRenderMs: 0, searchStartedAt: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0 } };
 const sources = [
   { value: 'all', label: 'All sources' },
   { value: 'workspace', label: 'Workspace' },
@@ -689,10 +697,26 @@ const highlightText = (value, query) => {
   }
   return output + esc(value.slice(lastIndex));
 };
+const highlightRange = (value, range) => {
+  if (!range || !Number.isFinite(Number(range.start)) || !Number.isFinite(Number(range.length))) return highlightText(value, state.query);
+  const start = Math.max(0, Math.min(String(value).length, Number(range.start)));
+  const end = Math.max(start, Math.min(String(value).length, start + Number(range.length)));
+  return esc(String(value).slice(0, start)) + '<mark>' + esc(String(value).slice(start, end)) + '</mark>' + esc(String(value).slice(end));
+};
+const highlightPreviewPart = (value, offset, range) => {
+  if (!range) return highlightText(value, state.query);
+  const start = Number(range.start) - offset;
+  const end = start + Number(range.length);
+  if (end <= 0 || start >= String(value).length) return esc(value);
+  const localStart = Math.max(0, start);
+  const localEnd = Math.min(String(value).length, end);
+  return esc(String(value).slice(0, localStart)) + '<mark>' + esc(String(value).slice(localStart, localEnd)) + '</mark>' + esc(String(value).slice(localEnd));
+};
 const safeSemanticColor = value => /^#[0-9a-f]{3,8}$/i.test(String(value ?? '')) ? String(value) : '';
 const semanticPreviewText = result => {
   const preview = state.semanticPreviews[result.id];
-  if (!preview || typeof preview.text !== 'string' || !Array.isArray(preview.tokens)) return highlightText(result.excerpt, state.query + ' ' + result.title);
+  const matchRange = state.matchRanges[result.id];
+  if (!preview || typeof preview.text !== 'string' || !Array.isArray(preview.tokens)) return highlightRange(result.excerpt, matchRange);
   const text = preview.text;
   const tokens = preview.enabled === false ? [] : preview.tokens.slice().sort((left, right) => left.start - right.start);
   let output = '';
@@ -700,12 +724,12 @@ const semanticPreviewText = result => {
   tokens.forEach(token => {
     const start = Math.max(cursor, Math.min(text.length, Number(token.start) || 0));
     const end = Math.max(start, Math.min(text.length, start + (Number(token.length) || 0)));
-    if (start > cursor) output += highlightText(text.slice(cursor, start), state.query + ' ' + result.title);
+    if (start > cursor) output += highlightPreviewPart(text.slice(cursor, start), cursor, matchRange);
     const color = safeSemanticColor(preview.foregrounds?.[token.role]);
-    output += '<span data-semantic-token="' + esc(token.role) + '"' + (color ? ' style="color:' + esc(color) + ';"' : '') + '>' + highlightText(text.slice(start, end), state.query + ' ' + result.title) + '</span>';
+    output += '<span data-semantic-token="' + esc(token.role) + '"' + (color ? ' style="color:' + esc(color) + ';"' : '') + '>' + highlightPreviewPart(text.slice(start, end), start, matchRange) + '</span>';
     cursor = end;
   });
-  return output + highlightText(text.slice(cursor), state.query + ' ' + result.title);
+  return output + highlightPreviewPart(text.slice(cursor), cursor, matchRange);
 };
 const resultRows = () => visibleResults().map(result => {
   const selected = state.selected === result.id;
@@ -748,6 +772,8 @@ const captureSearchSnapshot = () => vscode.postMessage({ type: 'debugSnapshot', 
     selectionEndLine: result.selectionEndLine,
     excerptLength: typeof result.excerpt === 'string' ? result.excerpt.length : 0,
     excerptLineCount: typeof result.excerpt === 'string' ? result.excerpt.split('\\n').length : 0,
+    previewMatchStart: state.matchRanges[result.id]?.start,
+    previewMatchLength: state.matchRanges[result.id]?.length,
     previewType: result.kind === 'documentation' ? 'markdown' : 'code',
   })),
 } });
@@ -790,8 +816,8 @@ document.addEventListener('keydown', event => { if (event.ctrlKey && event.key =
 let searchTimer;
 function scheduleSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(() => search(true), 260); }
 function requestPage(value) { if (state.status === 'loading') return; const requested = Number.parseInt(value, 10); if (!Number.isFinite(requested)) return; state.page = Math.min(totalPages(), Math.max(1, requested)); search(false); }
-function search(resetPagination) { if (resetPagination) { state.page = 1; } const searchKey = [state.query, state.source, state.type, state.page, state.pageSize].join('\\u0000'); if (state.status === 'loading' && state.lastSearchKey === searchKey) return; state.lastSearchKey = searchKey; state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; state.searchPerformance = {}; state.previewPerformance = {}; state.uiPerformance.searchStartedAt = performance.now(); state.uiPerformance.lastSearchResponseMs = 0; state.uiPerformance.lastPreviewMessageMs = 0; render(); vscode.postMessage({ type: 'search', query: state.query, source: state.source, resultType: state.type, page: state.page, pageSize: state.pageSize }); }
-window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.uiPerformance.lastSearchResponseMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.semanticPreviews = {}; state.searchPerformance = message.performance ?? {}; state.previewPerformance = {}; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'previews') { state.uiPerformance.lastPreviewMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? {}; const previews = message.previews ?? {}; state.results = state.results.map(result => typeof previews[result.id] === 'string' ? { ...result, excerpt: previews[result.id] } : result); render(); } if (message.type === 'semanticPreviews') { state.semanticPreviews = { ...state.semanticPreviews, ...(message.previews ?? {}) }; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.total = 0; state.totalBySource = {}; render(); } });
+function search(resetPagination) { if (resetPagination) { state.page = 1; } const searchKey = [state.query, state.source, state.type, state.page, state.pageSize].join('\\u0000'); if (state.status === 'loading' && state.lastSearchKey === searchKey) return; state.lastSearchKey = searchKey; state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; state.matchRanges = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.uiPerformance.searchStartedAt = performance.now(); state.uiPerformance.lastSearchResponseMs = 0; state.uiPerformance.lastPreviewMessageMs = 0; render(); vscode.postMessage({ type: 'search', query: state.query, source: state.source, resultType: state.type, page: state.page, pageSize: state.pageSize }); }
+window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.uiPerformance.lastSearchResponseMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = message.performance ?? {}; state.previewPerformance = {}; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'previews') { state.uiPerformance.lastPreviewMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? {}; state.matchRanges = { ...state.matchRanges, ...(message.matches ?? {}) }; const previews = message.previews ?? {}; state.results = state.results.map(result => typeof previews[result.id] === 'string' ? { ...result, excerpt: previews[result.id] } : result); render(); } if (message.type === 'semanticPreviews') { state.semanticPreviews = { ...state.semanticPreviews, ...(message.previews ?? {}) }; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.total = 0; state.totalBySource = {}; render(); } });
 render();
 </script>
 </body>
@@ -860,6 +886,8 @@ function snapshotResults(value: unknown): Array<Record<string, unknown>> {
 		selectionEndLine: numberField(result.selectionEndLine),
 		excerptLength: numberField(result.excerptLength),
 		excerptLineCount: numberField(result.excerptLineCount),
+		previewMatchStart: numberField(result.previewMatchStart),
+		previewMatchLength: numberField(result.previewMatchLength),
 		previewType: textField(result.previewType),
 	}));
 }
