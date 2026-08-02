@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import { searchLimits } from '../extensionConfig/search';
+import type { ExternalIndexMode } from '../extensionConfig/workbench';
 
 export type SearchSource = 'workspace' | 'gameData' | 'wiki';
 export type SearchMode = 'semantic' | 'text';
@@ -231,6 +232,7 @@ export interface McpSearchClientOptions {
 	serverPath: string;
 	addonSourceInventory: string;
 	addonIndexStorage: string;
+	externalIndexMode: ExternalIndexMode;
 	workspaceScripts: string[];
 	officialWikiRoot: string;
 }
@@ -564,6 +566,8 @@ export class McpSearchClient {
 			this.options.addonSourceInventory,
 			'--addon-index-storage',
 			this.options.addonIndexStorage,
+			'--external-index-mode',
+			this.options.externalIndexMode,
 			'--official-wiki-root',
 			this.options.officialWikiRoot,
 			...this.options.workspaceScripts.flatMap(root => ['--workspace-scripts', root]),

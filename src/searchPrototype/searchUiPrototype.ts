@@ -5,6 +5,12 @@ import { diagnostic, diagnosticsEnabled } from '../diagnostics/diagnostics';
 import { gameDataStorage } from '../extensionConfig/gameData';
 import { languageClientIndexCache } from '../extensionConfig/languageClient';
 import { searchCommands, searchContext, searchLimits } from '../extensionConfig/search';
+import {
+	externalIndexModes,
+	type ExternalIndexMode,
+	workbenchConfig,
+	workbenchDefaults,
+} from '../extensionConfig/workbench';
 import { provideLanguageServerSemanticTokens } from '../languageClient/languageClient';
 import { discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
 import { resolveLanguageServerPath } from '../languageClient/serverPath';
@@ -97,10 +103,16 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 	};
 	activePanel = panel;
 	panel.webview.html = renderSearchUi(panel.webview);
+	const indexModeSubscription = vscode.workspace.onDidChangeConfiguration(event => {
+		if (event.affectsConfiguration(`${workbenchConfig.section}.${workbenchConfig.settings.externalIndexMode}`)) {
+			void restartSearchScopeForIndexMode(context, active);
+		}
+	});
 	panel.webview.onDidReceiveMessage(message => {
 		void handleMessage(context, active, message);
 	}, undefined, context.subscriptions);
 	panel.onDidDispose(() => {
+		indexModeSubscription.dispose();
 		active.disposed = true;
 		if (active.client) {
 			void active.client.then(client => client.dispose(), () => undefined);
@@ -109,6 +121,25 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 			activePanel = undefined;
 		}
 	}, undefined, context.subscriptions);
+}
+
+async function restartSearchScopeForIndexMode(
+	context: vscode.ExtensionContext,
+	active: ActiveSearch,
+): Promise<void> {
+	active.requestSequence += 1;
+	active.latestResults.clear();
+	active.semanticDocuments.clear();
+	const previousClient = active.client;
+	active.client = undefined;
+	if (previousClient) {
+		try {
+			(await previousClient).dispose();
+		} catch {
+			// A failed or already-closed process is replaced below.
+		}
+	}
+	await publishSearchScope(context, active);
 }
 
 async function handleMessage(
@@ -184,19 +215,7 @@ async function refreshSearchScope(
 	context: vscode.ExtensionContext,
 	active: ActiveSearch,
 ): Promise<void> {
-	active.requestSequence += 1;
-	active.latestResults.clear();
-	active.semanticDocuments.clear();
-	const previousClient = active.client;
-	active.client = undefined;
-	if (previousClient) {
-		try {
-			(await previousClient).dispose();
-		} catch {
-			// A failed or already-closed process is replaced below.
-		}
-	}
-	await publishSearchScope(context, active);
+	await restartSearchScopeForIndexMode(context, active);
 }
 
 async function publishSearchScope(
@@ -688,9 +707,20 @@ async function createClient(context: vscode.ExtensionContext): Promise<McpSearch
 			context.globalStorageUri.fsPath,
 			languageClientIndexCache.rootFolder,
 		),
+		externalIndexMode: readExternalIndexMode(),
 		workspaceScripts: await discoverWorkspaceScriptRoots(),
 		officialWikiRoot: path.join(context.extensionPath, 'data', 'official-wiki'),
 	});
+}
+
+function readExternalIndexMode(): ExternalIndexMode {
+	const value = vscode.workspace.getConfiguration(workbenchConfig.section).get(
+		workbenchConfig.settings.externalIndexMode,
+		workbenchDefaults.externalIndexMode,
+	);
+	return typeof value === 'string' && externalIndexModes.includes(value as ExternalIndexMode)
+		? value as ExternalIndexMode
+		: workbenchDefaults.externalIndexMode;
 }
 
 async function openSearchResult(active: ActiveSearch, id: string): Promise<void> {

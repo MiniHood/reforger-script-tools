@@ -182,6 +182,15 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /SEARCH SCOPE<\/div>' \+ searchScope\(\) \+ '<div class="group-label">SEARCH MODE<\/div>' \+ modeButtons\(\)/);
 	});
 
+	test('starts the custom Search MCP process with the configured external index mode', () => {
+		assert.match(searchClientSource, /externalIndexMode: ExternalIndexMode/);
+		assert.match(searchClientSource, /'--external-index-mode',[\s\S]*?this\.options\.externalIndexMode/);
+		assert.match(searchUiSource, /externalIndexMode: readExternalIndexMode\(\)/);
+		assert.match(searchUiSource, /affectsConfiguration\(`\$\{workbenchConfig\.section\}\.\$\{workbenchConfig\.settings\.externalIndexMode\}`\)/);
+		assert.match(searchUiSource, /restartSearchScopeForIndexMode\(context, active\)/);
+		assert.match(searchUiSource, /\(await previousClient\)\.dispose\(\)/);
+	});
+
 	test('maps symbol search handoffs into source-browser rows', () => {
 		const results = normalizeSearchPage('gameData', {
 			results: [{
