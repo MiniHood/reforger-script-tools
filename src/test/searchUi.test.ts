@@ -212,6 +212,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /<div class="empty">No results match this search\.<\/div>/);
 		assert.doesNotMatch(searchUiSource, /Enter a symbol, concept, or documentation term to search\./);
 		assert.doesNotMatch(searchUiSource, /function search\(resetPagination\) \{ if \(resetPagination\) \{ state\.page = 1; state\.total = 0; \}/);
+		assert.doesNotMatch(searchUiSource, /function search\(resetPagination\)[\s\S]*?state\.uiPerformance\.lastPreviewMessageMs = 0; render\(\); vscode\.postMessage/);
 		assert.doesNotMatch(searchUiSource, /if \(message\.type === 'loading'\) \{[^}]*render\(\); \}/);
 		assert.match(searchUiSource, /event\.ctrlKey && event\.key === 'F3'/);
 		assert.match(searchUiSource, /if \(state\.status === 'loading'\) return;/);
