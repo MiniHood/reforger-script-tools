@@ -380,8 +380,8 @@ export class McpSearchClient {
 			.map(value => value.toUpperCase())
 			.sort();
 		const sources: SearchSource[] = [
-			...(normalizedScopes.includes(workspaceScopeId) ? ['workspace' as const] : []),
 			...(addonGuids.length > 0 ? ['gameData' as const] : []),
+			...(normalizedScopes.includes(workspaceScopeId) ? ['workspace' as const] : []),
 			...(normalizedScopes.includes(wikiScopeId) ? ['wiki' as const] : []),
 		];
 		const searchableSources = mode === 'semantic'

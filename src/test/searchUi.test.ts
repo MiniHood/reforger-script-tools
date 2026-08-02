@@ -140,14 +140,16 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchClientSource, /this\.callTool\('game_data_status', \{\}\)/);
 		assert.match(searchClientSource, /defaultSelected: addon\.defaultSelected === true/);
 		assert.doesNotMatch(searchClientSource, /baseGameScopeId|enfusionCoreScopeId/);
+		assert.match(searchUiSource, /scopeOpen: false/);
+		assert.ok(
+			searchClientSource.indexOf("...(addonGuids.length > 0 ? ['gameData' as const] : [])")
+				< searchClientSource.indexOf("...(normalizedScopes.includes(workspaceScopeId) ? ['workspace' as const] : [])"),
+		);
 		assert.match(searchUiSource, /const searchScope = \(\) =>/);
 		assert.match(searchUiSource, /data-scope-choice/);
 		assert.match(searchUiSource, /data-scope-all/);
-		assert.match(searchUiSource, /data-scope-refresh/);
-		assert.match(searchUiSource, /message\.type === 'refreshScope'/);
-		assert.match(searchUiSource, /async function refreshSearchScope/);
-		assert.match(searchUiSource, /active\.client = undefined/);
-		assert.match(searchUiSource, /\(await previousClient\)\.dispose\(\)/);
+		assert.doesNotMatch(searchUiSource, /data-scope-refresh|message\.type === 'refreshScope'|refreshSearchScope/);
+		assert.match(searchUiSource, /<div class="scope-actions"><input class="addon-filter"[\s\S]*?<button type="button" data-scope-all>/);
 		assert.match(searchUiSource, /Select all/);
 		assert.match(searchUiSource, /Unselect all/);
 		assert.match(searchUiSource, /const allEligibleScopesSelected = \(\) => \{/);
@@ -322,7 +324,7 @@ suite('Reforger search UI MCP mapping', () => {
 	});
 
 	test('publishes raw previews before semantic coloring completes', () => {
-		const rawPhase = searchUiSource.indexOf("const postRawPreview = (id: string): void =>");
+		const rawPhase = searchUiSource.indexOf('const flushRawPreviews = (): void =>');
 		const rawMessage = searchUiSource.indexOf("type: 'previews',", rawPhase);
 		const semanticPhase = searchUiSource.indexOf("const semanticWorker = async");
 		const semanticMessage = searchUiSource.indexOf("type: 'semanticPreviews'", semanticPhase);
@@ -330,7 +332,8 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.ok(rawMessage > rawPhase);
 		assert.ok(semanticPhase > rawMessage);
 		assert.ok(semanticMessage > semanticPhase);
-		assert.match(searchUiSource, /postRawPreview\(hit\.id\)/);
+		assert.match(searchUiSource, /queueRawPreview\(hit\.id\)/);
+		assert.match(searchUiSource, /flushRawPreviews\(\);/);
 		assert.match(searchUiSource, /searchUi\.previewRawCompleted/);
 		assert.match(searchUiSource, /phase: 'raw'/);
 		assert.match(searchUiSource, /phase: 'semantic'/);
@@ -376,6 +379,12 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /searchKindsFor\(typeValue\)/);
 		assert.match(searchUiSource, /if \(!isSearchKindValue\(message\.resultType\)\) \{/);
 		assert.match(searchClientSource, /const sourcePageSize = 100;/);
+		assert.match(searchUiSource, /const sourcePreviewWorkerCount = 8;/);
+		assert.match(searchUiSource, /Math\.min\(sourcePreviewWorkerCount, previewHits\.length\)/);
+		assert.match(searchUiSource, /const previewUpdateBatchSize = 4;/);
+		assert.match(searchUiSource, /pendingRawPreviewIds\.length >= previewUpdateBatchSize/);
+		assert.match(searchUiSource, /setTimeout\(\(\) => search\(true\), 100\)/);
+		assert.doesNotMatch(searchUiSource, /setTimeout\(\(\) => search\(true\), 260\)/);
 		assert.match(searchClientSource, /export const maxSearchPages = searchLimits\.maxPages;/);
 		assert.match(searchClientSource, /paginationMode: 'offset'/);
 		assert.match(searchClientSource, /export interface SearchPerformance/);

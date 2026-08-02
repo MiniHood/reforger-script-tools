@@ -32,6 +32,8 @@ import {
 
 const searchScheme = 'reforger-search';
 const maxSearchDocuments = 32;
+const sourcePreviewWorkerCount = 8;
+const previewUpdateBatchSize = 4;
 let activePanel: vscode.WebviewPanel | undefined;
 let documentSequence = 0;
 const searchDocuments = new Map<string, string>();
@@ -168,10 +170,6 @@ async function handleMessage(
 		});
 		return;
 	}
-	if (message.type === 'refreshScope') {
-		await refreshSearchScope(context, active);
-		return;
-	}
 	if (message.type === 'debugSnapshot') {
 		logSearchSnapshot(message.snapshot);
 		return;
@@ -209,13 +207,6 @@ async function handleMessage(
 			await vscode.env.openExternal(vscode.Uri.parse(hit.sourceUrl));
 		}
 	}
-}
-
-async function refreshSearchScope(
-	context: vscode.ExtensionContext,
-	active: ActiveSearch,
-): Promise<void> {
-	await restartSearchScopeForIndexMode(context, active);
 }
 
 async function publishSearchScope(
@@ -399,17 +390,19 @@ async function hydrateSymbolPreviews(
 	let semanticMs = 0;
 	let nextIndex = 0;
 	let firstRawMs: number | undefined;
-	const postRawPreview = (id: string): void => {
-		if (active.disposed || requestId !== active.requestSequence) {
+	const pendingRawPreviewIds: string[] = [];
+	const flushRawPreviews = (): void => {
+		if (pendingRawPreviewIds.length === 0 || active.disposed || requestId !== active.requestSequence) {
 			return;
 		}
+		const ids = pendingRawPreviewIds.splice(0, pendingRawPreviewIds.length);
 		const elapsedMs = Date.now() - startedAt;
 		firstRawMs ??= elapsedMs;
 		active.panel.webview.postMessage({
 			type: 'previews',
 			requestId,
-			previews: { [id]: previews[id] },
-			matches: matchRanges[id] ? { [id]: matchRanges[id] } : {},
+			previews: Object.fromEntries(ids.map(id => [id, previews[id]])),
+			matches: Object.fromEntries(ids.flatMap(id => matchRanges[id] ? [[id, matchRanges[id]]] : [])),
 			performance: {
 				phase: 'raw',
 				totalMs: elapsedMs,
@@ -424,6 +417,12 @@ async function hydrateSymbolPreviews(
 				semanticCount: 0,
 			},
 		});
+	};
+	const queueRawPreview = (id: string): void => {
+		pendingRawPreviewIds.push(id);
+		if (pendingRawPreviewIds.length >= previewUpdateBatchSize) {
+			flushRawPreviews();
+		}
 	};
 	const readWorker = async (): Promise<void> => {
 		while (nextIndex < previewHits.length && !active.disposed && requestId === active.requestSequence) {
@@ -443,7 +442,7 @@ async function hydrateSymbolPreviews(
 						preview,
 						matchRange,
 					});
-					postRawPreview(hit.id);
+					queueRawPreview(hit.id);
 					continue;
 				}
 				const readStartedAt = performance.now();
@@ -461,7 +460,7 @@ async function hydrateSymbolPreviews(
 					matchRanges[hit.id] = matchRange;
 				}
 				rawPreviews.set(hit.id, { hit, document, previewLine, preview, matchRange });
-				postRawPreview(hit.id);
+				queueRawPreview(hit.id);
 			} catch (error) {
 				if (hit.addonGuid) {
 					readFailuresByAddon[hit.addonGuid] = (readFailuresByAddon[hit.addonGuid] ?? 0) + 1;
@@ -477,7 +476,8 @@ async function hydrateSymbolPreviews(
 			}
 		}
 	};
-	await Promise.all(Array.from({ length: Math.min(4, previewHits.length) }, () => readWorker()));
+	await Promise.all(Array.from({ length: Math.min(sourcePreviewWorkerCount, previewHits.length) }, () => readWorker()));
+	flushRawPreviews();
 	if (active.disposed || requestId !== active.requestSequence) {
 		return;
 	}
@@ -867,14 +867,14 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .addon-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .addon-menu { position: absolute; z-index: 4; left: 10px; width: 290px; margin-top: 5px; padding: 9px; border: 1px solid var(--accent); background: var(--vscode-menu-background, var(--panel)); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
 .addon-menu.inline { position: static; width: auto; margin-top: 0; padding: 0; border: 0; box-shadow: none; background: transparent; }
-.addon-filter { width: 100%; box-sizing: border-box; margin-bottom: 7px; padding: 6px 7px; border: 1px solid var(--border); background: var(--alt); outline: none; }
+.addon-filter { flex: 1 1 auto; min-width: 0; box-sizing: border-box; margin: 0; padding: 6px 7px; border: 1px solid var(--border); background: var(--alt); outline: none; }
 .addon-filter:focus { border-color: var(--accent); }
 .addon-choice { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 6px; min-height: 29px; color: var(--fg); cursor: pointer; }
 .addon-choice input { margin: 0; accent-color: var(--accent); }
 .addon-choice small { color: var(--muted); font-size: 10px; }
 .addon-choice.pinned-boundary { margin-bottom: 5px; padding-bottom: 5px; border-bottom: 1px solid var(--border); }
-.scope-actions { display: flex; justify-content: flex-end; margin-bottom: 5px; }
-.scope-actions button { width: auto; margin: 0; padding: 4px 6px; color: var(--accent); font-size: 10px; }
+.scope-actions { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
+.scope-actions button { flex: 0 0 auto; width: auto; margin: 0; padding: 5px 7px; color: var(--accent); font-size: 10px; white-space: nowrap; }
 .scope-actions [data-scope-all] { flex: 0 0 76px; width: 76px; box-sizing: border-box; }
 .addon-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
 .addon-chip { max-width: 100%; padding: 3px 6px; border-radius: 10px; background: var(--selected); color: var(--selected-text); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -938,7 +938,7 @@ window.__reforgerSearchVscode.postMessage({ type: 'webviewReady', width: window.
 </script>
 <script nonce="${nonce}">
 const vscode = window.__reforgerSearchVscode;
-const state = { query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, type: 'all', resultColumns: 1, results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, scopeOpen: true, scopeFilter: '', scopeRevision: '', scopeAuthority: '', scopeDiscoveryMs: 0, unavailableScopeIds: [], scopeSources: [{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true }, { id: 'wiki', label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true }], selectedScopeIds: ['workspace', 'wiki'], selectionTouched: false, removedScopeIds: [], uiPerformance: { renderCount: 0, lastRenderMs: 0, searchStartedAt: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
+const state = { query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, type: 'all', resultColumns: 1, results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, scopeOpen: false, scopeFilter: '', scopeRevision: '', scopeAuthority: '', scopeDiscoveryMs: 0, unavailableScopeIds: [], scopeSources: [{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true }, { id: 'wiki', label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true }], selectedScopeIds: ['workspace', 'wiki'], selectionTouched: false, removedScopeIds: [], uiPerformance: { renderCount: 0, lastRenderMs: 0, searchStartedAt: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const sourceLabel = result => result.addonLabel ?? (result.source === 'wiki' ? 'Official Wiki' : result.source === 'workspace' ? 'Workspace' : 'Game Data');
 const visibleResults = () => state.results;
@@ -956,7 +956,7 @@ const scopeChoices = () => {
   const filter = state.scopeFilter.trim().toLowerCase();
   const filtered = eligible.filter(source => !filter || source.label.toLowerCase().includes(filter));
   const choices = filtered.map((source, index) => '<label class="addon-choice' + (source.pinned && !filtered[index + 1]?.pinned ? ' pinned-boundary' : '') + '"><input type="checkbox" data-scope-choice="' + esc(source.id) + '"' + (state.selectedScopeIds.includes(source.id) ? ' checked' : '') + '><span>' + esc(source.label) + '</span><small>' + esc(source.detail) + '</small></label>').join('');
-  return '<div class="addon-menu"><input class="addon-filter" data-scope-filter value="' + esc(state.scopeFilter) + '" placeholder="Filter add-ons..." aria-label="Filter search scopes"><div class="scope-actions"><button type="button" data-scope-refresh' + (state.status === 'loading' ? ' disabled' : '') + '>Refresh</button><button type="button" data-scope-all>' + (allSelected ? 'Unselect all' : 'Select all') + '</button></div>' + choices + '</div>';
+  return '<div class="addon-menu"><div class="scope-actions"><input class="addon-filter" data-scope-filter value="' + esc(state.scopeFilter) + '" placeholder="Filter add-ons..." aria-label="Filter search scopes"><button type="button" data-scope-all>' + (allSelected ? 'Unselect all' : 'Select all') + '</button></div>' + choices + '</div>';
 };
 const searchScope = () => {
   const selected = eligibleScopeSources().filter(source => state.selectedScopeIds.includes(source.id));
@@ -1157,7 +1157,6 @@ function render(focusQuery = true) {
   document.querySelectorAll('[data-scope-open]').forEach(element => element.addEventListener('click', () => { state.scopeOpen = !state.scopeOpen; render(false); }));
   document.querySelectorAll('[data-scope-choice]').forEach(element => element.addEventListener('change', () => { state.selectionTouched = true; state.selectedScopeIds = element.checked ? [...new Set([...state.selectedScopeIds, element.dataset.scopeChoice])] : state.selectedScopeIds.filter(value => value !== element.dataset.scopeChoice); render(false); search(true); }));
   document.querySelectorAll('[data-scope-all]').forEach(element => element.addEventListener('click', () => { const eligible = eligibleScopeSources(); const allSelected = allEligibleScopesSelected(); const eligibleIds = new Set(eligible.map(source => source.id)); state.selectionTouched = true; state.selectedScopeIds = allSelected ? state.selectedScopeIds.filter(id => !eligibleIds.has(id)) : [...new Set([...state.selectedScopeIds, ...eligibleIds])]; render(false); search(true); }));
-  document.querySelectorAll('[data-scope-refresh]').forEach(element => element.addEventListener('click', () => vscode.postMessage({ type: 'refreshScope' })));
   document.querySelectorAll('[data-scope-filter]').forEach(element => element.addEventListener('input', () => { state.scopeFilter = element.value; render(false); const filter = document.querySelector('[data-scope-filter]'); if (filter) { filter.focus(); filter.setSelectionRange(filter.value.length, filter.value.length); } }));
   document.querySelectorAll('[data-page-prev]').forEach(element => element.addEventListener('click', () => requestPage(state.page - 1)));
   document.querySelectorAll('[data-page-next]').forEach(element => element.addEventListener('click', () => requestPage(state.page + 1)));
@@ -1184,7 +1183,7 @@ document.addEventListener('click', event => {
   if (indicator) indicator.textContent = '\u25bc';
 });
 let searchTimer;
-function scheduleSearch() { clearTimeout(searchTimer); if (state.mode === 'text') return; searchTimer = setTimeout(() => search(true), 260); }
+function scheduleSearch() { clearTimeout(searchTimer); if (state.mode === 'text') return; searchTimer = setTimeout(() => search(true), 100); }
 function requestPage(value) { if (state.status === 'loading') return; const requested = Number.parseInt(value, 10); if (!Number.isFinite(requested)) return; state.page = Math.min(totalPages(), Math.max(1, requested)); search(false); }
 function search(resetPagination) { if (resetPagination) { state.page = 1; } const scopeIds = selectedEligibleScopeIds(); const searchKey = [state.mode, state.query, state.matchCase, state.matchWholeWord, state.useRegex, scopeIds.slice().sort().join(','), state.type, state.page, state.pageSize].join('\\u0000'); if (state.status === 'loading' && state.lastSearchKey === searchKey) return; state.lastSearchKey = searchKey; state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.uiPerformance.searchStartedAt = performance.now(); state.uiPerformance.lastSearchResponseMs = 0; state.uiPerformance.lastPreviewMessageMs = 0; state.uiPerformance.lastSemanticMessageMs = 0; vscode.postMessage({ type: 'search', query: state.query, searchMode: state.mode, matchCase: state.matchCase, matchWholeWord: state.matchWholeWord, useRegex: state.useRegex, scopeIds, resultType: state.type, page: state.page, pageSize: state.pageSize }); }
 window.addEventListener('message', event => { const message = event.data; if (!message) return; if (message.type === 'scope') { const nextSources = Array.isArray(message.scope?.sources) ? message.scope.sources : []; const available = new Set(nextSources.map(source => source.id)); const previous = state.selectedScopeIds.slice(); state.scopeSources = nextSources; state.scopeRevision = message.scope?.scopeRevision ?? ''; state.scopeAuthority = message.scope?.scopeAuthority ?? ''; state.scopeDiscoveryMs = message.scope?.discoveryMs ?? 0; state.unavailableScopeIds = Array.isArray(message.scope?.unavailableScopeIds) ? message.scope.unavailableScopeIds : []; state.removedScopeIds = previous.filter(id => !available.has(id)); state.selectedScopeIds = state.selectionTouched ? previous.filter(id => available.has(id)) : nextSources.filter(source => source.defaultSelected).map(source => source.id); render(false); if (state.query.trim()) search(true); return; } if (message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.uiPerformance.lastSearchResponseMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = message.performance ?? {}; state.previewPerformance = {}; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'previews') { state.uiPerformance.lastPreviewMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? {}; state.sourcePreviews = { ...state.sourcePreviews, ...(message.previews ?? {}) }; state.matchRanges = { ...state.matchRanges, ...(message.matches ?? {}) }; render(); } if (message.type === 'semanticPreviews') { state.uiPerformance.lastSemanticMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? state.previewPerformance; state.semanticPreviews = { ...state.semanticPreviews, ...(message.previews ?? {}) }; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.total = 0; state.totalBySource = {}; render(); } });
