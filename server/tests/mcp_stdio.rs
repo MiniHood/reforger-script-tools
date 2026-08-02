@@ -94,6 +94,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         "implementation examples",
         "Official Wiki",
         "copy inspection and read handoffs unchanged",
+        "full-text search",
     ] {
         assert!(
             instructions.contains(guidance),
@@ -118,7 +119,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
             .find(|tool| tool.get("name") == Some(&json!(name)))
             .unwrap_or_else(|| panic!("missing tool {name}"))
     };
-    assert_eq!(listed.len(), 81);
+    assert_eq!(listed.len(), 86);
     let game_data_status = tool("game_data_status");
     assert!(listed
         .iter()
@@ -143,6 +144,8 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
     );
     assert!(game_data_status.get("outputSchema").is_some());
     let game_data_symbols = tool("search_game_data_symbols");
+    tool("search_game_data_text");
+    tool("search_workspace_text");
     assert_eq!(
         game_data_symbols.get("name"),
         Some(&json!("search_game_data_symbols"))
@@ -163,6 +166,14 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         game_data_symbols.pointer("/inputSchema/required/0"),
         Some(&json!("query"))
     );
+    for name in ["search_game_data_text", "search_workspace_text"] {
+        let text_tool = tool(name);
+        assert_eq!(
+            text_tool.pointer("/inputSchema/required/0"),
+            Some(&json!("query"))
+        );
+        assert!(text_tool.get("outputSchema").is_some());
+    }
     for name in [
         "search_game_data_examples",
         "inspect_game_data_symbol",
@@ -322,6 +333,25 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
     );
 
     client.send(json!({
+        "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+        "params": { "name": "search_game_data_text", "arguments": { "query": "McpFixture" } }
+    }));
+    let text_search = client.response(7);
+    assert_eq!(text_search.pointer("/result/isError"), Some(&json!(false)));
+    assert_eq!(
+        text_search.pointer("/result/structuredContent/results/0/matchText"),
+        Some(&json!("McpFixture"))
+    );
+    assert_eq!(
+        text_search.pointer("/result/structuredContent/results/0/matchRange/startLine"),
+        Some(&json!(1))
+    );
+    assert!(text_search
+        .pointer("/result/structuredContent/stats/filesRead")
+        .and_then(Value::as_u64)
+        .is_some_and(|files| files >= 1));
+
+    client.send(json!({
         "jsonrpc": "2.0", "id": 5, "method": "tools/call",
         "params": { "name": "inspect_game_data_symbol", "arguments": results[0]["inspectInput"] }
     }));
@@ -349,6 +379,40 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .pointer("/result/structuredContent/content")
         .and_then(Value::as_str)
         .is_some_and(|content| content.contains("class McpFixture")));
+
+    client.send(json!({
+        "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+        "params": { "name": "search_game_data_text", "arguments": { "query": "SCR_" } }
+    }));
+    let text_search = client.response(7);
+    assert_eq!(text_search.pointer("/result/isError"), Some(&json!(false)));
+    let text_results = text_search
+        .pointer("/result/structuredContent/results")
+        .and_then(Value::as_array)
+        .expect("text search results");
+    assert!(text_results.is_empty());
+    assert_eq!(
+        text_search.pointer("/result/structuredContent/stats/filesConsidered"),
+        Some(&json!(1))
+    );
+
+    client.send(json!({
+        "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+        "params": { "name": "search_game_data_text", "arguments": { "query": "void" } }
+    }));
+    let text_hit_search = client.response(8);
+    assert_eq!(
+        text_hit_search.pointer("/result/isError"),
+        Some(&json!(false))
+    );
+    assert!(text_hit_search
+        .pointer("/result/structuredContent/results/0/matchRange/startLine")
+        .and_then(Value::as_u64)
+        .is_some_and(|line| line > 0));
+    assert_eq!(
+        text_hit_search.pointer("/result/structuredContent/results/0/readSourceInput/relativePath"),
+        Some(&json!("Game/McpFixture.c"))
+    );
 
     for (offset, tool) in listed.iter().enumerate() {
         let name = tool
@@ -626,7 +690,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
             .find(|tool| tool.get("name") == Some(&json!(name)))
             .unwrap_or_else(|| panic!("missing tool {name}"))
     };
-    assert_eq!(listed.len(), 81);
+    assert_eq!(listed.len(), 85);
     let examples = tool("search_game_data_examples");
     tool("list_game_data_symbol_members");
     tool("query_game_data_symbol_relationships");
@@ -699,7 +763,10 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         .and_then(Value::as_str)
         .is_some_and(|text| text.contains("Workbench")));
     client.send(json!({"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"read_game_data_source","arguments":first_page["results"][0]["readSourceInput"]}}));
-    assert_eq!(client.response(20).pointer("/result/isError"), Some(&json!(false)));
+    assert_eq!(
+        client.response(20).pointer("/result/isError"),
+        Some(&json!(false))
+    );
     let example_cursor = first_page
         .get("nextCursor")
         .cloned()

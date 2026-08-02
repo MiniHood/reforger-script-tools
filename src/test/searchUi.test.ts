@@ -19,6 +19,49 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.strictEqual(searchToolFor('workspace'), 'search_workspace_symbols');
 		assert.strictEqual(searchToolFor('gameData'), 'search_game_data_symbols');
 		assert.strictEqual(searchToolFor('wiki'), 'search_official_wiki');
+		assert.strictEqual(searchToolFor('workspace', 'text'), 'search_workspace_text');
+		assert.strictEqual(searchToolFor('gameData', 'text'), 'search_game_data_text');
+	});
+
+	test('maps literal text matches to exact line previews and source-read handoffs', () => {
+		const results = normalizeSearchPage('workspace', {
+			results: [{
+				relativePath: 'Scripts/Example.c',
+				matchRange: { startLine: 12, startCharacter: 18, endLine: 12, endCharacter: 22 },
+				excerpt: 'void Run() { SCR_(); }',
+				matchText: 'SCR_',
+				readSourceInput: {
+					catalogueRevision: 'ws1:revision',
+					relativePath: 'Scripts/Example.c',
+					startLine: 12,
+				},
+			}],
+		}, 'text');
+
+		assert.strictEqual(results[0].kind, 'text');
+		assert.strictEqual(results[0].excerpt, 'void Run() { SCR_(); }');
+		assert.strictEqual(results[0].textMatchStart, 13);
+		assert.strictEqual(results[0].textMatchLength, 4);
+		assert.strictEqual(results[0].readInput.catalogueRevision, 'ws1:revision');
+	});
+
+	test('routes explicit text mode to corpus-specific literal search tools', () => {
+		assert.strictEqual(searchToolFor('workspace', 'text'), 'search_workspace_text');
+		assert.strictEqual(searchToolFor('gameData', 'text'), 'search_game_data_text');
+		const results = normalizeSearchPage('workspace', {
+			results: [{
+				relativePath: 'Game/Use.c',
+				matchRange: { startLine: 4, startCharacter: 13, endLine: 4, endCharacter: 17 },
+				excerpt: '    void Run(SCR_ value);',
+				matchText: 'SCR_',
+				readSourceInput: { catalogueRevision: 'ws1:test', relativePath: 'Game/Use.c', startLine: 4 },
+			}],
+		}, 'text');
+		assert.strictEqual(results[0].kind, 'text');
+		assert.strictEqual(results[0].title, 'SCR_');
+		assert.strictEqual(results[0].textMatchStart, 13);
+		assert.strictEqual(results[0].textMatchLength, 4);
+		assert.strictEqual(results[0].readInput.catalogueRevision, 'ws1:test');
 	});
 
 	test('formats compound symbol kinds for result details', () => {
@@ -72,6 +115,20 @@ suite('Reforger search UI MCP mapping', () => {
 			'destructor',
 		]);
 		assert.doesNotMatch(searchUiSource, /Documentation/);
+	});
+
+	test('keeps full-text search explicit inside the existing search UI', () => {
+		assert.match(searchUiSource, /const modeButtons = \(\) =>/);
+		assert.match(searchUiSource, /state\.mode === 'text'/);
+		assert.match(searchUiSource, /data-mode="semantic"/);
+		assert.match(searchUiSource, /data-mode="text"/);
+		assert.match(searchUiSource, /state\.mode === 'text' \? '' : resultTypes/);
+		assert.match(searchUiSource, /if \(state\.mode === 'text'\) return/);
+		assert.match(searchUiSource, /clearTimeout\(searchTimer\); if \(state\.mode === 'text'\) return/);
+		assert.match(searchUiSource, /searchMode: state\.mode/);
+		assert.match(searchClientSource, /search_workspace_text/);
+		assert.match(searchClientSource, /search_game_data_text/);
+		assert.match(searchClientSource, /paginationMode: mode === 'text' \? 'cursor' : 'offset'/);
 	});
 
 	test('maps symbol search handoffs into source-browser rows', () => {
@@ -254,5 +311,11 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /excerptLength: typeof result\.excerpt === 'string'/);
 		assert.match(searchUiSource, /function snapshotResults\(value: unknown\)/);
 		assert.match(searchUiSource, /resultsTruncated: Array\.isArray\(snapshot\.results\) && snapshot\.results\.length > 100/);
+		assert.match(searchUiSource, /const modeButtons = \(\) =>/);
+		assert.match(searchUiSource, /data-mode="text"/);
+		assert.match(searchUiSource, /state\.mode === 'text'/);
+		assert.match(searchUiSource, /searchMode: state\.mode/);
+		assert.match(searchClientSource, /search_game_data_text/);
+		assert.match(searchClientSource, /search_workspace_text/);
 	});
 });

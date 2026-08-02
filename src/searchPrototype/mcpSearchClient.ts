@@ -5,6 +5,7 @@ import { performance } from 'node:perf_hooks';
 import { searchLimits } from '../extensionConfig/search';
 
 export type SearchSource = 'workspace' | 'gameData' | 'wiki';
+export type SearchMode = 'semantic' | 'text';
 export type SearchSymbolKind =
 	| 'class'
 	| 'constructor'
@@ -35,7 +36,7 @@ export const searchKindFilters: readonly SearchKindFilter[] = [
 export interface SearchHit {
 	id: string;
 	source: SearchSource;
-	kind: 'symbol' | 'documentation';
+	kind: 'symbol' | 'documentation' | 'text';
 	title: string;
 	detail: string;
 	path: string;
@@ -46,6 +47,8 @@ export interface SearchHit {
 	selectionStartLine?: number;
 	selectionEndLine?: number;
 	readInput: Record<string, unknown>;
+	textMatchStart?: number;
+	textMatchLength?: number;
 }
 
 export interface SearchResponse {
@@ -69,6 +72,7 @@ export interface SearchSourcePerformance {
 	firstPage: number | undefined;
 	lastPage: number | undefined;
 	cacheSize: number;
+	textStats?: Record<string, unknown>;
 }
 
 export interface SearchPerformance {
@@ -78,7 +82,8 @@ export interface SearchPerformance {
 	rangeSearchMs: number;
 	mergeMs: number;
 	requestedPage: number;
-	paginationMode: 'offset';
+	paginationMode: 'offset' | 'cursor';
+	searchMode: SearchMode;
 	pageSize: number;
 	sourcePageSize: number;
 	sources: SearchSourcePerformance[];
@@ -223,6 +228,7 @@ interface CachedSearchPage {
 	results: SearchHit[];
 	total: number;
 	nextCursor?: string;
+	stats?: Record<string, unknown>;
 }
 
 interface SearchPerformanceTrace {
@@ -281,6 +287,7 @@ function finishSearchPerformance(
 	requestedPage: number,
 	pageSize: number,
 	sources: readonly SearchSource[],
+	mode: SearchMode,
 ): SearchPerformance {
 	return {
 		totalMs: performance.now() - trace.startedAt,
@@ -289,7 +296,8 @@ function finishSearchPerformance(
 		rangeSearchMs: trace.rangeSearchMs,
 		mergeMs: trace.mergeMs,
 		requestedPage,
-		paginationMode: 'offset',
+		paginationMode: mode === 'text' ? 'cursor' : 'offset',
+		searchMode: mode,
 		pageSize,
 		sourcePageSize,
 		sources: sources.map(source => sourcePerformanceFor(trace, source)),
@@ -312,24 +320,28 @@ export class McpSearchClient {
 		pageSize: number,
 		page: number,
 		symbolKinds?: readonly SearchSymbolKind[],
+		mode: SearchMode = 'semantic',
 	): Promise<SearchResponse> {
 		const trace = createSearchPerformanceTrace();
 		await this.start();
 		trace.startupMs = performance.now() - trace.startedAt;
 		const normalizedPageSize = Math.min(100, Math.max(1, Number.isFinite(pageSize) ? Math.floor(pageSize) : 25));
 		const requestedPage = Math.min(maxSearchPages, Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1));
-		const searchableSources = symbolKinds?.length
+		const searchableSources = mode === 'text' ? sources.filter(source => source !== 'wiki') : symbolKinds?.length
 			? sources.filter(source => source !== 'wiki')
 			: sources;
 		if (searchableSources.length === 0) {
-			return { results: [], warnings: [], total: 0, totalBySource: {}, page: 1, pageSize: normalizedPageSize, performance: finishSearchPerformance(trace, 1, normalizedPageSize, []) };
+			return { results: [], warnings: [], total: 0, totalBySource: {}, page: 1, pageSize: normalizedPageSize, performance: finishSearchPerformance(trace, 1, normalizedPageSize, [], mode) };
 		}
 		const initialSearchStartedAt = performance.now();
 		const responses = await Promise.all(searchableSources.map(async source => {
 			const sourceTrace = sourcePerformanceFor(trace, source);
 			const startedAt = performance.now();
 			try {
-				const value = await this.searchPage(query, source, sourcePageSize, 1, symbolKinds, trace);
+				const value = await this.searchPage(query, source, sourcePageSize, 1, symbolKinds, trace, mode);
+				if (value.stats) {
+					sourceTrace.textStats = value.stats;
+				}
 				sourceTrace.initialMs += performance.now() - startedAt;
 				return { source, value, warning: undefined };
 			} catch (error) {
@@ -365,7 +377,7 @@ export class McpSearchClient {
 			const sourceStart = Math.max(0, pageStart - sourceOffset);
 			const sourceEnd = Math.min(sourceTotal, pageEnd - sourceOffset);
 			if (response.value && sourceStart < sourceEnd) {
-				results.push(...await this.sourceRange(query, response.source, sourceStart, sourceEnd, symbolKinds, trace));
+				results.push(...await this.sourceRange(query, response.source, sourceStart, sourceEnd, symbolKinds, trace, mode));
 			}
 			sourceOffset += sourceTotal;
 		}
@@ -378,7 +390,7 @@ export class McpSearchClient {
 			totalBySource,
 			page: normalizedPage,
 			pageSize: normalizedPageSize,
-			performance: finishSearchPerformance(trace, requestedPage, normalizedPageSize, searchableSources),
+			performance: finishSearchPerformance(trace, requestedPage, normalizedPageSize, searchableSources, mode),
 		};
 	}
 
@@ -502,13 +514,14 @@ export class McpSearchClient {
 		end: number,
 		symbolKinds?: readonly SearchSymbolKind[],
 		trace?: SearchPerformanceTrace,
+		mode: SearchMode = 'semantic',
 	): Promise<SearchHit[]> {
 		const sourceStartedAt = performance.now();
 		const results: SearchHit[] = [];
 		const firstPageNumber = Math.floor(start / sourcePageSize) + 1;
 		const lastPageNumber = Math.floor((end - 1) / sourcePageSize) + 1;
 		for (let pageNumber = firstPageNumber; pageNumber <= lastPageNumber; pageNumber += 1) {
-			const page = await this.searchPage(query, source, sourcePageSize, pageNumber, symbolKinds, trace);
+			const page = await this.searchPage(query, source, sourcePageSize, pageNumber, symbolKinds, trace, mode);
 			const pageStart = (pageNumber - 1) * sourcePageSize;
 			const resultStart = Math.max(0, start - pageStart);
 			const resultEnd = Math.min(page.results.length, end - pageStart);
@@ -532,9 +545,10 @@ export class McpSearchClient {
 		page: number,
 		symbolKinds?: readonly SearchSymbolKind[],
 		trace?: SearchPerformanceTrace,
+		mode: SearchMode = 'semantic',
 	): Promise<CachedSearchPage> {
 		const sourceTrace = trace ? sourcePerformanceFor(trace, source) : undefined;
-		const cacheKey = `${source}\u0000${pageSize}\u0000${query}\u0000${symbolKinds?.join(',') ?? ''}`;
+		const cacheKey = `${mode}\u0000${source}\u0000${pageSize}\u0000${query}\u0000${symbolKinds?.join(',') ?? ''}`;
 		let pages = this.searchPageCaches.get(cacheKey);
 		if (!pages) {
 			if (this.searchPageCaches.size >= maxSearchPageCaches) {
@@ -556,27 +570,39 @@ export class McpSearchClient {
 			}
 			return cached;
 		}
-		const argumentsValue: Record<string, unknown> = {
+		if (mode === 'text' && page > 1 && !pages.has(page - 1)) {
+			await this.searchPage(query, source, pageSize, page - 1, symbolKinds, trace, mode);
+		}
+		const previousPage = mode === 'text' && page > 1 ? pages.get(page - 1) : undefined;
+		const argumentsValue: Record<string, unknown> = mode === 'text' ? {
+			query,
+			limit: pageSize,
+			...(previousPage?.nextCursor ? { cursor: previousPage.nextCursor } : {}),
+		} : {
 			query,
 			limit: pageSize,
 			offset: (page - 1) * pageSize,
 			...(source !== 'wiki' && symbolKinds?.length ? { kinds: symbolKinds } : {}),
 		};
 		const remoteStartedAt = performance.now();
-		const value = asRecord(await this.callTool(searchToolFor(source), argumentsValue));
+		const value = asRecord(await this.callTool(searchToolFor(source, mode), argumentsValue));
 		if (sourceTrace) {
 			sourceTrace.remoteRequests += 1;
 			sourceTrace.remoteMs += performance.now() - remoteStartedAt;
 			recordVisitedPage(sourceTrace, page);
 		}
-		const results = normalizeSearchPage(source, value);
+		const results = normalizeSearchPage(source, value, mode);
 		const currentPage: CachedSearchPage = {
 			results,
 			total: asNumber(value.total, results.length),
 			...(typeof value.nextCursor === 'string' && value.nextCursor.length > 0
 				? { nextCursor: value.nextCursor }
 				: {}),
+			...(mode === 'text' && value.stats && typeof value.stats === 'object' ? { stats: asRecord(value.stats) } : {}),
 		};
+		if (sourceTrace && mode === 'text' && currentPage.stats) {
+			sourceTrace.textStats = currentPage.stats;
+		}
 		pages.set(page, currentPage);
 		while (pages.size > maxCachedPagesPerSearch) {
 			const oldest = pages.keys().next().value;
@@ -674,13 +700,16 @@ export class McpSearchClient {
 	}
 }
 
-export function searchToolFor(source: SearchSource): string {
+export function searchToolFor(source: SearchSource, mode: SearchMode = 'semantic'): string {
+	if (mode === 'text') {
+		return source === 'gameData' ? 'search_game_data_text' : 'search_workspace_text';
+	}
 	return source === 'wiki' ? 'search_official_wiki' : source === 'gameData'
 		? 'search_game_data_symbols'
 		: 'search_workspace_symbols';
 }
 
-export function normalizeSearchPage(source: SearchSource, value: unknown): SearchHit[] {
+export function normalizeSearchPage(source: SearchSource, value: unknown, mode: SearchMode = 'semantic'): SearchHit[] {
 	const results = asRecord(value).results;
 	if (!Array.isArray(results)) {
 		return [];
@@ -690,7 +719,7 @@ export function normalizeSearchPage(source: SearchSource, value: unknown): Searc
 		if (source === 'wiki') {
 			return normalizeWikiHit(hit, index);
 		}
-		return normalizeSymbolHit(source, hit, index);
+		return mode === 'text' ? normalizeTextHit(source, hit, index) : normalizeSymbolHit(source, hit, index);
 	});
 }
 
@@ -728,6 +757,34 @@ function normalizeSymbolHit(source: SearchSource, hit: RecordValue, index: numbe
 		selectionStartLine: asNumber(asRecord(hit.selectionRange).startLine, line),
 		selectionEndLine: asNumber(asRecord(hit.selectionRange).endLine, line),
 		readInput,
+	}];
+}
+
+function normalizeTextHit(source: SearchSource, hit: RecordValue, index: number): SearchHit[] {
+	const relativePath = asString(hit.relativePath, 'Unknown source');
+	const range = asRecord(hit.matchRange);
+	const startLine = asNumber(range.startLine, 0);
+	const excerpt = asString(hit.excerpt, '');
+	const matchText = asString(hit.matchText, '');
+	const readInput = asRecord(hit.readSourceInput);
+	if (!readInput.relativePath) {
+		return [];
+	}
+	const matchStart = matchText ? excerpt.indexOf(matchText) : -1;
+	return [{
+		id: `${source}-text-${index}-${relativePath}-${startLine}`,
+		source,
+		kind: 'text',
+		title: matchText || 'Text match',
+		detail: 'text',
+		path: `${relativePath}:${startLine}`,
+		excerpt,
+		matchKind: 'text',
+		selectionStartLine: startLine,
+		selectionEndLine: asNumber(range.endLine, startLine),
+		readInput,
+		textMatchStart: matchStart >= 0 ? matchStart : asNumber(range.startCharacter, 0),
+		textMatchLength: matchText.length,
 	}];
 }
 

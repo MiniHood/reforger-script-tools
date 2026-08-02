@@ -3,11 +3,11 @@
 Research date: 2026-08-01.
 
 This note turns the review of Game Data and Official Wiki search into a
-concrete implementation path. The Phase 0 and Phase 1 work described below is
-now implemented in the MCP contracts and Rust language layer. The remaining
-text-search phase is intentionally a measured follow-up, not an unverified
-feature commitment. The evidence used here is the current Rust implementation,
-generated MCP contracts, and the repository's existing search research.
+concrete implementation path. The Phase 0, Phase 1, and bounded text-search
+work described below is implemented in the MCP contracts, Rust language layer,
+and Live MCP Search UI. The evidence used here is the current Rust
+implementation, generated MCP contracts, UI tests, and the repository's
+existing search research.
 
 ## Baseline
 
@@ -101,7 +101,7 @@ Add inspection and relationship queries only after the initial search result
 can be opened and verified. They should reuse the existing progressive pattern,
 not become a second workspace analysis implementation.
 
-### Phase 2: bounded source-text search — deferred pending measurement
+### Phase 2: bounded source-text search — complete
 
 Add a separate exact text-search capability only after measuring the need and
 the cost. It answers questions semantic search cannot answer, such as:
@@ -114,14 +114,24 @@ The result should contain a logical path, exact line/range, bounded excerpt,
 source generation, and a copy-ready read handoff. It must be labelled as text
 evidence and must not return symbol references or imply semantic resolution.
 
-The initial public surface should remain scoped to one authoritative corpus,
-for example `search_game_data_text`. Do not introduce a federated
-`search_everything` or `search_reference` facade while the current separate
-authority model is still being evaluated. A future shared lexical contract is
-possible only if relevance, availability, provenance, and result shape are
-shown to be materially compatible. This repository does not currently contain
-a representative extracted Game Data text corpus and benchmark fixture for
-that decision, so no text-search tool is added in this ticket.
+The implementation exposes two corpus-specific tools:
+`search_workspace_text` and `search_game_data_text`. They intentionally accept
+the same small request shape - literal `query`, bounded `limit`, and an opaque
+revision-bound `cursor` - but remain separate authorities. The scan is explicit,
+case-sensitive, deterministic, cancellable, and bounded; it includes comments,
+strings, expressions, and local-variable uses without adding those facts to the
+persistent semantic index. Official Wiki is excluded from this mode because
+its own lexical search and provenance rules remain the correct documentation
+path.
+
+The Live MCP Search UI exposes this as an explicit Text mode. Typing does not
+start a scan in Text mode; Enter and other explicit search actions do. Text
+results preserve the current result pane while a new request is running, show
+the matched source line and exact literal range, and report scan statistics in
+the existing Ctrl+F3 diagnostic snapshot. The first implementation uses an
+on-demand bounded scan with a small revision-local page cache rather than a
+persistent text index. A representative ten-thousand-file benchmark remains
+a follow-up measurement before choosing an inverted or trigram index.
 
 ### Phase 3: evaluate freshness and retrieval quality
 
@@ -160,7 +170,7 @@ The MCP server instructions should state this directly:
 | Find a source-backed implementation pattern | Game Data example search |
 | Read exact source context | The returned source-read handoff |
 | Find a documented workflow or Workbench procedure | Official Wiki search, then Wiki read |
-| Find arbitrary literals, comments, or unresolved text | Corpus-specific text search once Phase 2 exists |
+| Find arbitrary literals, comments, or unresolved text | Explicit corpus-specific text search |
 
 This is a documentation and prompt concern, not justification for a generic
 MCP routing tool.
@@ -193,8 +203,13 @@ MCP routing tool.
 
 - Text hits are clearly distinguished from semantic declarations.
 - Exact ranges and excerpts are stable for one source generation.
-- The search is measured against a representative corpus before introducing a
-  persistent text index or broader federation.
+- Workspace and Game Data use separate tools and no Wiki text scan is exposed.
+- Scans are bounded, cancellable, deterministic, and expose source-read
+  failures, file/match counts, truncation, elapsed scan time, scope, and
+  revision in the result diagnostics.
+- The UI uses explicit Text mode and does not scan on every keystroke.
+- A representative ten-thousand-file performance measurement remains before
+  introducing a persistent text index or broader federation.
 
 ## Non-goals
 
@@ -207,7 +222,7 @@ MCP routing tool.
 - No new manager, registry, or evidence-provider abstraction without two real
   adapters requiring it.
 
-## Open questions before implementation
+## Follow-up questions after implementation
 
 1. Should workspace MCP search expose only the project layer, or the project
    layer plus selected loaded dependencies? The default should be project-only
@@ -217,9 +232,9 @@ MCP routing tool.
    result cannot be opened.
 3. Which Wiki match evidence is most useful in practice: a single matched line,
    a centered excerpt, or multiple bounded match ranges?
-4. Is a full-text scan within the five-second ready-operation budget on the
-   representative Game Data corpus? If not, measure an inverted/trigram index
-   before choosing a storage design.
+4. What are the scan and page latencies on a representative ten-thousand-file
+   corpus, including cold source reads and repeated cursor pages? Use the
+   Ctrl+F3 snapshot fields before choosing an inverted/trigram index.
 5. Which example topics should be promoted first, based on real AI workflows,
    rather than expanding the hard-coded catalogue indiscriminately?
 
@@ -229,7 +244,8 @@ Proceed in this order:
 
 1. Fix Phase 0 contract and evidence issues.
 2. Add workspace semantic search through the shared Rust language layer.
-3. Measure and add corpus-specific text search if the evidence gap remains.
+3. Measure the bounded text-search implementation on a representative corpus
+   before considering a persistent lexical index.
 4. Treat Wiki freshness as a separate acquisition/revision project.
 
 This preserves the repository's central invariant: one authoritative answer per

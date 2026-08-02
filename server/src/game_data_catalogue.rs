@@ -18,6 +18,10 @@ use crate::index_cache::{
     IndexCacheTimings, RuntimeIndexSummary, SourceFingerprint,
 };
 use crate::model::SymbolKind;
+use crate::text_search::{
+    page as page_text, scan as scan_text, TextSearchCorpus, TextSearchError, TextSearchPage,
+    TextSearchRequest, TextSearchResultSet, TextSource,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -39,6 +43,7 @@ pub struct GameDataCatalogueConfig {
 pub struct GameDataCatalogue {
     config: GameDataCatalogueConfig,
     state: Mutex<Option<GameDataCatalogueState>>,
+    text_search_cache: Mutex<BTreeMap<(String, String), Arc<TextSearchResultSet>>>,
     initialized: AtomicBool,
     #[cfg(all(feature = "test-hooks", debug_assertions))]
     panic_once: std::sync::atomic::AtomicBool,
@@ -57,6 +62,7 @@ impl GameDataCatalogue {
         Self {
             config,
             state: Mutex::new(None),
+            text_search_cache: Mutex::new(BTreeMap::new()),
             initialized: AtomicBool::new(false),
             #[cfg(all(feature = "test-hooks", debug_assertions))]
             panic_once: std::sync::atomic::AtomicBool::new(
@@ -120,6 +126,123 @@ impl GameDataCatalogue {
             request,
         )
         .map_err(GameDataCatalogueSearchError::Search)
+    }
+
+    pub fn search_text(
+        &self,
+        control: &IndexBuildControl,
+        request: TextSearchRequest,
+    ) -> Result<TextSearchPage, GameDataCatalogueTextSearchError> {
+        self.before_operation(control)
+            .map_err(GameDataCatalogueTextSearchError::Initialization)?;
+        let status = self
+            .status(control)
+            .map_err(GameDataCatalogueTextSearchError::Initialization)?;
+        if !status.available {
+            return Err(GameDataCatalogueTextSearchError::Unavailable);
+        }
+        let revision = status
+            .catalogue_revision
+            .clone()
+            .ok_or(GameDataCatalogueTextSearchError::Unavailable)?;
+        let cache_key = (revision.clone(), request.query.clone());
+        if let Some(result_set) = self
+            .text_search_cache
+            .lock()
+            .unwrap()
+            .get(&cache_key)
+            .cloned()
+        {
+            return page_text(&result_set, control, request)
+                .map_err(GameDataCatalogueTextSearchError::TextSearch);
+        }
+        let state = self
+            .lock_state(control)
+            .map_err(GameDataCatalogueTextSearchError::Initialization)?;
+        let snapshot = state
+            .as_ref()
+            .ok_or(GameDataCatalogueTextSearchError::Unavailable)?;
+        let index = snapshot
+            .index
+            .clone()
+            .ok_or(GameDataCatalogueTextSearchError::Unavailable)?;
+        let cache_path = if index
+            .files()
+            .iter()
+            .any(|file| file.metadata.virtual_source.is_some())
+        {
+            Some(
+                resolve_current_index_pointer(
+                    self.config
+                        .cache_path
+                        .as_ref()
+                        .ok_or(GameDataCatalogueTextSearchError::Unavailable)?,
+                )
+                .map_err(GameDataCatalogueTextSearchError::Initialization)?,
+            )
+        } else {
+            None
+        };
+        drop(state);
+
+        let mut sources = Vec::new();
+        let mut source_read_failures = 0;
+        for file in index.files() {
+            control.check().map_err(|_| {
+                GameDataCatalogueTextSearchError::TextSearch(TextSearchError::Cancelled)
+            })?;
+            let Some(relative_path) = file
+                .metadata
+                .relative_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().replace('\\', "/"))
+            else {
+                source_read_failures += 1;
+                continue;
+            };
+            let source = if let Some(virtual_source) = &file.metadata.virtual_source {
+                cache_path
+                    .as_ref()
+                    .and_then(|path| read_cached_virtual_source(&virtual_source.uri, path).ok())
+            } else if let Some(path) = &file.metadata.absolute_path {
+                fs::read(path)
+                    .ok()
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            } else {
+                None
+            };
+            let Some(source) = source else {
+                source_read_failures += 1;
+                continue;
+            };
+            sources.push(TextSource {
+                relative_path,
+                content: Arc::<str>::from(source),
+            });
+        }
+        let result_set = scan_text(
+            TextSearchCorpus {
+                files_considered: index.files().len(),
+                sources,
+                source_read_failures,
+            },
+            control,
+            &revision,
+            &request.query,
+        )
+        .map_err(GameDataCatalogueTextSearchError::TextSearch)
+        .map(Arc::new)?;
+        let mut cache = self.text_search_cache.lock().unwrap();
+        cache.insert(cache_key, result_set.clone());
+        while cache.len() > 8 {
+            let oldest = cache.keys().next().cloned();
+            if let Some(oldest) = oldest {
+                cache.remove(&oldest);
+            }
+        }
+        drop(cache);
+        page_text(&result_set, control, request)
+            .map_err(GameDataCatalogueTextSearchError::TextSearch)
     }
 
     pub fn inspect(
@@ -365,6 +488,13 @@ pub enum GameDataCatalogueSearchError {
     Initialization(String),
     Unavailable,
     Search(GameDataSearchError),
+}
+
+#[derive(Debug)]
+pub enum GameDataCatalogueTextSearchError {
+    Initialization(String),
+    Unavailable,
+    TextSearch(TextSearchError),
 }
 
 #[derive(Debug)]

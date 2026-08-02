@@ -15,6 +15,10 @@ use crate::index_build::{
     build_index_with_control, IndexBuildConfig, IndexBuildControl, IndexSourceRoot,
 };
 use crate::model::{SourceKind, SOURCE_PRIORITY_WORKSPACE};
+use crate::text_search::{
+    page as page_text, scan as scan_text, TextSearchCorpus, TextSearchError, TextSearchPage,
+    TextSearchRequest, TextSearchResultSet, TextSource,
+};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
@@ -30,6 +34,7 @@ pub struct WorkspaceCatalogueConfig {
 pub struct WorkspaceCatalogue {
     config: WorkspaceCatalogueConfig,
     snapshot: Mutex<Option<Arc<WorkspaceSnapshot>>>,
+    text_search_cache: Mutex<BTreeMap<(String, String), Arc<TextSearchResultSet>>>,
 }
 
 #[derive(Debug)]
@@ -45,6 +50,7 @@ pub enum WorkspaceCatalogueError {
     Unavailable,
     Initialization(String),
     Search(GameDataSearchError),
+    TextSearch(TextSearchError),
     Inspection(GameDataInspectionError),
     Research(GameDataResearchError),
 }
@@ -54,6 +60,7 @@ impl WorkspaceCatalogue {
         Self {
             config,
             snapshot: Mutex::new(None),
+            text_search_cache: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -75,6 +82,65 @@ impl WorkspaceCatalogue {
             request,
         )
         .map_err(WorkspaceCatalogueError::Search)
+    }
+
+    pub fn search_text(
+        &self,
+        control: &IndexBuildControl,
+        request: TextSearchRequest,
+    ) -> Result<TextSearchPage, WorkspaceCatalogueError> {
+        let snapshot = self.snapshot(control)?;
+        let cache_key = (snapshot.revision.clone(), request.query.clone());
+        if let Some(result_set) = self
+            .text_search_cache
+            .lock()
+            .unwrap()
+            .get(&cache_key)
+            .cloned()
+        {
+            return page_text(&result_set, control, request)
+                .map_err(WorkspaceCatalogueError::TextSearch);
+        }
+        let sources = snapshot
+            .index
+            .files()
+            .iter()
+            .filter_map(|file| {
+                let relative_path = file
+                    .metadata
+                    .relative_path
+                    .as_ref()?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let content = snapshot.sources.get(&file.id)?.clone();
+                Some(TextSource {
+                    relative_path,
+                    content,
+                })
+            })
+            .collect();
+        let result_set = scan_text(
+            TextSearchCorpus {
+                files_considered: snapshot.index.files().len(),
+                sources,
+                source_read_failures: 0,
+            },
+            control,
+            &snapshot.revision,
+            &request.query,
+        )
+        .map_err(WorkspaceCatalogueError::TextSearch)
+        .map(Arc::new)?;
+        let mut cache = self.text_search_cache.lock().unwrap();
+        cache.insert(cache_key, result_set.clone());
+        while cache.len() > 8 {
+            let oldest = cache.keys().next().cloned();
+            if let Some(oldest) = oldest {
+                cache.remove(&oldest);
+            }
+        }
+        drop(cache);
+        page_text(&result_set, control, request).map_err(WorkspaceCatalogueError::TextSearch)
     }
 
     pub fn inspect(
@@ -246,6 +312,19 @@ mod tests {
             .unwrap()
             .next_cursor
             .is_none());
+        let text = catalogue
+            .search_text(
+                &control,
+                TextSearchRequest {
+                    query: "void Run".to_string(),
+                    limit: Some(10),
+                    cursor: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(text.total, 1);
+        assert_eq!(text.results[0].relative_path, "Example.c");
+        assert_eq!(text.results[0].match_range.start_line, 1);
         fs::remove_dir_all(root).unwrap();
     }
 
