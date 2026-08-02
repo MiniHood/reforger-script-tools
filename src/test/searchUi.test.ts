@@ -142,8 +142,8 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /data-mode="semantic"/);
 		assert.match(searchUiSource, /data-mode="text"/);
 		assert.match(searchUiSource, /state\.mode === 'text' \? '' : resultTypes/);
-		assert.match(searchUiSource, /if \(state\.mode === 'text'\) return/);
-		assert.match(searchUiSource, /clearTimeout\(searchTimer\); if \(state\.mode === 'text'\) return/);
+		assert.match(searchUiSource, /query\.addEventListener\('input', event => \{ state\.query = event\.target\.value; if \(state\.mode !== 'text'\) search\(true\); \}\)/);
+		assert.doesNotMatch(searchUiSource, /searchTimer|scheduleSearch/);
 		assert.match(searchUiSource, /searchMode: state\.mode/);
 		assert.match(searchClientSource, /search_workspace_text/);
 		assert.match(searchClientSource, /search_game_data_text/);
@@ -432,8 +432,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /Math\.min\(sourcePreviewWorkerCount, previewHits\.length\)/);
 		assert.match(searchUiSource, /const previewUpdateBatchSize = 4;/);
 		assert.match(searchUiSource, /pendingRawPreviewIds\.length >= previewUpdateBatchSize/);
-		assert.match(searchUiSource, /setTimeout\(\(\) => search\(true\), 100\)/);
-		assert.doesNotMatch(searchUiSource, /setTimeout\(\(\) => search\(true\), 260\)/);
+		assert.doesNotMatch(searchUiSource, /setTimeout\(\(\) => search\(true\), \d+\)/);
 		assert.match(searchClientSource, /export const maxSearchPages = searchLimits\.maxPages;/);
 		assert.match(searchClientSource, /paginationMode: 'offset'/);
 		assert.match(searchClientSource, /export interface SearchPerformance/);
