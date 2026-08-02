@@ -343,6 +343,12 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /phase: 'semantic'/);
 		assert.match(searchUiSource, /lastSemanticMessageMs/);
 		assert.match(searchUiSource, /state\.previewPerformance = message\.performance \?\? state\.previewPerformance/);
+		assert.match(searchUiSource, /data-result-preview="' \+ esc\(result\.id\) \+ '"/);
+		assert.match(searchUiSource, /const updateResultPreviews = ids =>/);
+		assert.match(searchUiSource, /state\.matchRanges = \{ \.\.\.state\.matchRanges, \.\.\.\(message\.matches \?\? \{\}\) \}; updateResultPreviews\(Object\.keys\(message\.previews \?\? \{\}\)\);/);
+		assert.match(searchUiSource, /state\.semanticPreviews = \{ \.\.\.state\.semanticPreviews, \.\.\.\(message\.previews \?\? \{\}\) \}; updateResultPreviews\(Object\.keys\(message\.previews \?\? \{\}\)\);/);
+		assert.doesNotMatch(searchUiSource, /state\.matchRanges = \{ \.\.\.state\.matchRanges, \.\.\.\(message\.matches \?\? \{\}\) \}; render\(\);/);
+		assert.doesNotMatch(searchUiSource, /state\.semanticPreviews = \{ \.\.\.state\.semanticPreviews, \.\.\.\(message\.previews \?\? \{\}\) \}; render\(\);/);
 	});
 
 	test('opens result cards while preserving text selection and the Wiki page action', () => {
