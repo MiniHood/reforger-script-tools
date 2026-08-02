@@ -152,6 +152,10 @@ extension provides those documents by asking Rust to decode exactly one PAC
 entry on demand. Rust verifies that the pack artifact still matches the
 captured revision before decoding, preserving logical file boundaries and
 snapshot correctness without materializing 6,495 physical files.
+Loose indexed add-on scripts retain their existing `file:` editor identity in
+semantic search handoffs. Search previews and result opening therefore analyze
+and navigate the complete physical document, while bounded MCP source reads
+remain the evidence-transfer contract for callers that do not open an editor.
 
 The packaged executable also has an independent MCP mode. An MCP client starts
 its own local `stdio` process; it neither attaches to the editor-owned LSP nor

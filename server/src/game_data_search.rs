@@ -6,6 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use url::Url;
 
 pub const DEFAULT_LIMIT: usize = 20;
 pub const MAX_LIMIT: usize = 100;
@@ -773,7 +774,14 @@ fn project_hit(
         .metadata
         .virtual_source
         .as_ref()
-        .map(|source| source.uri.clone());
+        .map(|source| source.uri.clone())
+        .or_else(|| {
+            file.metadata
+                .absolute_path
+                .as_ref()
+                .and_then(|path| Url::from_file_path(path).ok())
+                .map(|uri| uri.to_string())
+        });
     GameDataSearchHit {
         inspect_input: InspectInput {
             symbol_ref: symbol_ref.clone(),

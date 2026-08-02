@@ -111,7 +111,7 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 	panel.webview.html = renderSearchUi(panel.webview);
 	const indexModeSubscription = vscode.workspace.onDidChangeConfiguration(event => {
 		if (event.affectsConfiguration(`${workbenchConfig.section}.${workbenchConfig.settings.externalIndexMode}`)) {
-			void refreshSearchScope(context, active, true);
+			void refreshSearchScope(context, active);
 		}
 	});
 	panel.webview.onDidReceiveMessage(message => {
@@ -134,7 +134,6 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 async function restartSearchScopeForIndexMode(
 	context: vscode.ExtensionContext,
 	active: ActiveSearch,
-	refreshSearch: boolean,
 ): Promise<void> {
 	active.previewCancellation?.cancel();
 	active.previewCancellation?.dispose();
@@ -151,19 +150,18 @@ async function restartSearchScopeForIndexMode(
 			// A failed or already-closed process is replaced below.
 		}
 	}
-	await publishSearchScope(context, active, refreshSearch);
+	await publishSearchScope(context, active, true);
 }
 
 async function refreshSearchScope(
 	context: vscode.ExtensionContext,
 	active: ActiveSearch,
-	refreshSearch: boolean,
 ): Promise<void> {
 	if (active.scopeRefresh) {
 		await active.scopeRefresh;
 		return;
 	}
-	const refresh = restartSearchScopeForIndexMode(context, active, refreshSearch);
+	const refresh = restartSearchScopeForIndexMode(context, active);
 	active.scopeRefresh = refresh;
 	try {
 		await refresh;
@@ -198,10 +196,6 @@ async function handleMessage(
 			line: numberField(message.line),
 			column: numberField(message.column),
 		});
-		return;
-	}
-	if (message.type === 'refreshScope') {
-		await refreshSearchScope(context, active, false);
 		return;
 	}
 	if (message.type === 'debugSnapshot') {
@@ -811,10 +805,11 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 		const client = await getClientFromActive(active);
 		diagnostic('searchUi.resultOpenStarted', { source: hit.source, kind: hit.kind });
 		const sourcePath = await client.resolveSourcePath(hit);
+		const sourceUri = hit.sourceUri ? vscode.Uri.parse(hit.sourceUri, true) : undefined;
 		let opened: vscode.TextDocument;
 		let boundedDocument: SearchDocument | undefined;
-		if (hit.sourceUri) {
-			opened = await vscode.workspace.openTextDocument(vscode.Uri.parse(hit.sourceUri, true));
+		if (sourceUri) {
+			opened = await vscode.workspace.openTextDocument(sourceUri);
 		} else if (sourcePath) {
 			opened = await vscode.workspace.openTextDocument(vscode.Uri.file(sourcePath));
 		} else {
@@ -839,7 +834,7 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 			await vscode.commands.executeCommand('markdown.showPreview', documentWithLanguage.uri);
 			diagnostic('searchUi.resultOpenCompleted', {
 				source: hit.source,
-				physicalDocument: Boolean(sourcePath),
+				physicalDocument: Boolean(sourcePath) || sourceUri?.scheme === 'file',
 				markdownPreview: true,
 			});
 			return;
@@ -850,7 +845,7 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 		editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
 		diagnostic('searchUi.resultOpenCompleted', {
 			source: hit.source,
-			physicalDocument: Boolean(sourcePath),
+			physicalDocument: Boolean(sourcePath) || sourceUri?.scheme === 'file',
 			markdownPreview: false,
 		});
 	} catch (error) {
@@ -1243,7 +1238,7 @@ function render(focusQuery = true) {
   document.querySelectorAll('[data-text-option]').forEach(element => element.addEventListener('change', () => { state[element.dataset.textOption] = element.checked; search(true); }));
   document.querySelectorAll('[data-mode]').forEach(element => element.addEventListener('click', () => { state.mode = element.dataset.mode === 'text' ? 'text' : 'semantic'; state.page = 1; search(true); }));
   document.querySelectorAll('[data-type]').forEach(element => element.addEventListener('click', () => { state.type = element.dataset.type; state.page = 1; search(true); }));
-  document.querySelectorAll('[data-scope-open]').forEach(element => element.addEventListener('click', () => { if (!state.scopeOpen) vscode.postMessage({ type: 'refreshScope' }); state.scopeOpen = !state.scopeOpen; render(false); }));
+  document.querySelectorAll('[data-scope-open]').forEach(element => element.addEventListener('click', () => { state.scopeOpen = !state.scopeOpen; render(false); }));
   document.querySelectorAll('[data-scope-choice]').forEach(element => element.addEventListener('change', () => { state.selectionTouched = true; state.selectedScopeIds = element.checked ? [...new Set([...state.selectedScopeIds, element.dataset.scopeChoice])] : state.selectedScopeIds.filter(value => value !== element.dataset.scopeChoice); render(false); search(true); }));
   document.querySelectorAll('[data-scope-all]').forEach(element => element.addEventListener('click', () => { const eligible = eligibleScopeSources(); const allSelected = allEligibleScopesSelected(); const eligibleIds = new Set(eligible.map(source => source.id)); state.selectionTouched = true; state.selectedScopeIds = allSelected ? state.selectedScopeIds.filter(id => !eligibleIds.has(id)) : [...new Set([...state.selectedScopeIds, ...eligibleIds])]; render(false); search(true); }));
   document.querySelectorAll('[data-scope-filter]').forEach(element => element.addEventListener('input', () => { state.scopeFilter = element.value; render(false); const filter = document.querySelector('[data-scope-filter]'); if (filter) { filter.focus(); filter.setSelectionRange(filter.value.length, filter.value.length); } }));

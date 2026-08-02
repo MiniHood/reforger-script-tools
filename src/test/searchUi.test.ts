@@ -167,9 +167,8 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /data-scope-choice/);
 		assert.match(searchUiSource, /data-scope-all/);
 		assert.doesNotMatch(searchUiSource, /data-scope-refresh/);
-		assert.match(searchUiSource, /message\.type === 'refreshScope'/);
 		assert.match(searchUiSource, /async function refreshSearchScope/);
-		assert.match(searchUiSource, /if \(!state\.scopeOpen\) vscode\.postMessage\(\{ type: 'refreshScope' \}\)/);
+		assert.doesNotMatch(searchUiSource, /type: 'refreshScope'/);
 		assert.match(searchUiSource, /scopeRefresh: Promise<void> \| undefined/);
 		assert.match(searchUiSource, /<div class="scope-actions"><input class="addon-filter"[\s\S]*?<button type="button" data-scope-all>/);
 		assert.match(searchUiSource, /Select all/);
@@ -208,13 +207,14 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /SEARCH SCOPE<\/div>' \+ searchScope\(\) \+ '<div class="group-label">SEARCH MODE<\/div>' \+ modeButtons\(\)/);
 	});
 
-	test('does not rerun an active search when refreshed scope selection is unchanged', () => {
+	test('keeps opening and closing Search Scope presentation-only', () => {
+		assert.doesNotMatch(searchUiSource, /type: 'refreshScope'/);
 		assert.match(searchUiSource, /const scopeSelectionChanged =/);
 		assert.match(searchUiSource, /const scopeRevisionChanged =/);
 		assert.match(searchUiSource, /const scopeSearchChanged = scopeSelectionChanged \|\| scopeRevisionChanged/);
 		assert.match(searchUiSource, /if \(message\.refreshSearch === true && scopeSearchChanged && state\.query\.trim\(\)\) search\(true\)/);
-		assert.match(searchUiSource, /message\.type === 'refreshScope'[\s\S]*?refreshSearchScope\(context, active, false\)/);
-		assert.match(searchUiSource, /affectsConfiguration[\s\S]*?refreshSearchScope\(context, active, true\)/);
+		assert.match(searchUiSource, /affectsConfiguration[\s\S]*?refreshSearchScope\(context, active\)/);
+		assert.match(searchUiSource, /\[data-scope-open\][\s\S]*?state\.scopeOpen = !state\.scopeOpen; render\(false\)/);
 		assert.doesNotMatch(searchUiSource, /render\(false\); if \(state\.query\.trim\(\)\) search\(true\); return;/);
 	});
 
@@ -225,7 +225,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /dependencyProjectFiles: await discoverWorkspaceProjectFiles\(\)/);
 		assert.match(searchClientSource, /this\.options\.dependencyProjectFiles\.flatMap\(projectFile => \['--dependency-project', projectFile\]\)/);
 		assert.match(searchUiSource, /affectsConfiguration\(`\$\{workbenchConfig\.section\}\.\$\{workbenchConfig\.settings\.externalIndexMode\}`\)/);
-		assert.match(searchUiSource, /restartSearchScopeForIndexMode\(context, active, refreshSearch\)/);
+		assert.match(searchUiSource, /restartSearchScopeForIndexMode\(context, active\)/);
 		assert.match(searchUiSource, /\(await previousClient\)\.dispose\(\)/);
 	});
 
@@ -307,6 +307,7 @@ suite('Reforger search UI MCP mapping', () => {
 				symbolRef: 'sr2:addon-symbol',
 				addonGuid: 'A1B2C3D4E5F60718',
 				addonLabel: 'Example Add-on',
+				sourceUri: 'file:///C:/Addons/Example/Scripts/SCR_AddonClass.c',
 				readSourceInput: {
 					catalogueRevision: 'gd2:revision',
 					addonGuid: 'A1B2C3D4E5F60718',
@@ -318,6 +319,7 @@ suite('Reforger search UI MCP mapping', () => {
 
 		assert.strictEqual(results[0].addonGuid, 'A1B2C3D4E5F60718');
 		assert.strictEqual(results[0].addonLabel, 'Example Add-on');
+		assert.strictEqual(results[0].sourceUri, 'file:///C:/Addons/Example/Scripts/SCR_AddonClass.c');
 		assert.strictEqual(results[0].readInput.addonGuid, 'A1B2C3D4E5F60718');
 		assert.match(results[0].id, /A1B2C3D4E5F60718/);
 	});

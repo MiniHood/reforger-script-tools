@@ -158,6 +158,47 @@ fn search_ranks_exact_names_before_other_semantic_matches() {
 }
 
 #[test]
+fn loose_source_search_publishes_the_full_file_editor_identity() {
+    let fixture = TempFixture::new("loose-source-uri");
+    let scripts = fixture.path.join("Game");
+    fs::create_dir_all(&scripts).expect("create scripts");
+    let source_path = scripts.join("Loose.c");
+    fs::write(
+        &source_path,
+        "class LooseSource { void Test_Callback() {} }\n",
+    )
+    .expect("write loose source");
+    let index = build_index(&IndexBuildConfig {
+        roots: vec![IndexSourceRoot::new(
+            &fixture.path,
+            SourceKind::GameData,
+            SOURCE_PRIORITY_GAME_DATA,
+        )],
+    })
+    .expect("index")
+    .index;
+
+    let page = search(
+        &index,
+        &line_starts(&index),
+        &IndexBuildControl::default(),
+        "gd1:test",
+        GameDataSearchRequest::new("Test_Callback"),
+    )
+    .expect("search succeeds");
+
+    assert_eq!(page.total, 1);
+    assert_eq!(
+        page.results[0].source_uri.as_deref(),
+        Some(
+            url::Url::from_file_path(&source_path)
+                .expect("file URI")
+                .as_str()
+        )
+    );
+}
+
+#[test]
 fn identifier_prefix_search_does_not_return_hidden_context_matches() {
     let fixture = TempFixture::new("search-identifier-prefix");
     let scripts = fixture.path.join("Game");
