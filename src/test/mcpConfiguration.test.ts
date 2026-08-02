@@ -80,6 +80,21 @@ suite('MCP configuration', () => {
 		]);
 	});
 
+	test('passes opened workspace projects to loaded dependency scope discovery', () => {
+		const launch = buildMcpLaunchConfiguration({
+			serverPath: '/extension/reforger_language_server',
+			addonSourceInventory: '/storage/graph.json',
+			addonIndexStorage: '/storage/addon-indexes',
+			externalIndexMode: 'loaded',
+			dependencyProjectFiles: ['/projects/CurrentAddon/addon.gproj'],
+		});
+
+		assert.deepStrictEqual(launch.args.slice(-2), [
+			'--dependency-project',
+			'/projects/CurrentAddon/addon.gproj',
+		]);
+	});
+
 	test('renders generic JSON and Codex TOML from the same launch', () => {
 		const launch = {
 			command: 'C:\\Extension\\reforger_language_server.exe',

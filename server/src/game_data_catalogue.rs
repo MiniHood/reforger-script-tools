@@ -1,7 +1,7 @@
 use crate::addon_sources::{
-    load_all_cached_addon_indexes, read_cached_loaded_addon_indexes, read_cached_virtual_source,
-    read_cached_virtual_sources, LoadedAddonIndexInstance, LoadedAddonIndexResult, BASE_GAME_GUID,
-    ENFUSION_CORE_GUID,
+    load_all_cached_addon_indexes, load_cached_dependency_addon_indexes,
+    read_cached_loaded_addon_indexes, read_cached_virtual_source, read_cached_virtual_sources,
+    LoadedAddonIndexInstance, LoadedAddonIndexResult, BASE_GAME_GUID, ENFUSION_CORE_GUID,
 };
 use crate::game_data_inspection::{
     inspect, read_source as read_source_evidence, GameDataInspectionError,
@@ -55,6 +55,7 @@ pub struct GameDataCatalogueConfig {
     pub addon_index_storage: Option<PathBuf>,
     pub external_index_mode: GameDataExternalIndexMode,
     pub workspace_roots: Vec<PathBuf>,
+    pub dependency_project_files: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -801,6 +802,34 @@ fn initialize_catalogue(
         return Ok(ready_layered_state(loaded));
     }
 
+    if !config.dependency_project_files.is_empty() {
+        let Some(storage) = config.addon_index_storage.as_ref() else {
+            return Ok(unavailable_state(
+                source,
+                started.elapsed(),
+                "game_data_addon_scope_not_configured",
+                "The parser-owned add-on index storage is not configured.",
+                "Regenerate the MCP configuration from the extension.",
+            ));
+        };
+        let loaded = load_cached_dependency_addon_indexes(
+            &config.dependency_project_files,
+            storage,
+            &config.workspace_roots,
+            control,
+        )?;
+        if loaded.loaded_instances == 0 {
+            return Ok(unavailable_state(
+                source,
+                started.elapsed(),
+                "game_data_addon_scope_unavailable",
+                "No compatible indexed dependencies are available for the opened workspace project.",
+                "Activate the language server so it indexes the workspace project dependencies, then restart MCP.",
+            ));
+        }
+        return Ok(ready_layered_state(loaded));
+    }
+
     match (&config.addon_source_inventory, &config.addon_index_storage) {
         (Some(inventory), Some(storage)) => {
             let loaded = read_cached_loaded_addon_indexes(
@@ -1344,6 +1373,103 @@ mod tests {
             .addons
             .iter()
             .any(|addon| addon.addon_guid == "2222222222222222"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn loaded_mode_prefers_opened_project_dependencies_over_an_unrelated_graph() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "reforger_game_data_dependency_scope_{}_{}",
+            std::process::id(),
+            nonce
+        ));
+        let unrelated = root.join("unrelated");
+        let dependency = root.join("dependency");
+        let workspace = root.join("workspace");
+        for source_root in [&unrelated, &dependency] {
+            fs::create_dir_all(source_root.join("Scripts")).unwrap();
+        }
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            unrelated.join("Scripts/Unrelated.c"),
+            "class Unrelated {}\n",
+        )
+        .unwrap();
+        fs::write(
+            dependency.join("Scripts/Dependency.c"),
+            "class Dependency {}\n",
+        )
+        .unwrap();
+        let graph = root.join("graph.json");
+        let storage = root.join("indexes");
+        let addon = |guid: &str, id: &str, source_root: &Path| {
+            serde_json::json!({
+                "guid": guid,
+                "id": id,
+                "title": id,
+                "sourceRoot": source_root,
+            })
+        };
+        fs::write(
+            &graph,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "reforger-workbench-loaded-addon-graph-v1",
+                "bridgeVersion": "1.52.0",
+                "protocolVersion": 1,
+                "addons": [
+                    addon("1111111111111111", "Unrelated", &unrelated),
+                    addon("2222222222222222", "Dependency", &dependency),
+                ],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        load_or_build_loaded_addon_indexes(&graph, &storage, &[], &IndexBuildControl::default())
+            .unwrap();
+        fs::write(
+            &graph,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "reforger-workbench-loaded-addon-graph-v1",
+                "bridgeVersion": "1.52.0",
+                "protocolVersion": 1,
+                "addons": [addon("1111111111111111", "Unrelated", &unrelated)],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let project = workspace.join("addon.gproj");
+        fs::write(
+            &project,
+            "GameProject {\n GUID \"AAAAAAAAAAAAAAAA\"\n Dependencies {\n  \"2222222222222222\"\n }\n}",
+        )
+        .unwrap();
+
+        let status = GameDataCatalogue::new(GameDataCatalogueConfig {
+            addon_source_inventory: Some(graph),
+            addon_index_storage: Some(storage),
+            dependency_project_files: vec![project],
+            external_index_mode: GameDataExternalIndexMode::Loaded,
+            ..GameDataCatalogueConfig::default()
+        })
+        .status(&IndexBuildControl::default())
+        .unwrap();
+
+        assert_eq!(
+            status.scope_authority.as_deref(),
+            Some("project-dependencies-provisional")
+        );
+        assert!(status
+            .addons
+            .iter()
+            .any(|addon| addon.addon_guid == "2222222222222222"));
+        assert!(!status
+            .addons
+            .iter()
+            .any(|addon| addon.addon_guid == "1111111111111111"));
         let _ = fs::remove_dir_all(root);
     }
 

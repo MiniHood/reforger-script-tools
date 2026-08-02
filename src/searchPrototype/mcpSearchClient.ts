@@ -234,6 +234,7 @@ export interface McpSearchClientOptions {
 	addonIndexStorage: string;
 	externalIndexMode: ExternalIndexMode;
 	workspaceScripts: string[];
+	dependencyProjectFiles: string[];
 	officialWikiRoot: string;
 }
 
@@ -571,6 +572,7 @@ export class McpSearchClient {
 			'--official-wiki-root',
 			this.options.officialWikiRoot,
 			...this.options.workspaceScripts.flatMap(root => ['--workspace-scripts', root]),
+			...this.options.dependencyProjectFiles.flatMap(projectFile => ['--dependency-project', projectFile]),
 		];
 		const child = spawn(this.options.serverPath, args, {
 			stdio: ['pipe', 'pipe', 'pipe'],

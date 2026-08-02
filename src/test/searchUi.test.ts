@@ -194,6 +194,8 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchClientSource, /externalIndexMode: ExternalIndexMode/);
 		assert.match(searchClientSource, /'--external-index-mode',[\s\S]*?this\.options\.externalIndexMode/);
 		assert.match(searchUiSource, /externalIndexMode: readExternalIndexMode\(\)/);
+		assert.match(searchUiSource, /dependencyProjectFiles: await discoverWorkspaceProjectFiles\(\)/);
+		assert.match(searchClientSource, /this\.options\.dependencyProjectFiles\.flatMap\(projectFile => \['--dependency-project', projectFile\]\)/);
 		assert.match(searchUiSource, /affectsConfiguration\(`\$\{workbenchConfig\.section\}\.\$\{workbenchConfig\.settings\.externalIndexMode\}`\)/);
 		assert.match(searchUiSource, /restartSearchScopeForIndexMode\(context, active\)/);
 		assert.match(searchUiSource, /\(await previousClient\)\.dispose\(\)/);

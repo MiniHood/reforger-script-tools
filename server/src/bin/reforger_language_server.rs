@@ -364,6 +364,11 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
             "--workspace-scripts" => {
                 workspace_scripts.push(path_value(&mut args, "--workspace-scripts")?);
             }
+            "--dependency-project" => {
+                game_data
+                    .dependency_project_files
+                    .push(path_value(&mut args, "--dependency-project")?);
+            }
             "--workbench-host" => {
                 workbench.gateway.host = string_value(&mut args, "--workbench-host")?
             }
@@ -420,7 +425,7 @@ fn string_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<S
 
 fn print_help() {
     println!(
-        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server mcp-api-bundle\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|read-logs|integration-status|bootstrap-integration|maintain-integration|process-status|launch-default|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --external-index-mode <all|loaded|none>\n  --index-cache <legacy single-cache path>\n  --workspace-scripts <path> (repeatable)\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <test/development override>"
+        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server mcp-api-bundle\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|read-logs|integration-status|bootstrap-integration|maintain-integration|process-status|launch-default|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --dependency-project <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --external-index-mode <all|loaded|none>\n  --index-cache <legacy single-cache path>\n  --workspace-scripts <path> (repeatable)\n  --dependency-project <path> (repeatable)\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <test/development override>"
     );
 }
 
@@ -591,6 +596,31 @@ mod tests {
         };
         assert_eq!(
             options.dependency_project_files,
+            vec![
+                PathBuf::from("one/addon.gproj"),
+                PathBuf::from("two/addon.gproj")
+            ]
+        );
+    }
+
+    #[test]
+    fn mcp_accepts_repeatable_dependency_project_files() {
+        let mode = parse_args_from(
+            [
+                "mcp".to_string(),
+                "--dependency-project".to_string(),
+                "one/addon.gproj".to_string(),
+                "--dependency-project".to_string(),
+                "two/addon.gproj".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("valid MCP dependency project arguments");
+        let ServerMode::Mcp(options) = mode else {
+            panic!("expected MCP mode");
+        };
+        assert_eq!(
+            options.game_data.dependency_project_files,
             vec![
                 PathBuf::from("one/addon.gproj"),
                 PathBuf::from("two/addon.gproj")

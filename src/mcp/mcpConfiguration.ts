@@ -10,7 +10,7 @@ import {
 	workbenchDefaults,
 } from '../extensionConfig/workbench';
 import { resolveLanguageServerPath } from '../languageClient/serverPath';
-import { discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
+import { discoverWorkspaceProjectFiles, discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
 
 export interface McpLaunch {
 	command: string;
@@ -23,6 +23,7 @@ export interface McpLaunchInputs {
 	addonIndexStorage: string;
 	externalIndexMode: ExternalIndexMode;
 	workspaceScripts?: string[];
+	dependencyProjectFiles?: string[];
 }
 
 type ConfigurationFormat = 'generic' | 'codex';
@@ -40,6 +41,7 @@ export function buildMcpLaunchConfiguration(inputs: McpLaunchInputs): McpLaunch 
 		'--external-index-mode',
 		inputs.externalIndexMode,
 		...(inputs.workspaceScripts ?? []).flatMap(root => ['--workspace-scripts', root]),
+		...(inputs.dependencyProjectFiles ?? []).flatMap(projectFile => ['--dependency-project', projectFile]),
 	];
 	return {
 		command: inputs.serverPath,
@@ -97,6 +99,7 @@ export function registerMcpConfigurationCommand(
 				),
 				externalIndexMode: readExternalIndexMode(),
 				workspaceScripts: await discoverWorkspaceScriptRoots(),
+				dependencyProjectFiles: await discoverWorkspaceProjectFiles(),
 			});
 			const configuration = format === 'codex'
 				? renderCodexMcpConfiguration(launch)

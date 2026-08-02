@@ -12,7 +12,7 @@ import {
 	workbenchDefaults,
 } from '../extensionConfig/workbench';
 import { provideLanguageServerSemanticTokens } from '../languageClient/languageClient';
-import { discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
+import { discoverWorkspaceProjectFiles, discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
 import { resolveLanguageServerPath } from '../languageClient/serverPath';
 import { semanticPreviewForLine, type SemanticPreview } from './semanticPreview';
 import {
@@ -784,6 +784,7 @@ async function createClient(context: vscode.ExtensionContext): Promise<McpSearch
 		),
 		externalIndexMode: readExternalIndexMode(),
 		workspaceScripts: await discoverWorkspaceScriptRoots(),
+		dependencyProjectFiles: await discoverWorkspaceProjectFiles(),
 		officialWikiRoot: path.join(context.extensionPath, 'data', 'official-wiki'),
 	});
 }

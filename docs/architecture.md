@@ -159,11 +159,15 @@ requires VS Code to remain running. LSP and MCP reuse the same Rust language
 and evidence modules, so they do not establish competing semantic authorities.
 The MCP process consumes the persisted loaded-add-on inventory and parser-owned
 per-instance index storage. Extension-generated MCP launch configuration also
-captures the current `externalIndexMode`: `loaded` selects compatible caches
-from the persisted Workbench graph, `all` selects every compatible cached
-add-on without applying that graph as a filter, and `none` disables external
-Game Data. It reconstructs the selected GUID-qualified layered catalogue
-without scanning for add-ons or starting one process per add-on.
+captures the current `externalIndexMode` and any opened workspace project
+descriptors. In `loaded` mode, an opened project selects the compatible cached
+indexes for its recursive dependency closure; the workspace project itself
+remains represented by the separate live Workspace source. The persisted
+Workbench graph is the `loaded`-mode authority only when no workspace project
+descriptor is available. `all` selects every compatible cached add-on without
+applying either loaded filter, and `none` disables external Game Data. The MCP
+process reconstructs the selected GUID-qualified layered catalogue without
+scanning for add-ons or starting one process per add-on.
 The extension-hosted Search page starts its private MCP child with that same
 resolved mode. A mode change disposes the existing child and republishes Search
 Scope from a newly started process, so a retained Search panel cannot continue
