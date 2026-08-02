@@ -951,7 +951,7 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .scope-actions { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
 .scope-actions button { flex: 0 0 auto; width: auto; margin: 0; padding: 5px 7px; color: var(--accent); font-size: 10px; white-space: nowrap; }
 .scope-actions [data-scope-all] { flex: 0 0 76px; width: 76px; box-sizing: border-box; }
-.addon-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+.addon-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
 .addon-chip { max-width: 100%; padding: 3px 6px; border-radius: 10px; background: var(--selected); color: var(--selected-text); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-header { display: flex; justify-content: space-between; align-items: end; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
 .page-controls { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 14px; }
@@ -1038,7 +1038,7 @@ const searchScope = () => {
   const shown = selected.slice(0, 3).map(source => '<span class="addon-chip">' + esc(source.label) + '</span>').join('');
   const overflow = selected.length > 3 ? '<span class="addon-chip">+' + (selected.length - 3) + ' more</span>' : '';
   const chips = shown + overflow || '<span class="muted">No search scopes selected</span>';
-  return '<div class="search-scope"><div class="addon-chips">' + chips + '</div><button class="addon-trigger" data-scope-open><span>Edit selected sources</span><span>' + (state.scopeOpen ? '&#9650;' : '&#9660;') + '</span></button>' + (state.scopeOpen ? scopeChoices() : '') + '</div>';
+  return '<div class="search-scope"><button class="addon-trigger" data-scope-open><span>Edit selected sources</span><span>' + (state.scopeOpen ? '&#9650;' : '&#9660;') + '</span></button>' + (state.scopeOpen ? scopeChoices() : '') + '<div class="addon-chips">' + chips + '</div></div>';
 };
 const resultTypes = ${JSON.stringify(searchKindFilters.map(({ value, label }) => ({ value, label })))};
 const typeButtons = () => state.mode === 'text' ? '' : resultTypes.map(type => '<button class="' + (state.type === type.value ? 'active' : '') + '" data-type="' + esc(type.value) + '">' + esc(type.label) + '</button>').join('');

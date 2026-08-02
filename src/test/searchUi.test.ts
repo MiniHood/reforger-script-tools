@@ -168,6 +168,8 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /nextSources\.filter\(source => source\.defaultSelected\)/);
 		assert.match(searchUiSource, /selected\.length > 3/);
 		assert.match(searchUiSource, /' more<\/span>'/);
+		assert.match(searchUiSource, /<button class="addon-trigger"[\s\S]*?<div class="addon-chips">/);
+		assert.match(searchUiSource, /\.addon-chips \{[^}]*margin-top: 6px;/);
 		assert.doesNotMatch(searchUiSource, /prototypeVariants/);
 		assert.doesNotMatch(searchUiSource, /addonPrototypeSources/);
 		assert.doesNotMatch(searchUiSource, /SEARCH IN/);
