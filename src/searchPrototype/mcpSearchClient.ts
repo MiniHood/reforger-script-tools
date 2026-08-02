@@ -911,7 +911,9 @@ function normalizeTextHit(source: SearchSource, hit: RecordValue, index: number)
 	const relativePath = asString(hit.relativePath, 'Unknown source');
 	const range = asRecord(hit.matchRange);
 	const startLine = asNumber(range.startLine, 0);
-	const excerpt = asString(hit.excerpt, '');
+	const rawExcerpt = asString(hit.excerpt, '');
+	const leadingWhitespace = rawExcerpt.length - rawExcerpt.trimStart().length;
+	const excerpt = rawExcerpt.trimStart().trimEnd();
 	const matchText = asString(hit.matchText, '');
 	const readInput = asRecord(hit.readSourceInput);
 	const addonGuid = asOptionalString(hit.addonGuid);
@@ -919,7 +921,7 @@ function normalizeTextHit(source: SearchSource, hit: RecordValue, index: number)
 	if (!readInput.relativePath) {
 		return [];
 	}
-	const matchStart = matchText ? excerpt.indexOf(matchText) : -1;
+	const matchStart = Math.max(0, asNumber(hit.excerptMatchStart, asNumber(range.startCharacter, 0)) - leadingWhitespace);
 	return [{
 		id: `${source}-text-${addonGuid ? `${addonGuid}-` : ''}${index}-${relativePath}-${startLine}`,
 		source,
@@ -929,12 +931,13 @@ function normalizeTextHit(source: SearchSource, hit: RecordValue, index: number)
 		path: `${relativePath}:${startLine}`,
 		excerpt,
 		matchKind: 'text',
+		...(typeof hit.sourceUri === 'string' ? { sourceUri: hit.sourceUri } : {}),
 		selectionStartLine: startLine,
 		selectionEndLine: asNumber(range.endLine, startLine),
 		readInput,
 		...(addonGuid ? { addonGuid } : {}),
 		...(addonLabel ? { addonLabel } : {}),
-		textMatchStart: matchStart >= 0 ? matchStart : asNumber(range.startCharacter, 0),
+		textMatchStart: matchStart,
 		textMatchLength: matchText.length,
 	}];
 }

@@ -49,11 +49,13 @@ export function semanticPreviewForLine(
 	document: vscode.TextDocument,
 	semanticTokens: vscode.SemanticTokens,
 	targetLine: number,
+	preserveComments = false,
 ): SemanticPreview | undefined {
 	if (targetLine < 0 || targetLine >= document.lineCount) {
 		return undefined;
 	}
-	const sourceText = stripSourceComments(document.lineAt(targetLine).text);
+	const documentLine = document.lineAt(targetLine).text;
+	const sourceText = preserveComments ? documentLine : stripSourceComments(documentLine);
 	const leadingWhitespace = sourceText.length - sourceText.trimStart().length;
 	const text = sourceText.slice(leadingWhitespace).trimEnd();
 	const tokens = semanticTokenSpansForLine(semanticTokens.data, targetLine)

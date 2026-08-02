@@ -148,6 +148,10 @@ Explicit bounded full-text search over readable Reforger Game Data source files.
         "excerpt": {
           "type": "string"
         },
+        "excerptMatchStart": {
+          "minimum": 0,
+          "type": "integer"
+        },
         "matchRange": {
           "$ref": "#/$defs/TextRange"
         },
@@ -159,11 +163,18 @@ Explicit bounded full-text search over readable Reforger Game Data source files.
         },
         "relativePath": {
           "type": "string"
+        },
+        "sourceUri": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "relativePath",
         "matchRange",
+        "excerptMatchStart",
         "excerpt",
         "matchText",
         "readSourceInput"

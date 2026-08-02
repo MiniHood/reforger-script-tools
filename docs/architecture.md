@@ -179,8 +179,13 @@ showing the preceding mode's catalogue.
 `game_data_status` publishes the currently available scope; Game Data symbol
 and text searches accept a set of loaded add-on GUIDs, and every returned
 source handoff retains its add-on GUID so colliding logical paths remain
-unambiguous. Workspace remains a separate live source, while Official Wiki is
-eligible only for explicit text search in the editor UI.
+unambiguous. Script text-search handoffs also retain their complete physical or
+virtual editor identity. The Search page publishes their raw line previews
+immediately, then asynchronously applies the language server's semantic tokens
+from the complete document; Official Wiki text remains Markdown evidence and
+does not enter that semantic pipeline. Workspace remains a separate live
+source, while Official Wiki is eligible only for explicit text search in the
+editor UI.
 The retired single-cache `--index-cache` startup remains only as a temporary
 compatibility route for existing direct MCP clients and integration fixtures.
 Remove it when those fixtures and supported external launch configurations all

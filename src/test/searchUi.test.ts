@@ -45,8 +45,10 @@ suite('Reforger search UI MCP mapping', () => {
 			results: [{
 				relativePath: 'Scripts/Example.c',
 				matchRange: { startLine: 12, startCharacter: 18, endLine: 12, endCharacter: 22 },
-				excerpt: 'void Run() { SCR_(); }',
+				excerptMatchStart: 17,
+				excerpt: '    void Run() { SCR_(); }',
 				matchText: 'SCR_',
+				sourceUri: 'file:///C:/Addons/Example/Scripts/Example.c',
 				readSourceInput: {
 					catalogueRevision: 'ws1:revision',
 					relativePath: 'Scripts/Example.c',
@@ -59,7 +61,16 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.strictEqual(results[0].excerpt, 'void Run() { SCR_(); }');
 		assert.strictEqual(results[0].textMatchStart, 13);
 		assert.strictEqual(results[0].textMatchLength, 4);
+		assert.strictEqual(results[0].sourceUri, 'file:///C:/Addons/Example/Scripts/Example.c');
 		assert.strictEqual(results[0].readInput.catalogueRevision, 'ws1:revision');
+	});
+
+	test('queues script text matches for asynchronous semantic coloring', () => {
+		assert.match(searchUiSource, /const semanticHits = previewHits\.filter\(hit => hit\.source !== 'wiki'\)/);
+		assert.match(searchUiSource, /length: Math\.min\(4, semanticHits\.length\)/);
+		assert.match(searchUiSource, /if \(hit\.kind === 'text'\)[\s\S]*?queueRawPreview\(hit\.id\);[\s\S]*?queueSemanticPreview\(rawPreview\);[\s\S]*?continue;/);
+		assert.match(searchUiSource, /else if \(hit\.kind === 'text'\) \{\s*return undefined;/);
+		assert.match(searchUiSource, /state\.sourcePreviews\[result\.id\] \?\? \(result\.kind === 'text' \? result\.excerpt : undefined\)/);
 	});
 
 	test('routes explicit text mode to corpus-specific literal search tools', () => {
@@ -76,7 +87,7 @@ suite('Reforger search UI MCP mapping', () => {
 		}, 'text');
 		assert.strictEqual(results[0].kind, 'text');
 		assert.strictEqual(results[0].title, 'SCR_');
-		assert.strictEqual(results[0].textMatchStart, 13);
+		assert.strictEqual(results[0].textMatchStart, 9);
 		assert.strictEqual(results[0].textMatchLength, 4);
 		assert.strictEqual(results[0].readInput.catalogueRevision, 'ws1:test');
 	});
@@ -106,7 +117,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.deepStrictEqual(sourceMatchRange('void foo()', 'FOO'), { start: 5, length: 3 });
 		assert.strictEqual(sourceMatchRange('void Bar()', 'Foo'), undefined);
 		assert.doesNotMatch(searchUiSource, /highlightText\(result\.excerpt, state\.query \+ ' ' \+ result\.title\)/);
-		assert.match(searchUiSource, /hydrateSymbolPreviews\(active, client, requestId, result\.results, normalizedQuery, previewCancellation\.token\)/);
+		assert.match(searchUiSource, /hydrateSearchPreviews\(active, client, requestId, result\.results, normalizedQuery, previewCancellation\.token\)/);
 		assert.match(searchUiSource, /const matchRange = sourceMatchRange\(preview, query\);/);
 	});
 
@@ -337,7 +348,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.doesNotMatch(searchUiSource, /return highlightRange\(result\.excerpt, matchRange\)/);
 		assert.match(searchUiSource, /state\.matchRanges = \{ \.\.\.state\.matchRanges/);
 		assert.match(searchUiSource, /message\.type === 'previews'/);
-		assert.match(searchUiSource, /hydrateSymbolPreviews/);
+		assert.match(searchUiSource, /hydrateSearchPreviews/);
 		assert.match(searchUiSource, /provideLanguageServerSemanticTokens/);
 		assert.match(searchUiSource, /semanticPreviewText/);
 		assert.match(searchUiSource, /message\.type === 'semanticPreviews'/);

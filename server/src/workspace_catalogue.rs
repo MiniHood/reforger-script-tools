@@ -16,8 +16,8 @@ use crate::index_build::{
 };
 use crate::model::{SourceKind, SOURCE_PRIORITY_WORKSPACE};
 use crate::text_search::{
-    page as page_text, scan as scan_text, TextSearchCorpus, TextSearchError, TextSearchOptions,
-    TextSearchPage, TextSearchRequest, TextSearchResultSet, TextSource,
+    page as page_text, physical_source_uri, scan as scan_text, TextSearchCorpus, TextSearchError,
+    TextSearchOptions, TextSearchPage, TextSearchRequest, TextSearchResultSet, TextSource,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -122,6 +122,11 @@ impl WorkspaceCatalogue {
                     relative_path,
                     addon_guid: None,
                     addon_label: None,
+                    source_uri: file
+                        .metadata
+                        .absolute_path
+                        .as_deref()
+                        .and_then(physical_source_uri),
                     content,
                 })
             })

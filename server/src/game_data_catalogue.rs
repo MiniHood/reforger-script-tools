@@ -24,8 +24,8 @@ use crate::index_cache::{
 };
 use crate::model::SymbolKind;
 use crate::text_search::{
-    page as page_text, scan as scan_text, TextSearchCorpus, TextSearchError, TextSearchOptions,
-    TextSearchPage, TextSearchRequest, TextSearchResultSet, TextSource,
+    page as page_text, physical_source_uri, scan as scan_text, TextSearchCorpus, TextSearchError,
+    TextSearchOptions, TextSearchPage, TextSearchRequest, TextSearchResultSet, TextSource,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -245,6 +245,11 @@ impl GameDataCatalogue {
                 continue;
             }
             let read_started = Instant::now();
+            let source_uri = file
+                .metadata
+                .absolute_path
+                .as_deref()
+                .and_then(physical_source_uri);
             let source = if let Some(path) = &file.metadata.absolute_path {
                 fs::read(path)
                     .ok()
@@ -266,6 +271,7 @@ impl GameDataCatalogue {
                 relative_path,
                 addon_guid: Some(addon.guid.clone()),
                 addon_label: Some(addon.label.clone()),
+                source_uri,
                 content: Arc::<str>::from(source),
             });
         }
@@ -291,7 +297,7 @@ impl GameDataCatalogue {
             *source_read_time_by_addon
                 .entry(guid.clone())
                 .or_insert(Duration::ZERO) += read_started.elapsed();
-            for ((relative_path, _, addon_label), source) in
+            for ((relative_path, source_uri, addon_label), source) in
                 addon_sources.into_iter().zip(batch.sources.into_iter())
             {
                 match source {
@@ -299,6 +305,7 @@ impl GameDataCatalogue {
                         relative_path,
                         addon_guid: Some(guid.clone()),
                         addon_label: Some(addon_label),
+                        source_uri: Some(source_uri),
                         content: Arc::<str>::from(source),
                     }),
                     Err(_) => {

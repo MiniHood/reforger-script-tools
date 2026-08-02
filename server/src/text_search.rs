@@ -4,8 +4,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
+use url::Url;
 
 pub const DEFAULT_LIMIT: usize = 20;
 pub const MAX_LIMIT: usize = 100;
@@ -20,6 +22,7 @@ pub struct TextSource {
     pub relative_path: String,
     pub addon_guid: Option<String>,
     pub addon_label: Option<String>,
+    pub source_uri: Option<String>,
     pub content: Arc<str>,
 }
 
@@ -98,11 +101,18 @@ pub struct TextSearchHit {
     pub addon_guid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub addon_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_uri: Option<String>,
     pub relative_path: String,
     pub match_range: TextRange,
+    pub excerpt_match_start: usize,
     pub excerpt: String,
     pub match_text: String,
     pub read_source_input: TextReadInput,
+}
+
+pub(crate) fn physical_source_uri(path: &Path) -> Option<String> {
+    Url::from_file_path(path).ok().map(|uri| uri.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -397,6 +407,7 @@ fn project_hit(
     TextSearchHit {
         addon_guid: source.addon_guid.clone(),
         addon_label: source.addon_label.clone(),
+        source_uri: source.source_uri.clone(),
         relative_path: source.relative_path.clone(),
         match_range: TextRange {
             start_line: start_line_index + 1,
@@ -404,6 +415,7 @@ fn project_hit(
             end_line: end_line_index + 1,
             end_character,
         },
+        excerpt_match_start: source.content[excerpt_start..start].encode_utf16().count(),
         excerpt,
         match_text: source.content[start..end].to_string(),
         read_source_input: TextReadInput {
@@ -508,13 +520,15 @@ mod tests {
                     relative_path: "Game/Z.c".to_string(),
                     addon_guid: None,
                     addon_label: None,
+                    source_uri: None,
                     content: Arc::from("// SCR_ in a comment\nvoid Z() { string s = \"SCR_\"; }\n"),
                 },
                 TextSource {
                     relative_path: "Game/A.c".to_string(),
                     addon_guid: None,
                     addon_label: None,
-                    content: Arc::from("void A() { SCR_(); }\n"),
+                    source_uri: None,
+                    content: Arc::from("😀 void A() { SCR_(); }\n"),
                 },
             ],
             ..TextSearchCorpus::default()
@@ -540,8 +554,9 @@ mod tests {
         assert_eq!(page.total, 3);
         assert_eq!(page.results[0].relative_path, "Game/A.c");
         assert_eq!(page.results[0].match_range.start_line, 1);
-        assert_eq!(page.results[0].match_range.start_character, 11);
+        assert_eq!(page.results[0].match_range.start_character, 13);
         assert_eq!(page.results[0].match_text, "SCR_");
+        assert_eq!(page.results[0].excerpt_match_start, 14);
         assert_eq!(page.results[1].relative_path, "Game/Z.c");
         assert_eq!(page.results[1].match_range.start_line, 1);
         assert_eq!(page.results[2].match_range.start_line, 2);
@@ -601,6 +616,7 @@ mod tests {
                 relative_path: "Game/Words.c".to_string(),
                 addon_guid: None,
                 addon_label: None,
+                source_uri: None,
                 content: Arc::from("SCR SCR_Player scr\nSCR_One SCR_Two other"),
             }],
             ..TextSearchCorpus::default()
@@ -784,6 +800,7 @@ mod tests {
                     relative_path: "Game/Large.c".to_string(),
                     addon_guid: None,
                     addon_label: None,
+                    source_uri: None,
                     content: Arc::from(content),
                 }],
                 ..TextSearchCorpus::default()

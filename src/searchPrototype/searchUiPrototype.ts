@@ -382,7 +382,7 @@ async function runSearch(
 		});
 		const previewCancellation = new vscode.CancellationTokenSource();
 		active.previewCancellation = previewCancellation;
-		void hydrateSymbolPreviews(active, client, requestId, result.results, normalizedQuery, previewCancellation.token)
+		void hydrateSearchPreviews(active, client, requestId, result.results, normalizedQuery, previewCancellation.token)
 			.finally(() => {
 				if (active.previewCancellation === previewCancellation) {
 					active.previewCancellation = undefined;
@@ -405,7 +405,7 @@ async function runSearch(
 	}
 }
 
-async function hydrateSymbolPreviews(
+async function hydrateSearchPreviews(
 	active: ActiveSearch,
 	client: McpSearchClient,
 	requestId: number,
@@ -416,6 +416,7 @@ async function hydrateSymbolPreviews(
 	const symbolHits = hits.filter(hit => hit.kind === 'symbol');
 	const textHits = hits.filter(hit => hit.kind === 'text');
 	const previewHits = [...symbolHits, ...textHits];
+	const semanticHits = previewHits.filter(hit => hit.source !== 'wiki');
 	if (previewHits.length === 0) {
 		return;
 	}
@@ -511,10 +512,11 @@ async function hydrateSymbolPreviews(
 					semanticDocument.document,
 					semanticDocument.semanticTokens,
 					line,
+					hit.kind === 'text',
 				);
 				if (semanticPreview) {
 					semanticPreviews[hit.id] = semanticPreview;
-					if (semanticPreview.text === preview) {
+					if (hit.kind === 'symbol' && semanticPreview.text === preview) {
 						const semanticMatchRange = sourceMatchRange(semanticPreview.text, query);
 						if (semanticMatchRange) {
 							matchRanges[hit.id] = semanticMatchRange;
@@ -566,12 +568,12 @@ async function hydrateSymbolPreviews(
 		}
 	};
 	const semanticWorkerTails = Array.from(
-		{ length: Math.min(4, symbolHits.length) },
+		{ length: Math.min(4, semanticHits.length) },
 		() => Promise.resolve(),
 	);
 	let nextSemanticWorker = 0;
 	const queueSemanticPreview = (rawPreview: RawPreview): void => {
-		if (semanticWorkerTails.length === 0) {
+		if (semanticWorkerTails.length === 0 || rawPreview.hit.source === 'wiki') {
 			return;
 		}
 		semanticPhaseStartedAt ??= Date.now();
@@ -585,20 +587,21 @@ async function hydrateSymbolPreviews(
 			const hit = previewHits[nextIndex++];
 			try {
 				if (hit.kind === 'text') {
-					const leadingWhitespace = hit.excerpt.length - hit.excerpt.trimStart().length;
-					const preview = hit.excerpt.trimStart();
-					const matchStart = Math.max(0, (hit.textMatchStart ?? sourceMatchRange(preview, query)?.start ?? 0) - leadingWhitespace);
+					const preview = hit.excerpt;
+					const matchStart = hit.textMatchStart ?? sourceMatchRange(preview, query)?.start ?? 0;
 					const matchRange = { start: matchStart, length: hit.textMatchLength ?? query.length };
 					previews[hit.id] = preview;
 					matchRanges[hit.id] = matchRange;
-					rawPreviews.set(hit.id, {
+					const rawPreview = {
 						hit,
 						document: { content: preview, startLine: hit.selectionStartLine ?? 1, endLine: hit.selectionEndLine ?? hit.selectionStartLine ?? 1 },
 						previewLine: hit.selectionStartLine ?? 1,
 						preview,
 						matchRange,
-					});
+					};
+					rawPreviews.set(hit.id, rawPreview);
 					queueRawPreview(hit.id);
+					queueSemanticPreview(rawPreview);
 					continue;
 				}
 				const readStartedAt = performance.now();
@@ -731,14 +734,18 @@ async function loadSemanticSourceDocument(
 	let document: vscode.TextDocument;
 	let startLine = 1;
 	try {
-		const sourcePath = await client.resolveSourcePath(hit);
-		if (sourcePath) {
-			document = await vscode.workspace.openTextDocument(vscode.Uri.file(sourcePath));
-		} else if (hit.sourceUri) {
+		if (hit.sourceUri) {
 			document = await vscode.workspace.openTextDocument(vscode.Uri.parse(hit.sourceUri, true));
 		} else {
-			document = await vscode.workspace.openTextDocument({ content: boundedDocument.content, language: 'enforce' });
-			startLine = boundedDocument.startLine > 0 ? boundedDocument.startLine : hit.selectionStartLine ?? 1;
+			const sourcePath = await client.resolveSourcePath(hit);
+			if (sourcePath) {
+				document = await vscode.workspace.openTextDocument(vscode.Uri.file(sourcePath));
+			} else if (hit.kind === 'text') {
+				return undefined;
+			} else {
+				document = await vscode.workspace.openTextDocument({ content: boundedDocument.content, language: 'enforce' });
+				startLine = boundedDocument.startLine > 0 ? boundedDocument.startLine : hit.selectionStartLine ?? 1;
+			}
 		}
 		if (document.languageId !== 'enforce') {
 			document = await vscode.languages.setTextDocumentLanguage(document, 'enforce');
@@ -1121,10 +1128,10 @@ const highlightPreviewPart = (value, offset, range) => {
 };
 const safeSemanticColor = value => /^#[0-9a-f]{3,8}$/i.test(String(value ?? '')) ? String(value) : '';
 const semanticPreviewText = result => {
-  const sourceText = state.sourcePreviews[result.id];
+  const sourceText = state.sourcePreviews[result.id] ?? (result.kind === 'text' ? result.excerpt : undefined);
   if (typeof sourceText !== 'string') return '';
   const preview = state.semanticPreviews[result.id];
-  const matchRange = state.matchRanges[result.id];
+  const matchRange = state.matchRanges[result.id] ?? (result.kind === 'text' ? { start: result.textMatchStart, length: result.textMatchLength } : undefined);
   if (!preview || typeof preview.text !== 'string' || preview.text !== sourceText || !Array.isArray(preview.tokens)) return highlightRange(sourceText, matchRange);
   const text = sourceText;
   const tokens = preview.enabled === false ? [] : preview.tokens.slice().sort((left, right) => left.start - right.start);
