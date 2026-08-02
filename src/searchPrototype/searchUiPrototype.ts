@@ -1126,6 +1126,26 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .search-primary { display: grid; grid-template-columns: minmax(320px, 1fr) max-content; align-items: center; gap: 14px; padding: 10px 12px; border: 1px solid var(--border); background: var(--alt); box-shadow: inset 3px 0 0 var(--accent); }
 .search-query { display: flex; min-width: 0; }
 .search-query .query-field { min-height: 38px; background: var(--bg); }
+.relation-picker { position: relative; display: flex; flex: 0 0 auto; }
+.relation-trigger { display: inline-flex; width: 142px; min-height: 38px; align-items: center; justify-content: space-between; gap: 8px; margin-left: -1px; padding: 7px 9px; background: var(--bg); white-space: nowrap; }
+.relation-trigger.active { z-index: 1; border-color: var(--accent); color: var(--accent); background: var(--selected); }
+.relation-trigger-label { overflow: hidden; text-overflow: ellipsis; }
+.relation-icon { position: relative; display: inline-block; width: 14px; height: 14px; flex: 0 0 14px; color: currentColor; }
+.relation-icon::before { content: ''; position: absolute; top: 2px; bottom: 2px; left: 3px; width: 1px; background: currentColor; }
+.relation-icon::after { content: ''; position: absolute; top: 6px; left: 3px; width: 8px; height: 5px; border-top: 1px solid currentColor; border-right: 1px solid currentColor; }
+.relation-menu { position: absolute; z-index: 6; top: calc(100% + 5px); right: 0; width: 312px; padding: 11px; border: 1px solid var(--accent); color: var(--text); background: var(--vscode-menu-background, var(--panel)); box-shadow: 0 8px 24px rgba(0, 0, 0, .4); }
+.relation-menu-head { margin-bottom: 10px; }
+.relation-menu-head strong { display: block; margin-bottom: 3px; }
+.relation-menu-head span, .relation-prototype-note { color: var(--muted); font-size: 11px; }
+.relation-section + .relation-section { margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--border); }
+.relation-section-label { margin-bottom: 5px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .07em; }
+.relation-choice { display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: 7px; min-height: 27px; cursor: pointer; }
+.relation-choice input { margin: 0; accent-color: var(--accent); }
+.relation-choice.disabled { cursor: default; opacity: .7; }
+.relation-depth { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.relation-depth button { min-height: 29px; padding: 4px 8px; }
+.relation-depth button.active { border-color: var(--accent); color: var(--selected-text); background: var(--selected); }
+.relation-prototype-note { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border); }
 .text-option-buttons { display: inline-flex; margin-left: -1px; }
 .text-option-buttons button { min-width: 38px; min-height: 38px; padding: 0 7px; border-left-color: transparent; background: var(--bg); font-family: var(--vscode-editor-font-family); }
 .text-option-buttons button:first-child { border-left-color: var(--border); }
@@ -1167,7 +1187,7 @@ window.__reforgerSearchVscode.postMessage({ type: 'webviewReady', width: window.
 </script>
 <script nonce="${nonce}">
 const vscode = window.__reforgerSearchVscode;
-const state = { query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, type: 'all', resultColumns: 1, results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, truncated: false, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, scopeOpen: false, scopeFilter: '', scopeRevision: '', scopeAuthority: '', scopeDiscoveryMs: 0, unavailableScopeIds: [], scopeSources: [{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true }, { id: 'wiki', label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true }], selectedScopeIds: ['workspace', 'wiki'], selectionTouched: false, removedScopeIds: [], uiPerformance: { renderCount: 0, lastRenderMs: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
+const state = { query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, type: 'all', relationOpen: false, relationIncludes: ['direct'], relationDepth: 'direct', resultColumns: 1, results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, truncated: false, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, scopeOpen: false, scopeFilter: '', scopeRevision: '', scopeAuthority: '', scopeDiscoveryMs: 0, unavailableScopeIds: [], scopeSources: [{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true }, { id: 'wiki', label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true }], selectedScopeIds: ['workspace', 'wiki'], selectionTouched: false, removedScopeIds: [], uiPerformance: { renderCount: 0, lastRenderMs: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
 let pendingQuerySelection;
 let previewContextLines = 0;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -1175,6 +1195,28 @@ const sourceLabel = result => result.addonLabel ?? (result.source === 'wiki' ? '
 const visibleResults = () => state.results;
 const modeButtons = () => '<button class="' + (state.mode === 'semantic' ? 'active' : '') + '" data-mode="semantic">Semantic</button><button class="' + (state.mode === 'text' ? 'active' : '') + '" data-mode="text">Text</button><button class="' + (state.mode === 'resource' ? 'active' : '') + '" data-mode="resource">Resources</button>';
 const textSearchOptions = () => state.mode !== 'text' ? '' : '<div class="text-option-buttons" aria-label="Text matching options"><button type="button" data-text-option="matchCase" class="' + (state.matchCase ? 'active' : '') + '" aria-pressed="' + state.matchCase + '" title="Match case" aria-label="Match case">Aa</button><button type="button" data-text-option="matchWholeWord" class="' + (state.matchWholeWord ? 'active' : '') + '" aria-pressed="' + state.matchWholeWord + '" title="Match whole word" aria-label="Match whole word">|ab|</button><button type="button" data-text-option="useRegex" class="' + (state.useRegex ? 'active' : '') + '" aria-pressed="' + state.useRegex + '" title="Use regular expression" aria-label="Use regular expression">.*</button></div>';
+const relationOptions = [
+  { value: 'direct', label: 'Direct matches', summary: 'Direct', group: 'MATCH' },
+  { value: 'parents', label: 'Parent classes', summary: 'Parents', group: 'CLASS HIERARCHY' },
+  { value: 'children', label: 'Child classes', summary: 'Children', group: 'CLASS HIERARCHY' },
+  { value: 'baseMembers', label: 'Base implementations', summary: 'Base', group: 'MEMBER BEHAVIOR' },
+  { value: 'overrides', label: 'Overrides', summary: 'Overrides', group: 'MEMBER BEHAVIOR' },
+  { value: 'modded', label: 'Modded extensions', summary: 'Modded', group: 'MODDING' },
+];
+const relationSummary = () => {
+  if (state.relationIncludes.length === 1 && state.relationIncludes[0] === 'direct') return 'Direct only';
+  const first = relationOptions.find(option => option.value === state.relationIncludes[0])?.summary ?? 'Related';
+  return first + (state.relationIncludes.length > 1 ? ' +' + (state.relationIncludes.length - 1) : '');
+};
+const relationChoices = () => {
+  const groups = [...new Set(relationOptions.map(option => option.group))];
+  return groups.map(group => '<div class="relation-section"><div class="relation-section-label">' + group + '</div>' + relationOptions.filter(option => option.group === group).map(option => {
+    const checked = state.relationIncludes.includes(option.value);
+    const soleSelection = checked && state.relationIncludes.length === 1;
+    return '<label class="relation-choice ' + (soleSelection ? 'disabled' : '') + '"><input type="checkbox" data-relation-choice="' + esc(option.value) + '"' + (checked ? ' checked' : '') + (soleSelection ? ' disabled' : '') + '><span>' + esc(option.label) + '</span></label>';
+  }).join('') + '</div>').join('');
+};
+const relationControl = () => '<div class="relation-picker"><button type="button" class="relation-trigger ' + (state.relationOpen ? 'active' : '') + '" data-relation-open aria-haspopup="dialog" aria-expanded="' + state.relationOpen + '" title="Choose which relationships to include"><span class="relation-icon" aria-hidden="true"></span><span class="relation-trigger-label">' + esc(relationSummary()) + '</span><span aria-hidden="true">' + (state.relationOpen ? '&#9650;' : '&#9660;') + '</span></button>' + (state.relationOpen ? '<div class="relation-menu" role="dialog" aria-label="Related code filters"><div class="relation-menu-head"><strong>Related code</strong><span>Include relationships of matching declarations.</span></div>' + relationChoices() + '<div class="relation-section"><div class="relation-section-label">HIERARCHY DEPTH</div><div class="relation-depth"><button type="button" data-relation-depth="direct" class="' + (state.relationDepth === 'direct' ? 'active' : '') + '">One level</button><button type="button" data-relation-depth="all" class="' + (state.relationDepth === 'all' ? 'active' : '') + '">All levels</button></div></div><div class="relation-prototype-note">UI prototype only &mdash; results are not filtered yet.</div></div>' : '') + '</div>';
 const eligibleScopeSources = () => state.scopeSources.filter(source => source.kind !== 'wiki' || state.mode === 'text');
 const selectedEligibleScopeIds = () => state.selectedScopeIds.filter(id => eligibleScopeSources().some(source => source.id === id));
 const sameScopeIds = (left, right) => left.length === right.length && left.every(id => right.includes(id));
@@ -1432,7 +1474,7 @@ function render(focusQuery = false) {
   const sourceNoun = sourceCount === 1 ? ' source' : ' sources';
   const sharedMatchArea = () => warnings + resultBody(resultGroups()) + bottomPager;
   const typeControl = state.mode === 'text' ? '' : '<div class="control-block search-types"><div class="group-label">RESULT TYPE</div>' + typeControls() + '</div>';
-  const page = '<div class="shell search-atlas"><section class="search-masthead"><h1>Source Search</h1></section><header class="search-header"><div class="search-primary"><div class="search-query">' + queryField() + textSearchOptions() + '</div><div class="search-count"><strong>' + totalMatchesLabel() + '</strong>matches / ' + sourceCount + sourceNoun + '</div></div><div class="search-secondary"><div class="control-block search-scope-control"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '</div><div class="control-block"><div class="group-label">SEARCH MODE</div>' + modeControls() + '</div>' + typeControl + pageControls(true) + '</div></header>' + sharedMatchArea() + '</div>';
+  const page = '<div class="shell search-atlas"><section class="search-masthead"><h1>Source Search</h1></section><header class="search-header"><div class="search-primary"><div class="search-query">' + queryField() + textSearchOptions() + (state.mode === 'semantic' ? relationControl() : '') + '</div><div class="search-count"><strong>' + totalMatchesLabel() + '</strong>matches / ' + sourceCount + sourceNoun + '</div></div><div class="search-secondary"><div class="control-block search-scope-control"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '</div><div class="control-block"><div class="group-label">SEARCH MODE</div>' + modeControls() + '</div>' + typeControl + pageControls(true) + '</div></header>' + sharedMatchArea() + '</div>';
   document.getElementById('app').innerHTML = page;
   const query = document.getElementById('query');
   const focusSearchQuery = () => { query.focus(); query.setSelectionRange(state.query.length, state.query.length); };
@@ -1441,9 +1483,12 @@ function render(focusQuery = false) {
   query.addEventListener('input', event => { state.query = event.target.value; pendingQuerySelection = { start: event.target.selectionStart ?? state.query.length, end: event.target.selectionEnd ?? state.query.length }; if (state.mode !== 'text') search(true); });
   query.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); search(true); } });
   document.querySelectorAll('[data-text-option]').forEach(element => element.addEventListener('click', () => { state[element.dataset.textOption] = !state[element.dataset.textOption]; render(false); search(true); }));
-  document.querySelectorAll('[data-mode]').forEach(element => element.addEventListener('click', () => { state.mode = element.dataset.mode === 'text' ? 'text' : element.dataset.mode === 'resource' ? 'resource' : 'semantic'; state.type = 'all'; state.page = 1; render(false); search(true); }));
+  document.querySelectorAll('[data-mode]').forEach(element => element.addEventListener('click', () => { state.mode = element.dataset.mode === 'text' ? 'text' : element.dataset.mode === 'resource' ? 'resource' : 'semantic'; state.type = 'all'; state.relationOpen = false; state.page = 1; render(false); search(true); }));
   document.querySelectorAll('[data-type]').forEach(element => element.addEventListener('click', () => { state.type = element.dataset.type; state.page = 1; render(false); search(true); }));
-  document.querySelectorAll('[data-scope-open]').forEach(element => element.addEventListener('click', () => { state.scopeOpen = !state.scopeOpen; render(false); if (state.scopeOpen) focusScopeFilter(state.scopeFilter.length); }));
+  document.querySelectorAll('[data-relation-open]').forEach(element => element.addEventListener('click', () => { state.relationOpen = !state.relationOpen; state.scopeOpen = false; render(false); }));
+  document.querySelectorAll('[data-relation-choice]').forEach(element => element.addEventListener('change', () => { state.relationIncludes = element.checked ? [...new Set([...state.relationIncludes, element.dataset.relationChoice])] : state.relationIncludes.filter(value => value !== element.dataset.relationChoice); render(false); }));
+  document.querySelectorAll('[data-relation-depth]').forEach(element => element.addEventListener('click', () => { state.relationDepth = element.dataset.relationDepth === 'all' ? 'all' : 'direct'; render(false); }));
+  document.querySelectorAll('[data-scope-open]').forEach(element => element.addEventListener('click', () => { state.scopeOpen = !state.scopeOpen; state.relationOpen = false; render(false); if (state.scopeOpen) focusScopeFilter(state.scopeFilter.length); }));
   document.querySelectorAll('[data-scope-choice]').forEach(element => element.addEventListener('change', () => { state.selectionTouched = true; state.selectedScopeIds = element.checked ? [...new Set([...state.selectedScopeIds, element.dataset.scopeChoice])] : state.selectedScopeIds.filter(value => value !== element.dataset.scopeChoice); render(false); search(true); }));
   document.querySelectorAll('[data-scope-all]').forEach(element => element.addEventListener('click', () => { const eligible = eligibleScopeSources(); const allSelected = allEligibleScopesSelected(); const eligibleIds = new Set(eligible.map(source => source.id)); state.selectionTouched = true; state.selectedScopeIds = allSelected ? state.selectedScopeIds.filter(id => !eligibleIds.has(id)) : [...new Set([...state.selectedScopeIds, ...eligibleIds])]; render(false); search(true); }));
   document.querySelectorAll('[data-scope-filter]').forEach(element => element.addEventListener('input', () => { const selectionStart = element.selectionStart ?? element.value.length; const selectionEnd = element.selectionEnd ?? selectionStart; state.scopeFilter = element.value; render(false); focusScopeFilter(selectionStart, selectionEnd); }));
@@ -1483,6 +1528,14 @@ document.addEventListener('click', event => {
   document.querySelector('.addon-menu')?.remove();
   const indicator = document.querySelector('[data-scope-open] span:last-child');
   if (indicator) indicator.textContent = '\u25bc';
+});
+document.addEventListener('click', event => {
+  if (!state.relationOpen || !(event.target instanceof Element) || event.target.closest('.relation-picker')) return;
+  state.relationOpen = false;
+  document.querySelector('.relation-menu')?.remove();
+  const trigger = document.querySelector('[data-relation-open]');
+  trigger?.classList.remove('active');
+  trigger?.setAttribute('aria-expanded', 'false');
 });
 function requestPage(value) { if (state.status === 'loading') return; const requested = Number.parseInt(value, 10); if (!Number.isFinite(requested)) return; state.page = Math.min(totalPages(), Math.max(1, requested)); search(false); }
 function search(resetPagination) { if (resetPagination) { state.page = 1; } const scopeIds = selectedEligibleScopeIds(); const searchKey = [state.mode, state.query, state.matchCase, state.matchWholeWord, state.useRegex, scopeIds.slice().sort().join(','), state.type, state.page, state.pageSize].join('\\u0000'); if (state.status === 'loading' && state.lastSearchKey === searchKey) return; state.lastSearchKey = searchKey; state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.uiPerformance.searchStartedAt = performance.now(); state.uiPerformance.lastSearchResponseMs = 0; state.uiPerformance.lastPreviewMessageMs = 0; state.uiPerformance.lastSemanticMessageMs = 0; vscode.postMessage({ type: 'search', query: state.query, searchMode: state.mode, matchCase: state.matchCase, matchWholeWord: state.matchWholeWord, useRegex: state.useRegex, scopeIds, resultType: state.type, page: state.page, pageSize: state.pageSize }); }

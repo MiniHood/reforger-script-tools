@@ -376,6 +376,22 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.doesNotMatch(searchUiSource, /atlas-lanes|atlas-lane/);
 	});
 
+	test('prototypes semantic relationship expansion without adding another result type', () => {
+		assert.match(searchUiSource, /state\.mode === 'semantic' \? relationControl\(\) : ''/);
+		assert.match(searchUiSource, /class="relation-picker"/);
+		assert.match(searchUiSource, /Related code/);
+		assert.match(searchUiSource, /Parent classes/);
+		assert.match(searchUiSource, /Child classes/);
+		assert.match(searchUiSource, /Base implementations/);
+		assert.match(searchUiSource, /Overrides/);
+		assert.match(searchUiSource, /Modded extensions/);
+		assert.match(searchUiSource, /data-relation-depth="direct"/);
+		assert.match(searchUiSource, /data-relation-depth="all"/);
+		assert.match(searchUiSource, /UI prototype only &mdash; results are not filtered yet\./);
+		assert.match(searchUiSource, /relationIncludes: \['direct'\], relationDepth: 'direct'/);
+		assert.doesNotMatch(searchUiSource, /resultTypes = [^\n]+Related code/);
+	});
+
 	test('keeps opening and closing Search Scope presentation-only', () => {
 		assert.doesNotMatch(searchUiSource, /type: 'refreshScope'/);
 		assert.match(searchUiSource, /const scopeSelectionChanged =/);
@@ -383,7 +399,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /const scopeSearchChanged = scopeSelectionChanged \|\| scopeRevisionChanged/);
 		assert.match(searchUiSource, /if \(message\.refreshSearch === true && scopeSearchChanged && state\.query\.trim\(\)\) search\(true\)/);
 		assert.match(searchUiSource, /affectsConfiguration[\s\S]*?refreshSearchScope\(context, active\)/);
-		assert.match(searchUiSource, /\[data-scope-open\][\s\S]*?state\.scopeOpen = !state\.scopeOpen; render\(false\)/);
+		assert.match(searchUiSource, /\[data-scope-open\][\s\S]*?state\.scopeOpen = !state\.scopeOpen; state\.relationOpen = false; render\(false\)/);
 		assert.doesNotMatch(searchUiSource, /render\(false\); if \(state\.query\.trim\(\)\) search\(true\); return;/);
 	});
 
