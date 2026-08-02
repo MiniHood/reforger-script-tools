@@ -27,6 +27,7 @@ pub struct TextSource {
 pub struct TextSearchCorpus {
     pub sources: Vec<TextSource>,
     pub files_considered: usize,
+    pub source_read_ms: u64,
     pub source_read_failures: usize,
     pub source_read_failures_by_addon: BTreeMap<String, usize>,
     pub source_read_ms_by_addon: BTreeMap<String, u64>,
@@ -82,6 +83,7 @@ pub struct TextSearchStats {
     pub files_considered: usize,
     pub files_read: usize,
     pub files_with_matches: usize,
+    pub source_read_ms: u64,
     pub source_read_failures: usize,
     pub source_read_failures_by_addon: BTreeMap<String, usize>,
     pub source_read_ms_by_addon: BTreeMap<String, u64>,
@@ -173,7 +175,7 @@ pub fn scan(
     for source in &corpus.sources {
         control.check().map_err(|_| TextSearchError::Cancelled)?;
         files_read += 1;
-        let starts = line_starts(&source.content);
+        let mut starts = None;
         let mut source_match_count = 0;
         for matched in matcher.regex.find_iter(&source.content) {
             control.check().map_err(|_| TextSearchError::Cancelled)?;
@@ -186,9 +188,10 @@ pub fn scan(
             matches_found = matches_found.saturating_add(1);
             source_match_count += 1;
             if hits.len() < MAX_TEXT_MATCHES {
+                let starts = starts.get_or_insert_with(|| line_starts(&source.content));
                 hits.push(project_hit(
                     source,
-                    &starts,
+                    starts,
                     catalogue_revision,
                     matched.start(),
                     matched.end(),
@@ -212,6 +215,7 @@ pub fn scan(
             files_considered,
             files_read,
             files_with_matches,
+            source_read_ms: corpus.source_read_ms,
             source_read_failures: corpus.source_read_failures,
             source_read_failures_by_addon: corpus.source_read_failures_by_addon,
             source_read_ms_by_addon: corpus.source_read_ms_by_addon,
@@ -497,6 +501,7 @@ mod tests {
     fn corpus() -> TextSearchCorpus {
         TextSearchCorpus {
             files_considered: 2,
+            source_read_ms: 42,
             source_read_failures: 0,
             sources: vec![
                 TextSource {
@@ -541,6 +546,7 @@ mod tests {
         assert_eq!(page.results[1].match_range.start_line, 1);
         assert_eq!(page.results[2].match_range.start_line, 2);
         assert_eq!(page.stats.files_read, 2);
+        assert_eq!(page.stats.source_read_ms, 42);
         assert_eq!(page.stats.files_with_matches, 2);
         assert_eq!(page.stats.matches_found, 3);
         assert_eq!(

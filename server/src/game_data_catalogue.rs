@@ -206,6 +206,7 @@ impl GameDataCatalogue {
             return page_text(&result_set, control, request)
                 .map_err(GameDataCatalogueTextSearchError::TextSearch);
         }
+        let source_read_started = Instant::now();
         let mut sources = Vec::new();
         let mut virtual_sources = BTreeMap::<String, Vec<(String, String, String)>>::new();
         let mut source_read_failures = 0;
@@ -316,6 +317,7 @@ impl GameDataCatalogue {
         let result_set = scan_text(
             TextSearchCorpus {
                 files_considered,
+                source_read_ms: duration_ms(source_read_started.elapsed()),
                 sources,
                 source_read_failures,
                 source_read_failures_by_addon,

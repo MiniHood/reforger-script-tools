@@ -8,16 +8,17 @@ async function main() {
 	const serverPath = resolve(options.server);
 	const serverArguments = ['mcp'];
 	if (options.source === 'game-data') {
-		serverArguments.push('--index-cache', resolve(options.indexCache));
-	} else {
-		for (const root of options.workspaceScripts) {
-			serverArguments.push('--workspace-scripts', resolve(root));
-		}
+		if (options.indexCache) serverArguments.push('--index-cache', resolve(options.indexCache));
+		if (options.addonIndexStorage) serverArguments.push('--addon-index-storage', resolve(options.addonIndexStorage));
+		if (options.addonSourceInventory) serverArguments.push('--addon-source-inventory', resolve(options.addonSourceInventory));
+		serverArguments.push('--external-index-mode', options.externalIndexMode);
+		for (const project of options.dependencyProjects) serverArguments.push('--dependency-project', resolve(project));
 	}
+	for (const root of options.workspaceScripts) serverArguments.push('--workspace-scripts', resolve(root));
 
 	const client = new McpStdioClient(serverPath, serverArguments);
 	const report = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		source: options.source,
 		queryCharacters: [...options.query].length,
 		limit: options.limit,
@@ -28,6 +29,8 @@ async function main() {
 		timeoutMs: options.timeoutMs,
 		server: serverPath,
 		workspaceRootCount: options.workspaceScripts.length,
+		dependencyProjectCount: options.dependencyProjects.length,
+		externalIndexMode: options.externalIndexMode,
 	};
 
 	try {
@@ -222,6 +225,8 @@ function sanitizeError(error) {
 function parseArguments(args) {
 	const parsed = {
 		workspaceScripts: [],
+		dependencyProjects: [],
+		externalIndexMode: 'loaded',
 		limit: 25,
 		budgetMs: 5000,
 		timeoutMs: 35000,
@@ -240,6 +245,10 @@ function parseArguments(args) {
 			case '--server': parsed.server = value(); break;
 			case '--source': parsed.source = value(); break;
 			case '--index-cache': parsed.indexCache = value(); break;
+			case '--addon-index-storage': parsed.addonIndexStorage = value(); break;
+			case '--addon-source-inventory': parsed.addonSourceInventory = value(); break;
+			case '--dependency-project': parsed.dependencyProjects.push(value()); break;
+			case '--external-index-mode': parsed.externalIndexMode = value(); break;
 			case '--workspace-scripts': parsed.workspaceScripts.push(value()); break;
 			case '--query': parsed.query = value(); break;
 			case '--limit': parsed.limit = positiveInteger(value(), argument); break;
@@ -256,8 +265,11 @@ function parseArguments(args) {
 		usage('--server, --source, and --query are required.');
 	}
 	if (parsed.limit > 100) usage('--limit must be between 1 and 100.');
-	if (parsed.source === 'game-data' && !parsed.indexCache) {
-		usage('--index-cache is required for game-data searches.');
+	if (!['all', 'loaded', 'none'].includes(parsed.externalIndexMode)) {
+		usage('--external-index-mode must be all, loaded, or none.');
+	}
+	if (parsed.source === 'game-data' && !parsed.indexCache && !parsed.addonIndexStorage) {
+		usage('--index-cache or --addon-index-storage is required for game-data searches.');
 	}
 	if (parsed.source === 'workspace' && parsed.workspaceScripts.length === 0) {
 		usage('At least one --workspace-scripts root is required for workspace searches.');
@@ -276,7 +288,8 @@ function usage(error) {
 	process.stderr.write(
 		'Usage: node tools/text-search-performance.mjs --server <exe> --source <workspace|game-data> --query <literal> [options]\n' +
 		'  Workspace: --workspace-scripts <root> (repeatable)\n' +
-		'  Game Data: --index-cache <symbols.bin>\n' +
+		'  Game Data: --index-cache <symbols.bin>, or --addon-index-storage <directory> with current scope inputs\n' +
+		'  Current scope: --addon-source-inventory <json> --dependency-project <gproj> (repeatable) --external-index-mode <all|loaded|none>\n' +
 		'  Options: --limit <1-100> --budget-ms <ms> --timeout-ms <ms> --match-case --match-whole-word --regex\n',
 	);
 	process.exit(error ? 2 : 0);

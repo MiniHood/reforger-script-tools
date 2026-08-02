@@ -69,11 +69,15 @@ npm run report:text-search -- --server <server.exe> --source workspace `
   --workspace-scripts <scripts-root> --query <literal>
 npm run report:text-search -- --server <server.exe> --source game-data `
   --index-cache <symbols.bin> --query <literal>
+npm run report:text-search -- --server <server.exe> --source game-data `
+  --addon-index-storage <addon-indexes> --addon-source-inventory <graph.json> `
+  --dependency-project <addon.gproj> --external-index-mode loaded `
+  --workspace-scripts <scripts-root> --query <literal>
 ```
 
 The report initializes a dedicated MCP process, warms Game Data explicitly
 when applicable, and records initialization, status, search, result-count, and
-server-provided scan statistics without printing the query or source text. It
+server-provided source-read and scan statistics without printing the query or source text. It
 also reports `outsideScannerMs`, the end-to-end search time not accounted for
 by the literal scanner, which primarily exposes source acquisition and MCP
 projection overhead. The command defaults to a 5,000 ms performance budget and
