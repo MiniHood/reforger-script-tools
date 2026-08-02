@@ -155,17 +155,17 @@ impl fmt::Display for TextSearchError {
 }
 
 pub fn search(
-    corpus: TextSearchCorpus,
+    mut corpus: TextSearchCorpus,
     control: &IndexBuildControl,
     catalogue_revision: &str,
     request: TextSearchRequest,
 ) -> Result<TextSearchPage, TextSearchError> {
-    let result_set = scan(corpus, control, catalogue_revision, &request)?;
+    let result_set = scan(&mut corpus, control, catalogue_revision, &request)?;
     page(&result_set, control, request)
 }
 
 pub fn scan(
-    mut corpus: TextSearchCorpus,
+    corpus: &mut TextSearchCorpus,
     control: &IndexBuildControl,
     catalogue_revision: &str,
     request: &TextSearchRequest,
@@ -227,8 +227,8 @@ pub fn scan(
             files_with_matches,
             source_read_ms: corpus.source_read_ms,
             source_read_failures: corpus.source_read_failures,
-            source_read_failures_by_addon: corpus.source_read_failures_by_addon,
-            source_read_ms_by_addon: corpus.source_read_ms_by_addon,
+            source_read_failures_by_addon: corpus.source_read_failures_by_addon.clone(),
+            source_read_ms_by_addon: corpus.source_read_ms_by_addon.clone(),
             matches_found,
             scan_ms: started.elapsed().as_millis() as u64,
         },

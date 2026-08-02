@@ -39,6 +39,7 @@ use std::time::{Duration, Instant};
 
 pub const GAME_DATA_INITIALIZATION_DEADLINE_MS: u64 = 120_000;
 pub const MAX_STRUCTURED_RESULT_BYTES: usize = 256 * 1024;
+const MAX_CACHED_TEXT_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum GameDataExternalIndexMode {
@@ -64,6 +65,7 @@ pub struct GameDataCatalogue {
     state: Mutex<Option<GameDataCatalogueState>>,
     text_search_cache:
         Mutex<BTreeMap<(String, String, TextSearchOptions, Vec<String>), Arc<TextSearchResultSet>>>,
+    text_source_cache: Mutex<Option<CachedTextSources>>,
     initialized: AtomicBool,
     #[cfg(all(feature = "test-hooks", debug_assertions))]
     panic_once: std::sync::atomic::AtomicBool,
@@ -79,12 +81,26 @@ struct GameDataCatalogueState {
     addon_instances: Arc<Vec<LoadedAddonIndexInstance>>,
 }
 
+#[derive(Debug)]
+struct CachedTextSources {
+    revision: String,
+    addon_guids: Vec<String>,
+    corpus: Arc<TextSearchCorpus>,
+}
+
+impl CachedTextSources {
+    fn matches(&self, revision: &str, addon_guids: &[String]) -> bool {
+        self.revision == revision && self.addon_guids == addon_guids
+    }
+}
+
 impl GameDataCatalogue {
     pub fn new(config: GameDataCatalogueConfig) -> Self {
         Self {
             config,
             state: Mutex::new(None),
             text_search_cache: Mutex::new(BTreeMap::new()),
+            text_source_cache: Mutex::new(None),
             initialized: AtomicBool::new(false),
             #[cfg(all(feature = "test-hooks", debug_assertions))]
             panic_once: std::sync::atomic::AtomicBool::new(
@@ -207,135 +223,164 @@ impl GameDataCatalogue {
                 .map_err(GameDataCatalogueTextSearchError::TextSearch);
         }
         let source_read_started = Instant::now();
-        let mut sources = Vec::new();
-        let mut virtual_sources = BTreeMap::<String, Vec<(String, String, String)>>::new();
-        let mut source_read_failures = 0;
-        let mut source_read_failures_by_addon = BTreeMap::<String, usize>::new();
-        let mut source_read_time_by_addon = BTreeMap::<String, Duration>::new();
-        let mut files_considered = 0;
-        for file in index.files() {
-            control.check().map_err(|_| {
-                GameDataCatalogueTextSearchError::TextSearch(TextSearchError::Cancelled)
-            })?;
-            let Some(addon) = addon_map.get(&file.id) else {
-                continue;
-            };
-            if addon_guids.binary_search(&addon.guid).is_err() {
-                continue;
-            }
-            files_considered += 1;
-            let Some(relative_path) = file
-                .metadata
-                .relative_path
-                .as_ref()
-                .map(|path| path.to_string_lossy().replace('\\', "/"))
-            else {
-                source_read_failures += 1;
-                continue;
-            };
-            if let Some(virtual_source) = &file.metadata.virtual_source {
-                virtual_sources
-                    .entry(addon.guid.clone())
-                    .or_default()
-                    .push((
-                        relative_path,
-                        virtual_source.uri.clone(),
-                        addon.label.clone(),
-                    ));
-                continue;
-            }
-            let read_started = Instant::now();
-            let source_uri = file
-                .metadata
-                .absolute_path
-                .as_deref()
-                .and_then(physical_source_uri);
-            let source = if let Some(path) = &file.metadata.absolute_path {
-                fs::read(path)
-                    .ok()
-                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-            } else {
-                None
-            };
-            *source_read_time_by_addon
-                .entry(addon.guid.clone())
-                .or_insert(Duration::ZERO) += read_started.elapsed();
-            let Some(source) = source else {
-                source_read_failures += 1;
-                *source_read_failures_by_addon
-                    .entry(addon.guid.clone())
-                    .or_insert(0) += 1;
-                continue;
-            };
-            sources.push(TextSource {
-                relative_path,
-                addon_guid: Some(addon.guid.clone()),
-                addon_label: Some(addon.label.clone()),
-                source_uri,
-                content: Arc::<str>::from(source),
-            });
-        }
-        for (guid, addon_sources) in virtual_sources {
-            let cache_path = addon_instances
-                .iter()
-                .find(|instance| instance.guid.eq_ignore_ascii_case(&guid))
-                .map(|instance| instance.cache_path.as_path())
-                .ok_or(GameDataCatalogueTextSearchError::Unavailable)?;
-            let uris = addon_sources
-                .iter()
-                .map(|(_, uri, _)| uri.clone())
-                .collect::<Vec<_>>();
-            let read_started = Instant::now();
-            let batch =
-                read_cached_virtual_sources(&uris, cache_path, control).map_err(|error| {
-                    if error == INDEX_BUILD_CANCELLED {
-                        GameDataCatalogueTextSearchError::TextSearch(TextSearchError::Cancelled)
-                    } else {
-                        GameDataCatalogueTextSearchError::Initialization(error)
-                    }
+        let cached_corpus = self
+            .text_source_cache
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|cached| cached.matches(&revision, &addon_guids))
+            .map(|cached| cached.corpus.clone());
+        let (mut corpus, retain_corpus) = if let Some(cached_corpus) = cached_corpus {
+            let mut corpus = cached_corpus.as_ref().clone();
+            corpus.source_read_ms = duration_ms(source_read_started.elapsed());
+            corpus
+                .source_read_ms_by_addon
+                .values_mut()
+                .for_each(|elapsed| *elapsed = 0);
+            (corpus, false)
+        } else {
+            let mut sources = Vec::new();
+            let mut virtual_sources = BTreeMap::<String, Vec<(String, String, String)>>::new();
+            let mut source_read_failures = 0;
+            let mut source_read_failures_by_addon = BTreeMap::<String, usize>::new();
+            let mut source_read_time_by_addon = BTreeMap::<String, Duration>::new();
+            let mut files_considered = 0;
+            for file in index.files() {
+                control.check().map_err(|_| {
+                    GameDataCatalogueTextSearchError::TextSearch(TextSearchError::Cancelled)
                 })?;
-            *source_read_time_by_addon
-                .entry(guid.clone())
-                .or_insert(Duration::ZERO) += read_started.elapsed();
-            for ((relative_path, source_uri, addon_label), source) in
-                addon_sources.into_iter().zip(batch.sources.into_iter())
-            {
-                match source {
-                    Ok(source) => sources.push(TextSource {
-                        relative_path,
-                        addon_guid: Some(guid.clone()),
-                        addon_label: Some(addon_label),
-                        source_uri: Some(source_uri),
-                        content: Arc::<str>::from(source),
-                    }),
-                    Err(_) => {
-                        source_read_failures += 1;
-                        *source_read_failures_by_addon
-                            .entry(guid.clone())
-                            .or_insert(0) += 1;
+                let Some(addon) = addon_map.get(&file.id) else {
+                    continue;
+                };
+                if addon_guids.binary_search(&addon.guid).is_err() {
+                    continue;
+                }
+                files_considered += 1;
+                let Some(relative_path) = file
+                    .metadata
+                    .relative_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().replace('\\', "/"))
+                else {
+                    source_read_failures += 1;
+                    continue;
+                };
+                if let Some(virtual_source) = &file.metadata.virtual_source {
+                    virtual_sources
+                        .entry(addon.guid.clone())
+                        .or_default()
+                        .push((
+                            relative_path,
+                            virtual_source.uri.clone(),
+                            addon.label.clone(),
+                        ));
+                    continue;
+                }
+                let read_started = Instant::now();
+                let source_uri = file
+                    .metadata
+                    .absolute_path
+                    .as_deref()
+                    .and_then(physical_source_uri);
+                let source = if let Some(path) = &file.metadata.absolute_path {
+                    fs::read(path)
+                        .ok()
+                        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                } else {
+                    None
+                };
+                *source_read_time_by_addon
+                    .entry(addon.guid.clone())
+                    .or_insert(Duration::ZERO) += read_started.elapsed();
+                let Some(source) = source else {
+                    source_read_failures += 1;
+                    *source_read_failures_by_addon
+                        .entry(addon.guid.clone())
+                        .or_insert(0) += 1;
+                    continue;
+                };
+                sources.push(TextSource {
+                    relative_path,
+                    addon_guid: Some(addon.guid.clone()),
+                    addon_label: Some(addon.label.clone()),
+                    source_uri,
+                    content: Arc::<str>::from(source),
+                });
+            }
+            for (guid, addon_sources) in virtual_sources {
+                let cache_path = addon_instances
+                    .iter()
+                    .find(|instance| instance.guid.eq_ignore_ascii_case(&guid))
+                    .map(|instance| instance.cache_path.as_path())
+                    .ok_or(GameDataCatalogueTextSearchError::Unavailable)?;
+                let uris = addon_sources
+                    .iter()
+                    .map(|(_, uri, _)| uri.clone())
+                    .collect::<Vec<_>>();
+                let read_started = Instant::now();
+                let batch =
+                    read_cached_virtual_sources(&uris, cache_path, control).map_err(|error| {
+                        if error == INDEX_BUILD_CANCELLED {
+                            GameDataCatalogueTextSearchError::TextSearch(TextSearchError::Cancelled)
+                        } else {
+                            GameDataCatalogueTextSearchError::Initialization(error)
+                        }
+                    })?;
+                *source_read_time_by_addon
+                    .entry(guid.clone())
+                    .or_insert(Duration::ZERO) += read_started.elapsed();
+                for ((relative_path, source_uri, addon_label), source) in
+                    addon_sources.into_iter().zip(batch.sources.into_iter())
+                {
+                    match source {
+                        Ok(source) => sources.push(TextSource {
+                            relative_path,
+                            addon_guid: Some(guid.clone()),
+                            addon_label: Some(addon_label),
+                            source_uri: Some(source_uri),
+                            content: Arc::<str>::from(source),
+                        }),
+                        Err(_) => {
+                            source_read_failures += 1;
+                            *source_read_failures_by_addon
+                                .entry(guid.clone())
+                                .or_insert(0) += 1;
+                        }
                     }
                 }
             }
-        }
-        let source_read_ms_by_addon = source_read_time_by_addon
-            .into_iter()
-            .map(|(guid, elapsed)| (guid, duration_ms(elapsed)))
-            .collect();
-        let result_set = scan_text(
-            TextSearchCorpus {
+            let source_read_ms_by_addon = source_read_time_by_addon
+                .into_iter()
+                .map(|(guid, elapsed)| (guid, duration_ms(elapsed)))
+                .collect();
+            let mut corpus = TextSearchCorpus {
                 files_considered,
-                source_read_ms: duration_ms(source_read_started.elapsed()),
+                source_read_ms: 0,
                 sources,
                 source_read_failures,
                 source_read_failures_by_addon,
                 source_read_ms_by_addon,
-            },
-            control,
-            &revision,
-            &request,
-        )
-        .map_err(GameDataCatalogueTextSearchError::TextSearch)
-        .map(Arc::new)?;
+            };
+            let retain_corpus = retained_text_source_bytes(&corpus.sources)
+                .is_some_and(|bytes| bytes <= MAX_CACHED_TEXT_SOURCE_BYTES);
+            if !retain_corpus {
+                self.text_source_cache.lock().unwrap().take();
+            }
+            corpus.source_read_ms = duration_ms(source_read_started.elapsed());
+            (corpus, retain_corpus)
+        };
+        let result_set = scan_text(&mut corpus, control, &revision, &request)
+            .map_err(GameDataCatalogueTextSearchError::TextSearch)
+            .map(Arc::new)?;
+        if retain_corpus {
+            // One slot follows the active revision and selected add-on scope.
+            // Replacing it keeps retention bounded without an eviction policy.
+            *self.text_source_cache.lock().unwrap() = Some(CachedTextSources {
+                revision: revision.clone(),
+                addon_guids: addon_guids.clone(),
+                corpus: Arc::new(corpus),
+            });
+        }
         let mut cache = self.text_search_cache.lock().unwrap();
         cache.insert(cache_key, result_set.clone());
         while cache.len() > 8 {
@@ -1304,6 +1349,40 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn cached_text_sources_are_revision_and_scope_bound() {
+        let cached = CachedTextSources {
+            revision: "revision-a".to_string(),
+            addon_guids: vec!["1111111111111111".to_string()],
+            corpus: Arc::new(TextSearchCorpus::default()),
+        };
+
+        assert!(cached.matches("revision-a", &["1111111111111111".to_string()]));
+        assert!(!cached.matches("revision-b", &["1111111111111111".to_string()]));
+        assert!(!cached.matches("revision-a", &["2222222222222222".to_string()]));
+    }
+
+    #[test]
+    fn retained_text_source_size_includes_content_and_identity_metadata() {
+        let source = TextSource {
+            relative_path: "Game/Feature.c".to_string(),
+            addon_guid: Some("1111111111111111".to_string()),
+            addon_label: Some("Feature".to_string()),
+            source_uri: Some("reforger-pak://example".to_string()),
+            content: Arc::from("class Feature {}"),
+        };
+        let dynamic_bytes = source.relative_path.len()
+            + source.addon_guid.as_deref().map_or(0, str::len)
+            + source.addon_label.as_deref().map_or(0, str::len)
+            + source.source_uri.as_deref().map_or(0, str::len)
+            + source.content.len();
+
+        assert_eq!(
+            retained_text_source_bytes(&[source]),
+            Some(std::mem::size_of::<TextSource>() + dynamic_bytes)
+        );
+    }
+
+    #[test]
     fn all_mode_publishes_every_cached_addon_not_only_the_current_graph() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1564,6 +1643,21 @@ fn timings_ms(timings: IndexCacheTimings) -> GameDataTimingsMs {
 
 fn duration_ms(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn retained_text_source_bytes(sources: &[TextSource]) -> Option<usize> {
+    sources.iter().try_fold(0_usize, |total, source| {
+        [
+            std::mem::size_of::<TextSource>(),
+            source.relative_path.len(),
+            source.addon_guid.as_deref().map_or(0, str::len),
+            source.addon_label.as_deref().map_or(0, str::len),
+            source.source_uri.as_deref().map_or(0, str::len),
+            source.content.len(),
+        ]
+        .into_iter()
+        .try_fold(total, usize::checked_add)
+    })
 }
 
 fn limits() -> GameDataLimits {

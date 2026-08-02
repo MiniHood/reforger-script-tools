@@ -131,19 +131,15 @@ impl WorkspaceCatalogue {
                 })
             })
             .collect();
-        let result_set = scan_text(
-            TextSearchCorpus {
-                files_considered: snapshot.index.files().len(),
-                sources,
-                source_read_failures: 0,
-                ..TextSearchCorpus::default()
-            },
-            control,
-            &snapshot.revision,
-            &request,
-        )
-        .map_err(WorkspaceCatalogueError::TextSearch)
-        .map(Arc::new)?;
+        let mut corpus = TextSearchCorpus {
+            files_considered: snapshot.index.files().len(),
+            sources,
+            source_read_failures: 0,
+            ..TextSearchCorpus::default()
+        };
+        let result_set = scan_text(&mut corpus, control, &snapshot.revision, &request)
+            .map_err(WorkspaceCatalogueError::TextSearch)
+            .map(Arc::new)?;
         let mut cache = self.text_search_cache.lock().unwrap();
         cache.insert(cache_key, result_set.clone());
         while cache.len() > 8 {

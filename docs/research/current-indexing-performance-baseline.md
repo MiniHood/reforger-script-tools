@@ -181,3 +181,39 @@ A separate first observation from a newly copied baseline executable reported
 3,012 ms of source-read time; subsequent warm runs were 280-317 ms. That cold
 observation combines process/executable and filesystem cold-start effects and
 is recorded as an outlier, not used in the paired optimization percentage.
+
+## Repeated pack-read experiments
+
+The same installed scope was measured on 2026-08-02 in one long-lived MCP
+process to distinguish first-read cost from repeated work. The scope contained
+8,391 packed scripts whose locators referenced 9,771,262 compressed bytes and
+37,046,590 decoded bytes. Including source identity metadata, retaining that
+installed packed corpus is estimated at 38.15 MiB; the accepted cache refuses
+corpora above 64 MiB and never retains the multi-gigabyte PAC files themselves.
+
+Seven measured pairs used one binary with a temporary cache-disable switch,
+alternating the switch order after one warm-up per condition. This isolated the
+cache from concurrent shared-worktree changes. Each run read
+`SCR_BaseGameMode.c` nine times, then issued the distinct queries `SCR_`,
+`override`, `typename`, and `Replication` against 8,626 total packed and loose
+sources. The temporary switch was removed after measurement.
+
+| Measurement | No decoded reuse | Bounded corpus reuse | Change |
+| --- | ---: | ---: | ---: |
+| First text search | 160.84 ms | 153.26 ms | paired median -4.13 ms |
+| Later distinct text search | 153.58 ms | **17.72 ms** | **-88.5%** |
+| Later source acquisition | 129 ms | **2 ms** | **-98.4%** |
+
+A rejected per-entry decoded cache reduced later searches to 45.75 ms but
+increased the first search from 182.12 ms to 192.42 ms and required one cache
+cell on every locator. It changed repeated single-file reads only from 4.88 ms
+to 4.45 ms. The accepted catalogue-owned corpus has one revision-and-scope
+slot, shares source contents through `Arc<str>`, has no LRU or background fill,
+and moves the already-scanned corpus into that slot without cloning it.
+
+Six reads of the same packed source spaced one second apart measured 3.94 ms
+median before and 3.82 ms with the candidate. This falsified retained archive
+handles and scratch-buffer pools as worthwhile next steps. A controlled attempt
+to reuse the corpus for bounded source reads improved their paired median by
+only 0.16 ms, so that branch was removed rather than expanding the cache's
+responsibility.

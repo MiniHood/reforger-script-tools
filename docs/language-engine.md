@@ -78,6 +78,13 @@ reads selected scripts in archive offset order before scanning. Entry bounds,
 archive identity, expansion limits, and the captured compressed-payload digest
 remain verified at read time. Its bounded result statistics report source-read
 wall time separately from scan time, along with per-add-on read time and failures.
+After the first full-text query, the catalogue may retain one decoded source
+corpus for the exact catalogue revision and selected add-on GUIDs. Retention is
+limited to 64 MiB including source identity metadata; another scope replaces
+the slot, and an oversized corpus is not retained. Later distinct queries and
+their pages may share those immutable strings. The cache is filled only by an
+explicit text query, so it adds no startup work and never retains a PAC archive
+or an unselected payload.
 Individual navigation remains a one-entry lazy
 read through the same validated-locator path. The matcher uses case-insensitive
 literal substrings by default and
