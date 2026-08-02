@@ -31,7 +31,6 @@ import {
 	type SourceMatchRange,
 } from './mcpSearchClient';
 
-// UI PROTOTYPE: the original plus five Search page variants, switchable with ?variant= in one development Webview.
 const searchScheme = 'reforger-search';
 const maxSearchDocuments = 32;
 const sourcePreviewWorkerCount = 8;
@@ -117,10 +116,7 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 		disposed: false,
 	};
 	activePanel = panel;
-	panel.webview.html = renderSearchUi(
-		panel.webview,
-		context.extensionMode !== vscode.ExtensionMode.Production,
-	);
+	panel.webview.html = renderSearchUi(panel.webview);
 	const indexModeSubscription = vscode.workspace.onDidChangeConfiguration(event => {
 		if (event.affectsConfiguration(`${workbenchConfig.section}.${workbenchConfig.settings.externalIndexMode}`)) {
 			void refreshSearchScope(context, active);
@@ -300,7 +296,6 @@ function logSearchSnapshot(value: unknown): void {
 	const results = snapshotResults(snapshot.results);
 	diagnostic('searchUi.snapshot', {
 		query: textField(snapshot.query),
-		prototypeVariant: textField(snapshot.prototypeVariant),
 		scopeOpen: snapshot.scopeOpen === true,
 		scopeFilter: textField(snapshot.scopeFilter),
 		scopeRevision: textField(snapshot.scopeRevision),
@@ -972,7 +967,7 @@ function selectionRange(
 	);
 }
 
-function renderSearchUi(webview: vscode.Webview, prototypeVariantsEnabled: boolean): string {
+function renderSearchUi(webview: vscode.Webview): string {
 	const nonce = createNonce();
 	return `<!DOCTYPE html>
 <html lang="en">
@@ -989,22 +984,14 @@ button, input, select { font: inherit; color: inherit; }
 button { border: 1px solid var(--border); background: var(--alt); cursor: pointer; }
 button:hover { border-color: var(--accent); }
 .shell { min-height: 100vh; padding: 24px 28px 70px; }
-.eyebrow { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 h1, h2, h3, p { margin-top: 0; }
 h1 { font-size: 24px; margin: 6px 0 8px; }
 h2 { font-size: 16px; margin-bottom: 6px; }
 h3 { font-size: 13px; margin: 0 0 4px; }
-.toolbar { display: flex; gap: 14px; align-items: center; max-width: 1080px; margin-bottom: 14px; }
-.toolbar #query { flex: 1 1 620px; width: 620px; max-width: 100%; min-width: 160px; border: 1px solid var(--border); background: var(--alt); padding: 9px 11px; outline: none; }
-.toolbar #query:focus { border-color: var(--accent); }
 .text-options { display: inline-flex; align-items: center; gap: 12px; white-space: nowrap; }
 .text-option { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; user-select: none; }
 .text-option input { margin: 0; accent-color: var(--accent); }
-.layout { display: grid; grid-template-columns: 220px 1fr; gap: 18px; }
-.source-rail { position: relative; height: fit-content; border: 1px solid var(--border); padding: 10px; background: var(--panel); }
 .group-label { padding: 0 4px 6px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .07em; }
-.source-rail button { display: block; width: 100%; margin: 3px 0; padding: 9px 10px; text-align: left; border: 0; background: transparent; }
-.source-rail button.active { background: var(--selected); color: var(--selected-text); }
 .search-scope { margin: 0 0 12px; padding: 8px; border: 1px solid var(--border); background: var(--alt); }
 .search-scope .addon-trigger { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; padding: 8px 9px; border: 1px solid var(--border); background: var(--panel); }
 .addon-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1037,16 +1024,6 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .page-bottom { display: flex; justify-content: flex-end; margin-top: 12px; }
 .muted { color: var(--muted); }
 .tag { border-radius: 12px; padding: 3px 8px; background: var(--alt); color: var(--muted); font-size: 11px; }
-.source-rows { display: grid; gap: 10px; margin-top: 12px; }
-.source-rows.two-column { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
-.source-row { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; align-items: start; padding: 13px; border: 1px solid var(--border); background: var(--panel); cursor: pointer; user-select: text; }
-.source-row:hover { border-color: var(--accent); }
-.source-row:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
-.source-row.selected { border-color: var(--accent); }
-.source-icon { color: var(--accent); font-weight: 700; text-align: center; }
-.result-content { min-width: 0; }
-.result-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; min-width: 0; }
-.result-head h3 { min-width: 0; margin-bottom: 0; }
 .result-detail, .result-path { display: block; color: var(--muted); font-size: 12px; }
 .result-path { max-width: 50%; margin-left: auto; overflow-wrap: anywhere; text-align: right; }
 .snippet { margin: 9px 0 0; padding: 10px; overflow: auto; background: var(--alt); border: 1px solid var(--border); font: 12px/1.5 var(--vscode-editor-font-family); white-space: pre-wrap; }
@@ -1062,123 +1039,33 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .md-preview .md-code { margin: 0 0 8px; padding: 8px; overflow: auto; background: var(--panel); font: 12px/1.45 var(--vscode-editor-font-family); white-space: pre-wrap; }
 .result-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .result-actions button { padding: 5px 8px; }
-.status { margin: 12px 0; color: var(--muted); }
 .error { padding: 10px 12px; border: 1px solid var(--vscode-inputValidation-errorBorder); color: var(--vscode-errorForeground); background: var(--vscode-inputValidation-errorBackground); }
 .warning { padding: 8px 10px; border-left: 2px solid var(--vscode-editorWarning-foreground); color: var(--muted); }
 .empty { padding: 30px 14px; border: 1px dashed var(--border); color: var(--muted); }
-.prototype-switcher { position: fixed; z-index: 20; left: 50%; bottom: 16px; display: grid; grid-template-columns: 34px minmax(190px, auto) 34px; align-items: center; gap: 3px; padding: 4px; transform: translateX(-50%); border: 1px solid var(--vscode-contrastBorder, var(--accent)); border-radius: 18px; background: var(--vscode-editorWidget-background); box-shadow: 0 8px 30px rgba(0, 0, 0, .45); }
-.prototype-switcher button { min-height: 28px; border: 0; border-radius: 14px; background: transparent; }
-.prototype-switcher button:hover { background: var(--selected); }
-.prototype-switcher-label { padding: 0 10px; color: var(--text); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-align: center; white-space: nowrap; }
-.prototype-switcher-label small { margin-left: 7px; color: var(--muted); font-weight: 400; }
 .query-field { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--border); background: var(--alt); outline: none; }
 .query-field:focus { border-color: var(--accent); }
 .control-buttons { display: flex; flex-wrap: wrap; gap: 5px; }
-.control-buttons button { padding: 7px 10px; }
+.control-buttons button { min-height: 38px; padding: 7px 12px; }
 .control-buttons button.active { border-color: var(--accent); background: var(--selected); color: var(--selected-text); }
 .control-block { min-width: 0; }
-.control-block .group-label { padding-left: 0; }
-.inline-scope-panel { min-width: 0; }
-.inline-scope-panel .addon-chips { margin-bottom: 8px; }
-.inline-scope-panel .addon-menu { max-height: 360px; overflow: auto; }
-.variant-kicker { color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-.variant-title-row { display: flex; align-items: end; justify-content: space-between; gap: 18px; }
-.variant-title-row h1 { margin-bottom: 0; }
-.variant-summary { color: var(--muted); white-space: nowrap; }
-
-/* B — Focus: a centered query canvas with the filters promoted into horizontal steps. */
-.variant-focus { max-width: 1240px; margin: 0 auto; padding-top: 38px; }
-.focus-hero { padding: 24px; border: 1px solid var(--border); background: linear-gradient(135deg, var(--panel), var(--bg)); }
-.focus-query { display: grid; grid-template-columns: minmax(260px, 1fr) auto; align-items: center; gap: 12px; margin-top: 18px; }
-.focus-steps { display: grid; grid-template-columns: 1.2fr .8fr 1fr; gap: 18px; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }
-.focus-scope { position: relative; }
-.focus-scope .search-scope { margin: 0; padding: 0; border: 0; background: transparent; }
-.focus-scope .addon-menu { left: 0; top: 100%; }
-.focus-results { margin-top: 22px; }
-.focus-results .source-header { position: sticky; z-index: 2; top: 0; padding: 10px 0; background: var(--bg); }
-.focus-results .source-row { border-left: 3px solid var(--accent); }
-
-/* C — Inspector: persistent scope, match list, and a single deliberate preview pane. */
-.variant-inspector { min-height: 100vh; padding: 14px 18px 72px; }
-.inspector-top { display: grid; grid-template-columns: auto minmax(240px, 1fr) auto; align-items: center; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
-.inspector-top h1 { margin: 0; font-size: 18px; white-space: nowrap; }
-.inspector-layout { display: grid; grid-template-columns: 210px 310px minmax(360px, 1fr); min-height: calc(100vh - 106px); margin-top: 12px; border: 1px solid var(--border); background: var(--panel); }
-.inspector-sidebar, .inspector-list, .inspector-detail { min-width: 0; padding: 12px; }
-.inspector-sidebar, .inspector-list { border-right: 1px solid var(--border); }
-.inspector-sidebar { background: var(--vscode-sideBar-background); }
-.inspector-sidebar .control-buttons { display: grid; }
-.inspector-sidebar .control-buttons button { text-align: left; }
-.inspector-sidebar .inline-scope-panel { margin-top: 18px; }
-.inspector-list { max-height: calc(100vh - 110px); overflow: auto; padding: 0; background: var(--bg); }
-.inspector-list-head { position: sticky; z-index: 1; top: 0; padding: 12px; border-bottom: 1px solid var(--border); background: var(--panel); }
-.inspector-match { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 8px; padding: 10px 12px; border: 0; border-bottom: 1px solid var(--border); background: transparent; cursor: pointer; }
-.inspector-match:hover, .inspector-match.selected { background: var(--selected); color: var(--selected-text); }
-.inspector-list-items.two-column { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.inspector-list-items.two-column .inspector-match { border-right: 1px solid var(--border); }
-.inspector-match strong, .inspector-match span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.inspector-match small { display: block; margin-top: 3px; color: var(--muted); }
-.inspector-detail { max-height: calc(100vh - 110px); overflow: auto; background: var(--alt); }
-.inspector-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
-.inspector-detail-head h2 { margin-bottom: 4px; }
-.inspector-detail-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.inspector-detail-actions button { padding: 6px 9px; }
-.inspector-detail .snippet, .inspector-detail .md-preview { min-height: 160px; margin-top: 12px; background: var(--bg); }
-
-/* D — Ledger: high-density metadata first, with previews behaving like table rows. */
-.variant-ledger { padding: 18px 22px 72px; }
-.ledger-command { display: grid; grid-template-columns: minmax(300px, 1fr) auto; gap: 14px; margin: 14px 0; }
-.ledger-filters { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(180px, .55fr) minmax(240px, 1fr); gap: 12px; padding: 12px; border: 1px solid var(--border); background: var(--panel); }
-.ledger-filters .search-scope { position: relative; margin: 0; padding: 0; border: 0; background: transparent; }
-.ledger-filters .addon-menu { left: 0; }
-.ledger-head { display: grid; grid-template-columns: 34px minmax(150px, .8fr) minmax(210px, 1.2fr) 110px minmax(190px, 1fr); gap: 10px; margin-top: 16px; padding: 8px 10px; border: 1px solid var(--border); color: var(--muted); background: var(--alt); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
-.ledger-row { border: 1px solid var(--border); border-top: 0; background: var(--panel); }
-.ledger-row-main { display: grid; grid-template-columns: 34px minmax(150px, .8fr) minmax(210px, 1.2fr) 110px minmax(190px, 1fr); gap: 10px; align-items: center; padding: 9px 10px; cursor: pointer; }
-.ledger-row:hover { border-color: var(--accent); }
-.ledger-cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ledger-preview { padding: 0 10px 10px 44px; }
-.ledger-preview .snippet, .ledger-preview .md-preview { margin-top: 0; }
-.ledger-rows.two-column { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
-.ledger-rows.two-column .ledger-row { border-top: 1px solid var(--border); }
-.ledger-rows.two-column .ledger-row-main { grid-template-columns: 28px minmax(0, 1fr); }
-.ledger-rows.two-column .ledger-row-main .ledger-cell:nth-child(n+3) { grid-column: 2; }
-.ledger-rows.two-column .ledger-preview { padding-left: 38px; }
-
-/* E — Atlas: corpus lanes reveal where a concept is represented. */
-.variant-atlas { padding: 26px 28px 72px; }
+.control-block .group-label { min-height: 22px; padding: 0 0 7px; }
+.search-atlas { padding: 26px 28px 72px; }
 .atlas-hero { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(360px, 1.4fr); gap: 24px; align-items: end; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
 .atlas-controls { display: grid; gap: 10px; }
-.atlas-filter-strip { display: flex; flex-wrap: wrap; align-items: end; gap: 18px; margin: 14px 0; }
-.atlas-filter-strip .search-scope { position: relative; min-width: 260px; margin: 0; padding: 0; border: 0; background: transparent; }
+.atlas-filter-strip { display: grid; grid-template-columns: minmax(260px, .8fr) max-content minmax(420px, 1.5fr); align-items: start; gap: 18px; margin: 14px 0 18px; }
+.atlas-filter-strip .search-scope { position: relative; margin: 0; padding: 0; border: 0; background: transparent; }
+.atlas-filter-strip .addon-trigger { width: 100%; min-height: 38px; }
 .atlas-filter-strip .addon-menu { left: 0; }
-.atlas-lanes { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
-.atlas-lanes.two-column { grid-template-columns: repeat(2, minmax(310px, 1fr)); }
-.atlas-lane { min-width: 0; border: 1px solid var(--border); background: var(--panel); }
-.atlas-lane-head { position: sticky; z-index: 1; top: 0; display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--alt); }
-.atlas-lane-head h2 { margin: 0; font-size: 13px; }
-.atlas-card { padding: 12px; border-bottom: 1px solid var(--border); cursor: pointer; }
-.atlas-card:last-child { border-bottom: 0; }
-.atlas-card:hover { background: var(--vscode-list-hoverBackground); }
+.atlas-results { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 12px; align-items: start; }
+.atlas-results.two-column { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.atlas-card { min-width: 0; padding: 12px; border: 1px solid var(--border); border-left: 3px solid var(--accent); background: var(--panel); cursor: pointer; user-select: text; }
+.atlas-card:hover, .atlas-card.selected { border-color: var(--accent); }
+.atlas-card:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 .atlas-card-head { display: flex; justify-content: space-between; gap: 10px; }
 .atlas-card .result-path { max-width: none; margin: 4px 0 0; text-align: left; }
-
-/* F — Console: one compact command surface and a modular operations dashboard. */
-.variant-console { padding: 16px 18px 72px; }
-.console-bar { display: grid; grid-template-columns: auto minmax(280px, 1fr) auto; gap: 12px; align-items: center; padding: 10px 12px; border: 1px solid var(--accent); background: var(--alt); box-shadow: inset 3px 0 0 var(--accent); }
-.console-brand { color: var(--accent); font-weight: 800; letter-spacing: .08em; white-space: nowrap; }
-.console-bar .text-options { justify-content: flex-end; }
-.console-dashboard { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 12px; margin-top: 12px; }
-.console-controls { padding: 12px; border: 1px solid var(--border); background: var(--panel); }
-.console-controls .control-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.console-controls .inline-scope-panel { margin-top: 16px; }
-.console-stage { min-width: 0; }
-.console-stats { display: grid; grid-template-columns: repeat(3, minmax(100px, 1fr)) auto; gap: 8px; margin-bottom: 10px; }
-.console-stat { padding: 9px 11px; border: 1px solid var(--border); background: var(--panel); }
-.console-stat strong { display: block; margin-top: 3px; font-size: 16px; }
-.console-stage .source-row { grid-template-columns: 22px minmax(0, 1fr); padding: 10px; }
-
-@media (max-width: 1100px) { .inspector-layout { grid-template-columns: 190px 270px minmax(320px, 1fr); } .console-dashboard { grid-template-columns: 220px minmax(0, 1fr); } }
-@media (max-width: 980px) { .source-rows.two-column, .console-stage .source-rows { grid-template-columns: 1fr; } .focus-steps, .ledger-filters { grid-template-columns: 1fr; } .inspector-layout { grid-template-columns: 200px minmax(0, 1fr); } .inspector-detail { grid-column: 1 / -1; max-height: none; border-top: 1px solid var(--border); } .inspector-list { border-right: 0; } .atlas-hero { grid-template-columns: 1fr; } }
-@media (max-width: 720px) { .shell { padding: 18px 14px 68px; } .layout, .focus-query, .inspector-top, .inspector-layout, .ledger-command, .console-bar, .console-dashboard { grid-template-columns: 1fr; } .toolbar { flex-wrap: wrap; } .toolbar #query { flex-basis: 100%; } .text-options { flex-wrap: wrap; } .source-header { align-items: flex-start; gap: 10px; } .source-row { grid-template-columns: 26px 1fr; } .result-head { align-items: flex-start; flex-wrap: wrap; } .result-path { max-width: 100%; margin-left: 0; text-align: left; } .inspector-sidebar, .inspector-list { border-right: 0; border-bottom: 1px solid var(--border); } .inspector-list { max-height: 420px; } .ledger-head { display: none; } .ledger-row-main { grid-template-columns: 28px minmax(0, 1fr); } .ledger-row-main .ledger-cell:nth-child(n+3) { grid-column: 2; } .ledger-preview { padding-left: 42px; } .console-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .prototype-switcher { bottom: 10px; grid-template-columns: 32px minmax(150px, auto) 32px; } .prototype-switcher-label small { display: none; } }
+@media (max-width: 1100px) { .atlas-filter-strip { grid-template-columns: minmax(240px, .8fr) minmax(300px, 1fr); } .atlas-filter-strip .type-control { grid-column: 1 / -1; } }
+@media (max-width: 980px) { .atlas-results.two-column { grid-template-columns: 1fr; } .atlas-hero { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .shell { padding: 18px 14px 60px; } .atlas-filter-strip { grid-template-columns: 1fr; } .atlas-filter-strip .type-control { grid-column: auto; } .text-options { flex-wrap: wrap; } .source-header { align-items: flex-start; gap: 10px; } .atlas-card-head { align-items: flex-start; flex-wrap: wrap; } .result-path { max-width: 100%; margin-left: 0; text-align: left; } }
 </style>
 </head>
 <body>
@@ -1192,23 +1079,7 @@ window.__reforgerSearchVscode.postMessage({ type: 'webviewReady', width: window.
 </script>
 <script nonce="${nonce}">
 const vscode = window.__reforgerSearchVscode;
-const prototypeEnabled = ${prototypeVariantsEnabled};
-const prototypeVariants = [
-  { key: 'original', short: 'A', name: 'Original' },
-  { key: 'focus', short: 'B', name: 'Focus canvas' },
-  { key: 'inspector', short: 'C', name: 'Inspector' },
-  { key: 'ledger', short: 'D', name: 'Result ledger' },
-  { key: 'atlas', short: 'E', name: 'Source atlas' },
-  { key: 'console', short: 'F', name: 'Search console' },
-];
-const requestedVariant = new URLSearchParams(window.location.search).get('variant');
-const rememberedVariant = vscode.getState()?.prototypeVariant;
-const initialVariant = prototypeEnabled && prototypeVariants.some(variant => variant.key === requestedVariant)
-  ? requestedVariant
-  : prototypeEnabled && prototypeVariants.some(variant => variant.key === rememberedVariant)
-    ? rememberedVariant
-    : 'original';
-const state = { variant: initialVariant, query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, type: 'all', resultColumns: 1, results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, truncated: false, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, scopeOpen: false, scopeFilter: '', scopeRevision: '', scopeAuthority: '', scopeDiscoveryMs: 0, unavailableScopeIds: [], scopeSources: [{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true }, { id: 'wiki', label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true }], selectedScopeIds: ['workspace', 'wiki'], selectionTouched: false, removedScopeIds: [], uiPerformance: { renderCount: 0, lastRenderMs: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
+const state = { query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, type: 'all', resultColumns: 1, results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, truncated: false, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, scopeOpen: false, scopeFilter: '', scopeRevision: '', scopeAuthority: '', scopeDiscoveryMs: 0, unavailableScopeIds: [], scopeSources: [{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true }, { id: 'wiki', label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true }], selectedScopeIds: ['workspace', 'wiki'], selectionTouched: false, removedScopeIds: [], uiPerformance: { renderCount: 0, lastRenderMs: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
 let pendingQuerySelection;
 let previewContextLines = 1;
 let previewContextTimer;
@@ -1238,12 +1109,6 @@ const searchScope = () => {
   const overflow = selected.length > 3 ? '<span class="addon-chip">+' + (selected.length - 3) + ' more</span>' : '';
   const chips = shown + overflow || '<span class="muted">No search scopes selected</span>';
   return '<div class="search-scope"><button class="addon-trigger" data-scope-open><span>Edit selected sources</span><span>' + (state.scopeOpen ? '&#9650;' : '&#9660;') + '</span></button>' + (state.scopeOpen ? scopeChoices() : '') + '<div class="addon-chips">' + chips + '</div></div>';
-};
-const scopeChoicesInline = () => scopeChoices().replace('<div class="addon-menu">', '<div class="addon-menu inline">');
-const inlineScopePanel = () => {
-  const selected = eligibleScopeSources().filter(source => state.selectedScopeIds.includes(source.id));
-  const chips = selected.map(source => '<span class="addon-chip">' + esc(source.label) + '</span>').join('') || '<span class="muted">No search scopes selected</span>';
-  return '<div class="inline-scope-panel"><div class="addon-chips">' + chips + '</div>' + scopeChoicesInline() + '</div>';
 };
 const resultTypes = ${JSON.stringify(searchKindFilters.map(({ value, label }) => ({ value, label })))};
 const resourceResultTypes = ${JSON.stringify(searchResourceKindFilters.map(({ value, label }) => ({ value, label })))};
@@ -1352,34 +1217,11 @@ const semanticPreviewText = result => {
   });
   return output + highlightPreviewPart(text.slice(cursor), cursor, matchRange);
 };
-const resultRows = () => visibleResults().map(result => {
-  const selected = state.selected === result.id;
-  const external = result.sourceUrl ? '<button data-external="' + esc(result.id) + '">Open official page</button>' : '';
-  const preview = result.kind === 'documentation' ? '<div class="md-preview">' + renderMarkdown(result.excerpt) + '</div>' : '<pre class="snippet" data-result-preview="' + esc(result.id) + '">' + semanticPreviewText(result) + '</pre>';
-  return '<article class="source-row ' + (selected ? 'selected' : '') + '" data-open="' + esc(result.id) + '" tabindex="0" role="button"><div class="source-icon">' + (result.kind === 'documentation' ? 'W' : result.kind === 'text' ? 'T' : 'S') + '</div><div class="result-content"><div class="result-head"><h3>' + esc(result.title) + '</h3><div class="result-path">' + esc(result.path) + '</div></div><div class="result-detail">' + esc(result.detail) + ' · ' + esc(sourceLabel(result)) + '</div>' + preview + '<div class="result-actions">' + external + '</div></div></article>';
-}).join('');
-const resultGlyph = result => result.kind === 'documentation' ? 'W' : result.kind === 'text' ? 'T' : result.kind === 'resource' ? 'R' : 'S';
 const resultPreview = result => result.kind === 'documentation'
   ? '<div class="md-preview">' + renderMarkdown(result.excerpt) + '</div>'
   : '<pre class="snippet" data-result-preview="' + esc(result.id) + '">' + semanticPreviewText(result) + '</pre>';
 const resultExternalAction = result => result.sourceUrl ? '<button data-external="' + esc(result.id) + '">Open official page</button>' : '';
-const inspectorMatches = () => '<div class="inspector-list-items' + (state.resultColumns === 2 ? ' two-column' : '') + '">' + visibleResults().map(result => '<div class="inspector-match ' + (state.selected === result.id ? 'selected' : '') + '" data-inspect="' + esc(result.id) + '" tabindex="0" role="button"><div class="source-icon">' + resultGlyph(result) + '</div><div><strong>' + esc(result.title) + '</strong><span>' + esc(result.path) + '</span><small>' + esc(result.detail) + ' · ' + esc(sourceLabel(result)) + '</small></div></div>').join('') + '</div>';
-const inspectorDetail = () => {
-  const result = visibleResults().find(item => item.id === state.selected) ?? visibleResults()[0];
-  if (!result) return '<div class="empty">No results match this search.</div>';
-  return '<div class="inspector-detail-head"><div><div class="variant-kicker">' + esc(sourceLabel(result)) + ' · ' + esc(result.detail) + '</div><h2>' + esc(result.title) + '</h2><div class="result-path">' + esc(result.path) + '</div></div><div class="inspector-detail-actions"><button data-open="' + esc(result.id) + '">Open result</button>' + resultExternalAction(result) + '</div></div>' + resultPreview(result);
-};
-const ledgerRows = () => '<div class="ledger-rows' + (state.resultColumns === 2 ? ' two-column' : '') + '">' + visibleResults().map(result => '<article class="ledger-row" data-open="' + esc(result.id) + '" tabindex="0" role="button"><div class="ledger-row-main"><div class="source-icon">' + resultGlyph(result) + '</div><strong class="ledger-cell">' + esc(result.title) + '</strong><span class="ledger-cell">' + esc(result.path) + '</span><span class="ledger-cell">' + esc(result.detail) + '</span><span class="ledger-cell">' + esc(sourceLabel(result)) + '</span></div><div class="ledger-preview">' + resultPreview(result) + '<div class="result-actions">' + resultExternalAction(result) + '</div></div></article>').join('') + '</div>';
-const atlasLanes = () => {
-  const groups = new Map();
-  visibleResults().forEach(result => {
-    const label = sourceLabel(result);
-    const existing = groups.get(label) ?? [];
-    existing.push(result);
-    groups.set(label, existing);
-  });
-  return '<div class="atlas-lanes' + (state.resultColumns === 2 ? ' two-column' : '') + '">' + [...groups.entries()].map(([label, results]) => '<section class="atlas-lane"><div class="atlas-lane-head"><h2>' + esc(label) + '</h2><span class="tag">' + results.length + '</span></div>' + results.map(result => '<article class="atlas-card" data-open="' + esc(result.id) + '" tabindex="0" role="button"><div class="atlas-card-head"><strong>' + esc(result.title) + '</strong><span class="tag">' + esc(result.detail) + '</span></div><div class="result-path">' + esc(result.path) + '</div>' + resultPreview(result) + '<div class="result-actions">' + resultExternalAction(result) + '</div></article>').join('') + '</section>').join('') + '</div>';
-};
+const resultCards = () => '<div class="atlas-results' + (state.resultColumns === 2 ? ' two-column' : '') + '">' + visibleResults().map(result => '<article class="atlas-card ' + (state.selected === result.id ? 'selected' : '') + '" data-open="' + esc(result.id) + '" tabindex="0" role="button"><div class="atlas-card-head"><strong>' + esc(result.title) + '</strong><span class="tag">' + esc(result.detail) + '</span></div><div class="result-path">' + esc(result.path) + '</div><div class="result-detail">' + esc(sourceLabel(result)) + '</div>' + resultPreview(result) + '<div class="result-actions">' + resultExternalAction(result) + '</div></article>').join('') + '</div>';
 const updateResultPreviews = ids => {
   if (!ids.length) return;
   const pending = new Set(ids);
@@ -1393,7 +1235,6 @@ const updateResultPreviews = ids => {
 const hasTextSelection = () => Boolean(window.getSelection()?.toString());
 const captureSearchSnapshot = () => vscode.postMessage({ type: 'debugSnapshot', snapshot: {
   query: state.query,
-  prototypeVariant: state.variant,
   scopeOpen: state.scopeOpen,
   scopeFilter: state.scopeFilter,
   scopeRevision: state.scopeRevision,
@@ -1466,53 +1307,20 @@ const focusScopeFilter = (selectionStart, selectionEnd = selectionStart) => {
   filter.focus();
   filter.setSelectionRange(selectionStart, selectionEnd);
 };
-const prototypeSwitcher = () => {
-  if (!prototypeEnabled) return '';
-  const current = prototypeVariants.find(variant => variant.key === state.variant) ?? prototypeVariants[0];
-  return '<nav class="prototype-switcher" aria-label="Search UI prototypes"><button type="button" data-variant-prev aria-label="Previous prototype">←</button><div class="prototype-switcher-label">' + esc(current.short + ' — ' + current.name) + '<small>← → to compare</small></div><button type="button" data-variant-next aria-label="Next prototype">→</button></nav>';
-};
-const setPrototypeVariant = value => {
-  if (!prototypeEnabled || !prototypeVariants.some(variant => variant.key === value)) return;
-  state.variant = value;
-  vscode.setState({ ...(vscode.getState() ?? {}), prototypeVariant: value });
-  try {
-    const url = new URL(window.location.href);
-    url.searchParams.set('variant', value);
-    window.history.replaceState(null, '', url);
-  } catch {
-    // VS Code still preserves the selection through the Webview state above.
-  }
-  render(false);
-};
-const cyclePrototypeVariant = direction => {
-  const currentIndex = Math.max(0, prototypeVariants.findIndex(variant => variant.key === state.variant));
-  const nextIndex = (currentIndex + direction + prototypeVariants.length) % prototypeVariants.length;
-  setPrototypeVariant(prototypeVariants[nextIndex].key);
-};
-const variantWarnings = () => state.warnings.map(warning => '<div class="warning">' + esc(warning) + '</div>').join('');
-const variantResultBody = content => state.error
+const resultBody = content => state.error
   ? '<div class="error">' + esc(state.error) + '</div>'
   : state.mode !== 'resource' && selectedEligibleScopeIds().length === 0
     ? '<div class="empty">No search scopes selected.</div>'
     : visibleResults().length
       ? content
       : '<div class="empty">No results match this search.</div>';
-const variantBottomPager = () => state.query.trim() && totalMatches() > 0 ? '<div class="page-bottom">' + pageControls() + '</div>' : '';
-const renderFocusVariant = () => '<div class="shell variant-focus"><div class="focus-hero"><div class="variant-title-row"><div><div class="variant-kicker">B · Focus canvas</div><h1>Find the thing, then shape the corpus</h1></div><div class="variant-summary">' + totalMatchesLabel() + ' matches</div></div><div class="focus-query">' + queryField() + textSearchOptions() + '</div><div class="focus-steps"><div class="control-block focus-scope"><div class="group-label">1 · SEARCH SCOPE</div>' + searchScope() + '</div><div class="control-block"><div class="group-label">2 · SEARCH MODE</div>' + modeControls() + '</div><div class="control-block"><div class="group-label">3 · RESULT TYPE</div>' + typeControls() + '</div></div></div><section class="focus-results"><div class="source-header"><div><h2>' + totalMatchesLabel() + ' matches</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Showing up to ' + state.pageSize + ' total results') + '</span></div>' + pageControls(true) + '</div>' + variantWarnings() + variantResultBody('<div class="source-rows' + (state.resultColumns === 2 ? ' two-column' : '') + '">' + resultRows() + '</div>') + variantBottomPager() + '</section></div>';
-const renderInspectorVariant = () => '<div class="variant-inspector"><header class="inspector-top"><h1>Search inspector</h1>' + queryField() + '<div>' + textSearchOptions() + pageControls(true) + '</div></header><div class="inspector-layout"><aside class="inspector-sidebar"><div class="variant-kicker">C · Inspector</div><div class="control-block"><div class="group-label">SEARCH MODE</div>' + modeControls() + '</div><div class="control-block"><div class="group-label">RESULT TYPE</div>' + typeControls() + '</div><div class="inline-scope-panel"><div class="group-label">SEARCH SCOPE</div>' + inlineScopePanel() + '</div></aside><section class="inspector-list"><div class="inspector-list-head"><strong>' + totalMatchesLabel() + ' matches</strong><div class="muted">Page ' + state.page + ' of ' + totalPages() + '</div></div>' + (state.error || (state.mode !== 'resource' && selectedEligibleScopeIds().length === 0) || !visibleResults().length ? variantResultBody('') : inspectorMatches()) + '</section><section class="inspector-detail">' + variantWarnings() + (state.error || (state.mode !== 'resource' && selectedEligibleScopeIds().length === 0) ? variantResultBody('') : inspectorDetail()) + variantBottomPager() + '</section></div></div>';
-const renderLedgerVariant = () => '<div class="shell variant-ledger"><div class="variant-title-row"><div><div class="variant-kicker">D · Result ledger</div><h1>Search as an evidence table</h1></div><div class="variant-summary">' + totalMatchesLabel() + ' total</div></div><div class="ledger-command">' + queryField() + textSearchOptions() + '</div><div class="ledger-filters"><div class="control-block"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '</div><div class="control-block"><div class="group-label">SEARCH MODE</div>' + modeControls() + '</div><div class="control-block"><div class="group-label">RESULT TYPE</div>' + typeControls() + '</div></div><div class="source-header"><div><h2>Matches</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Sorted by the authoritative search result order') + '</span></div>' + pageControls(true) + '</div>' + variantWarnings() + '<div class="ledger-head"><span></span><span>Name</span><span>Path</span><span>Kind</span><span>Source</span></div>' + variantResultBody(ledgerRows()) + variantBottomPager() + '</div>';
-const renderAtlasVariant = () => '<div class="shell variant-atlas"><div class="atlas-hero"><div><div class="variant-kicker">E · Source atlas</div><h1>See where a concept lives</h1><p class="muted">Each lane is one source authority, so overlap and gaps stay visible.</p></div><div class="atlas-controls">' + queryField() + textSearchOptions() + '</div></div><div class="atlas-filter-strip"><div class="control-block"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '</div><div class="control-block"><div class="group-label">SEARCH MODE</div>' + modeControls() + '</div><div class="control-block"><div class="group-label">RESULT TYPE</div>' + typeControls() + '</div></div><div class="source-header"><div><h2>' + totalMatchesLabel() + ' matches across ' + new Set(visibleResults().map(sourceLabel)).size + ' lanes</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Page ' + state.page + ' of ' + totalPages()) + '</span></div>' + pageControls(true) + '</div>' + variantWarnings() + variantResultBody(atlasLanes()) + variantBottomPager() + '</div>';
-const renderConsoleVariant = () => '<div class="shell variant-console"><div class="console-bar"><div class="console-brand">RST / SEARCH</div>' + queryField() + textSearchOptions() + '</div><div class="console-dashboard"><aside class="console-controls"><div class="variant-kicker">F · Search console</div><div class="control-block"><div class="group-label">MODE</div>' + modeControls() + '</div><div class="control-block"><div class="group-label">TYPE</div>' + typeControls() + '</div><div class="inline-scope-panel"><div class="group-label">SOURCES</div>' + inlineScopePanel() + '</div></aside><section class="console-stage"><div class="console-stats"><div class="console-stat"><span class="muted">Matches</span><strong>' + totalMatchesLabel() + '</strong></div><div class="console-stat"><span class="muted">Page</span><strong>' + state.page + ' / ' + totalPages() + '</strong></div><div class="console-stat"><span class="muted">Active sources</span><strong>' + selectedEligibleScopeIds().length + '</strong></div>' + pageControls(true) + '</div>' + variantWarnings() + variantResultBody('<div class="source-rows' + (state.resultColumns === 2 ? ' two-column' : '') + '">' + resultRows() + '</div>') + variantBottomPager() + '</section></div></div>';
 function render(focusQuery = false) {
   const renderStartedAt = performance.now();
-  const results = visibleResults();
-  const body = state.error ? '<div class="error">' + esc(state.error) + '</div>' : state.mode !== 'resource' && selectedEligibleScopeIds().length === 0 ? '<div class="empty">No search scopes selected.</div>' : results.length ? '<div class="source-rows' + (state.resultColumns === 2 ? ' two-column' : '') + '">' + resultRows() + '</div>' : '<div class="empty">No results match this search.</div>';
   const warnings = state.warnings.map(warning => '<div class="warning">' + esc(warning) + '</div>').join('');
   const bottomPager = state.query.trim() && totalMatches() > 0 ? '<div class="page-bottom">' + pageControls() + '</div>' : '';
-  const original = '<div class="shell"><div class="eyebrow">Source browser · live MCP search</div><h1>Find usage in Reforger</h1><div class="toolbar"><input id="query" value="' + esc(state.query) + '" placeholder="Search a symbol, concept, or phrase..." aria-label="Search query">' + textSearchOptions() + '</div><div class="layout"><aside class="source-rail"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '<div class="group-label">SEARCH MODE</div>' + modeButtons() + (state.mode === 'text' ? '' : '<div class="group-label">RESULT TYPE</div>' + typeButtons()) + '</aside><section><div class="source-header"><div><h2>' + totalMatchesLabel() + ' matches</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Showing up to ' + state.pageSize + ' total results') + '</span></div>' + pageControls(true) + '</div><div class="status">' + (state.status === 'error' ? 'Search failed' : '') + '</div>' + warnings + body + bottomPager + '</section></div></div>';
-  const pageRenderers = { original: () => original, focus: renderFocusVariant, inspector: renderInspectorVariant, ledger: renderLedgerVariant, atlas: renderAtlasVariant, console: renderConsoleVariant };
-  const renderPage = prototypeEnabled ? pageRenderers[state.variant] ?? pageRenderers.original : pageRenderers.original;
-  document.getElementById('app').innerHTML = renderPage() + prototypeSwitcher();
+  const sourceCount = new Set(visibleResults().map(sourceLabel)).size;
+  const typeControl = state.mode === 'text' ? '' : '<div class="control-block type-control"><div class="group-label">RESULT TYPE</div>' + typeControls() + '</div>';
+  document.getElementById('app').innerHTML = '<div class="shell search-atlas"><div class="atlas-hero"><div><h1>See where a concept lives</h1><p class="muted">Compare matching code, resources, and documentation across source authorities.</p></div><div class="atlas-controls">' + queryField() + textSearchOptions() + '</div></div><div class="atlas-filter-strip"><div class="control-block scope-control"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '</div><div class="control-block mode-control"><div class="group-label">SEARCH MODE</div>' + modeControls() + '</div>' + typeControl + '</div><div class="source-header"><div><h2>' + totalMatchesLabel() + ' matches across ' + sourceCount + (sourceCount === 1 ? ' source' : ' sources') + '</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Page ' + state.page + ' of ' + totalPages()) + '</span></div>' + pageControls(true) + '</div>' + warnings + resultBody(resultCards()) + bottomPager + '</div>';
 	if (state.status !== 'loading') {
 		document.querySelector('.source-header > div:first-child > .muted')?.remove();
 	}
@@ -1542,25 +1350,12 @@ function render(focusQuery = false) {
     element.addEventListener('click', event => { if (event.target.closest('[data-external]') || hasTextSelection()) return; openResult(element); });
     element.addEventListener('keydown', event => { if (event.target.closest('[data-external]')) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openResult(element); } });
   });
-  document.querySelectorAll('[data-inspect]').forEach(element => {
-    const select = () => { state.selected = element.dataset.inspect; render(false); };
-    element.addEventListener('click', select);
-    element.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(); } });
-  });
   document.querySelectorAll('[data-external]').forEach(element => element.addEventListener('click', event => { event.stopPropagation(); vscode.postMessage({ type: 'external', id: element.dataset.external }); }));
-  document.querySelectorAll('[data-variant-prev]').forEach(element => element.addEventListener('click', () => cyclePrototypeVariant(-1)));
-  document.querySelectorAll('[data-variant-next]').forEach(element => element.addEventListener('click', () => cyclePrototypeVariant(1)));
   state.uiPerformance.lastRenderMs = performance.now() - renderStartedAt;
   state.uiPerformance.renderCount += 1;
 }
 document.addEventListener('keydown', event => {
   if (event.ctrlKey && event.key === 'F3') { event.preventDefault(); event.stopPropagation(); captureSearchSnapshot(); return; }
-  const editingTarget = event.target instanceof Element && Boolean(event.target.closest('input, textarea, select, [contenteditable="true"]'));
-  if (prototypeEnabled && !editingTarget && !event.ctrlKey && !event.altKey && !event.metaKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
-    event.preventDefault();
-    cyclePrototypeVariant(event.key === 'ArrowLeft' ? -1 : 1);
-    return;
-  }
   if (document.activeElement !== document.body || event.ctrlKey || event.altKey || event.metaKey || event.isComposing || event.key.length !== 1) return;
   const query = document.getElementById('query');
   query.focus();
