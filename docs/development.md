@@ -61,6 +61,52 @@ explicit example targets, so existing commands such as
 the supported way to run them. They are developer tooling and never a runtime
 dependency of the extension.
 
+To build a scorecard for the public non-Workbench MCP catalogue through real
+stdio processes, run:
+
+```powershell
+npm run report:mcp-runtime -- --server <server.exe> `
+  --addon-index-storage <addon-indexes> `
+  --addon-source-inventory <graph.json> `
+  --external-index-mode loaded `
+  --workspace-scripts <scripts-root> `
+  --dependency-project <addon.gproj> `
+  --require-all
+```
+
+The runner discovers the live `tools/list` catalogue and excludes every
+`workbench_*` tool. Recognized tools receive configured scenarios; a newly
+listed tool without a scenario is a visible skipped coverage gap. The runner
+follows real search handoffs into inspection, member, relationship, and bounded
+source-read calls for Game Data and workspace code, follows an example result
+into Game Data source, and follows the Official Wiki search-to-read handoff.
+Text search covers narrow and broad literals, a regular expression, pagination
+when a cursor is returned, and repeated same-process cache behavior. Each tool
+records its first invocation, seven warm samples by default, response size, a
+source-free stable-result fingerprint, result counts, and the applicable
+operation budget.
+
+Three fresh-process samples record process-to-initialize and first Game Data
+status latency; these are process-cold observations, not claims about a cold OS
+filesystem cache. Warm concurrency probes run at 1, 4, and 8 requests against
+the first available semantic search surface, matching the server's bounded
+admission ceiling. Change these with `--cold-samples`, `--samples`, and
+`--concurrency-levels`; concurrency levels above eight are rejected. Use the
+query flags shown by `--help` when defaults do not produce a handoff in the
+selected corpus.
+
+The default JSON and Markdown artifacts are written under ignored
+`tools/reports/`. Retrieved source, excerpts, Wiki Markdown, and query strings
+are not copied into either report. Unavailable authorities and missing
+handoffs are reported as skipped rather than fast successes. Without
+`--require-all`, partial coverage remains a successful diagnostic run; with it,
+any skipped listed API makes the command exit nonzero. Tool errors, failed
+concurrency calls, unstable fingerprints, protocol failures, and runner
+failures always exit nonzero. Timings and over-budget statuses are local trend
+evidence rather than portable CI gates; pass `--enforce-budgets` only for a
+controlled machine/profile where those thresholds are intentional. Use
+`npm run test:mcp-runtime-report` as the deterministic report contract gate.
+
 To reproduce full-text search performance through the real MCP stdio path, run
 one of:
 

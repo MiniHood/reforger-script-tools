@@ -309,6 +309,8 @@
     "mcp-api:check": "node tools/generate-mcp-api.mjs --check",
     "test:workbench-mcp:runner": "node --test tools/workbench-mcp-conformance.test.mjs",
     "test:workbench-mcp:contract": "node tools/workbench-mcp-conformance.mjs",
+    "test:mcp-runtime-report": "node --test tools/mcp-runtime-performance-report.test.mjs",
+    "report:mcp-runtime": "node tools/mcp-runtime-performance-report.mjs",
     "report:text-search": "node tools/text-search-performance.mjs",
     "test:packaged-official-wiki": "npm run package && node tools/test-packaged-official-wiki.mjs",
     "lint": "eslint src",
