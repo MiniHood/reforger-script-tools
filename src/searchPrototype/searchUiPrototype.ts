@@ -44,6 +44,7 @@ interface ActiveSearch {
 	latestResults: Map<string, SearchHit>;
 	requestSequence: number;
 	semanticDocuments: Map<string, Promise<SemanticSourceDocument | undefined>>;
+	scopeRefresh: Promise<void> | undefined;
 	disposed: boolean;
 }
 
@@ -101,13 +102,14 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 		latestResults: new Map(),
 		requestSequence: 0,
 		semanticDocuments: new Map(),
+		scopeRefresh: undefined,
 		disposed: false,
 	};
 	activePanel = panel;
 	panel.webview.html = renderSearchUi(panel.webview);
 	const indexModeSubscription = vscode.workspace.onDidChangeConfiguration(event => {
 		if (event.affectsConfiguration(`${workbenchConfig.section}.${workbenchConfig.settings.externalIndexMode}`)) {
-			void restartSearchScopeForIndexMode(context, active);
+			void refreshSearchScope(context, active);
 		}
 	});
 	panel.webview.onDidReceiveMessage(message => {
@@ -144,6 +146,25 @@ async function restartSearchScopeForIndexMode(
 	await publishSearchScope(context, active);
 }
 
+async function refreshSearchScope(
+	context: vscode.ExtensionContext,
+	active: ActiveSearch,
+): Promise<void> {
+	if (active.scopeRefresh) {
+		await active.scopeRefresh;
+		return;
+	}
+	const refresh = restartSearchScopeForIndexMode(context, active);
+	active.scopeRefresh = refresh;
+	try {
+		await refresh;
+	} finally {
+		if (active.scopeRefresh === refresh) {
+			active.scopeRefresh = undefined;
+		}
+	}
+}
+
 async function handleMessage(
 	context: vscode.ExtensionContext,
 	active: ActiveSearch,
@@ -168,6 +189,10 @@ async function handleMessage(
 			line: numberField(message.line),
 			column: numberField(message.column),
 		});
+		return;
+	}
+	if (message.type === 'refreshScope') {
+		await refreshSearchScope(context, active);
 		return;
 	}
 	if (message.type === 'debugSnapshot') {
@@ -1154,7 +1179,7 @@ function render(focusQuery = true) {
   document.querySelectorAll('[data-text-option]').forEach(element => element.addEventListener('change', () => { state[element.dataset.textOption] = element.checked; search(true); }));
   document.querySelectorAll('[data-mode]').forEach(element => element.addEventListener('click', () => { state.mode = element.dataset.mode === 'text' ? 'text' : 'semantic'; state.page = 1; search(true); }));
   document.querySelectorAll('[data-type]').forEach(element => element.addEventListener('click', () => { state.type = element.dataset.type; state.page = 1; search(true); }));
-  document.querySelectorAll('[data-scope-open]').forEach(element => element.addEventListener('click', () => { state.scopeOpen = !state.scopeOpen; render(false); }));
+  document.querySelectorAll('[data-scope-open]').forEach(element => element.addEventListener('click', () => { if (!state.scopeOpen) vscode.postMessage({ type: 'refreshScope' }); state.scopeOpen = !state.scopeOpen; render(false); }));
   document.querySelectorAll('[data-scope-choice]').forEach(element => element.addEventListener('change', () => { state.selectionTouched = true; state.selectedScopeIds = element.checked ? [...new Set([...state.selectedScopeIds, element.dataset.scopeChoice])] : state.selectedScopeIds.filter(value => value !== element.dataset.scopeChoice); render(false); search(true); }));
   document.querySelectorAll('[data-scope-all]').forEach(element => element.addEventListener('click', () => { const eligible = eligibleScopeSources(); const allSelected = allEligibleScopesSelected(); const eligibleIds = new Set(eligible.map(source => source.id)); state.selectionTouched = true; state.selectedScopeIds = allSelected ? state.selectedScopeIds.filter(id => !eligibleIds.has(id)) : [...new Set([...state.selectedScopeIds, ...eligibleIds])]; render(false); search(true); }));
   document.querySelectorAll('[data-scope-filter]').forEach(element => element.addEventListener('input', () => { state.scopeFilter = element.value; render(false); const filter = document.querySelector('[data-scope-filter]'); if (filter) { filter.focus(); filter.setSelectionRange(filter.value.length, filter.value.length); } }));

@@ -148,7 +148,11 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /const searchScope = \(\) =>/);
 		assert.match(searchUiSource, /data-scope-choice/);
 		assert.match(searchUiSource, /data-scope-all/);
-		assert.doesNotMatch(searchUiSource, /data-scope-refresh|message\.type === 'refreshScope'|refreshSearchScope/);
+		assert.doesNotMatch(searchUiSource, /data-scope-refresh/);
+		assert.match(searchUiSource, /message\.type === 'refreshScope'/);
+		assert.match(searchUiSource, /async function refreshSearchScope/);
+		assert.match(searchUiSource, /if \(!state\.scopeOpen\) vscode\.postMessage\(\{ type: 'refreshScope' \}\)/);
+		assert.match(searchUiSource, /scopeRefresh: Promise<void> \| undefined/);
 		assert.match(searchUiSource, /<div class="scope-actions"><input class="addon-filter"[\s\S]*?<button type="button" data-scope-all>/);
 		assert.match(searchUiSource, /Select all/);
 		assert.match(searchUiSource, /Unselect all/);
