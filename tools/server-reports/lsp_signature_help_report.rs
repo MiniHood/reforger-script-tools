@@ -1,13 +1,12 @@
-use reforger_language_server::ast::AstSourceFile;
 use reforger_language_server::index::SymbolIndex;
 use reforger_language_server::lsp::{
     signature_help_report_for_source_position, LspPosition, LspSignatureHelpReport,
 };
 use reforger_language_server::model::{
-    source_category_for_path, SourceFileMetadata, SourceKind, SymbolCatalog,
-    SOURCE_PRIORITY_GAME_DATA,
+    source_category_for_path, SourceFileMetadata, SourceKind, SOURCE_PRIORITY_GAME_DATA,
 };
 use reforger_language_server::parser::parse_source;
+use reforger_language_server::semantic_file::SemanticFile;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -178,11 +177,10 @@ fn index_for_source(
     priority: u16,
 ) -> SymbolIndex {
     let parse = parse_source(source);
-    let ast = AstSourceFile::new(source, &parse);
     let relative_path = file.strip_prefix(root).unwrap_or(file).to_path_buf();
-    let catalog = SymbolCatalog::from_ast_with_metadata(
-        source,
-        &ast,
+    let semantic_file = SemanticFile::build(source, &parse);
+    SymbolIndex::from_semantic_files([(
+        &semantic_file,
         SourceFileMetadata {
             kind,
             category: source_category_for_path(kind, Some(&relative_path)),
@@ -192,8 +190,7 @@ fn index_for_source(
             relative_path: Some(relative_path),
             priority,
         },
-    );
-    SymbolIndex::from_catalogs([&catalog])
+    )])
 }
 
 fn position_after_needle(source: &str, needle: &str) -> LspPosition {

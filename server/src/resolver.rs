@@ -1897,12 +1897,12 @@ fn push_unique_id(ids: &mut Vec<GlobalSymbolId>, id: GlobalSymbolId) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
     use crate::model::{
-        source_category_for_path, SourceFileMetadata, SymbolCatalog, SOURCE_PRIORITY_GAME_DATA,
+        source_category_for_path, SourceFileMetadata, SOURCE_PRIORITY_GAME_DATA,
         SOURCE_PRIORITY_WORKSPACE,
     };
     use crate::parser::parse_source;
+    use crate::semantic_file::SemanticFile;
 
     #[test]
     fn declaration_identifier_resolves_to_itself() {
@@ -4684,9 +4684,8 @@ class Example
     fn index_for_source(source: &str, metadata: SourceFileMetadata) -> SymbolIndex {
         let parse = parse_source(source);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
-        let ast = AstSourceFile::new(source, &parse);
-        let catalog = SymbolCatalog::from_ast_with_metadata(source, &ast, metadata);
-        SymbolIndex::from_catalogs([&catalog])
+        let semantic_file = SemanticFile::build(source, &parse);
+        SymbolIndex::from_semantic_files([(&semantic_file, metadata)])
     }
 
     fn workspace_metadata(path: &str) -> SourceFileMetadata {

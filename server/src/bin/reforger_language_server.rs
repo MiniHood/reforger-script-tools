@@ -340,7 +340,6 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
 
     while let Some(argument) = args.next() {
         match argument.as_str() {
-            "--index-cache" => game_data.cache_path = Some(path_value(&mut args, "--index-cache")?),
             "--addon-source-inventory" => {
                 game_data.addon_source_inventory =
                     Some(path_value(&mut args, "--addon-source-inventory")?)
@@ -425,7 +424,7 @@ fn string_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<S
 
 fn print_help() {
     println!(
-        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server mcp-api-bundle\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|read-logs|integration-status|bootstrap-integration|maintain-integration|process-status|launch-default|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --dependency-project <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --external-index-mode <all|loaded|none>\n  --index-cache <legacy single-cache path>\n  --workspace-scripts <path> (repeatable)\n  --dependency-project <path> (repeatable)\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <test/development override>"
+        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server mcp-api-bundle\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|read-logs|integration-status|bootstrap-integration|maintain-integration|process-status|launch-default|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --dependency-project <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --external-index-mode <all|loaded|none>\n  --workspace-scripts <path> (repeatable)\n  --dependency-project <path> (repeatable)\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <test/development override>"
     );
 }
 
@@ -454,24 +453,20 @@ mod tests {
     }
 
     #[test]
-    fn explicit_mcp_mode_accepts_only_the_parser_owned_cache() {
-        let mode = parse_args_from(
+    fn explicit_mcp_mode_rejects_the_retired_single_cache_argument() {
+        let result = parse_args_from(
             [
                 "mcp".to_string(),
                 "--index-cache".to_string(),
                 "cache.bin".to_string(),
             ]
             .into_iter(),
-        )
-        .expect("valid MCP arguments");
-
-        let ServerMode::Mcp(options) = mode else {
-            panic!("expected MCP mode");
-        };
-        assert_eq!(
-            options.game_data.cache_path,
-            Some(PathBuf::from("cache.bin"))
         );
+        let Err(error) = result else {
+            panic!("the retired single-cache route must not be accepted");
+        };
+
+        assert!(error.contains("unknown MCP argument '--index-cache'"));
     }
 
     #[test]

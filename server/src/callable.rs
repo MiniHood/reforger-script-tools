@@ -5,6 +5,76 @@ use crate::lexer::{lex, Operator, TextSpan, TokenKind};
 use crate::syntax::{SyntaxElement, SyntaxKind, SyntaxNode};
 use std::collections::BTreeSet;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BuiltinCallableParameter {
+    pub(crate) name: &'static str,
+    pub(crate) type_text: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BuiltinCallableFact {
+    pub(crate) signature: &'static str,
+    pub(crate) parameters: &'static [BuiltinCallableParameter],
+}
+
+const ATTRIBUTE_PARAMETERS: &[BuiltinCallableParameter] = &[
+    BuiltinCallableParameter {
+        name: "defvalue",
+        type_text: "string",
+    },
+    BuiltinCallableParameter {
+        name: "uiwidget",
+        type_text: "string",
+    },
+    BuiltinCallableParameter {
+        name: "desc",
+        type_text: "string",
+    },
+    BuiltinCallableParameter {
+        name: "params",
+        type_text: "string",
+    },
+    BuiltinCallableParameter {
+        name: "enums",
+        type_text: "ParamEnumArray",
+    },
+    BuiltinCallableParameter {
+        name: "category",
+        type_text: "string",
+    },
+    BuiltinCallableParameter {
+        name: "precision",
+        type_text: "int",
+    },
+    BuiltinCallableParameter {
+        name: "enumType",
+        type_text: "typename",
+    },
+    BuiltinCallableParameter {
+        name: "prefabbed",
+        type_text: "bool",
+    },
+];
+
+const ATTRIBUTE_CALLABLE: BuiltinCallableFact = BuiltinCallableFact {
+    signature: r#"void Attribute(
+	string defvalue = "",
+	string uiwidget = "auto",
+	string desc = "",
+	string params = "",
+	ParamEnumArray enums = NULL,
+	string category = "",
+	int precision = 3,
+	typename enumType = void,
+	bool prefabbed = false
+)"#,
+    parameters: ATTRIBUTE_PARAMETERS,
+};
+
+pub(crate) fn builtin_callable_fact(name: &str) -> Option<&'static BuiltinCallableFact> {
+    (name == "Attribute").then_some(&ATTRIBUTE_CALLABLE)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CallableSignatureParts {
     pub(crate) parameters: String,

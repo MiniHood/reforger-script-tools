@@ -159,8 +159,9 @@ source line starts; dense symbol IDs and lookup maps are structural or derived
 runtime facts and are not duplicated in the payload. Cache-sized integers use
 fixed-width `u32` records, symbol option/list presence shares one flag word,
 and line starts use fixed-width positive deltas. Cold indexing builds the final
-runtime-cache projection directly and encodes that index without constructing a
-second cache object graph. Warm hydration decodes directly into runtime records
+runtime-cache projection from compiler-owned `SemanticFile` declaration facts
+and encodes that index without constructing a second declaration model or cache
+object graph. Warm hydration decodes directly into runtime records
 and builds lookup maps once, so neither path materializes an intermediate copy
 of every symbol.
 

@@ -2,14 +2,14 @@ use reforger_language_server::index::SymbolIndex;
 use reforger_language_server::index_build::{build_index, IndexBuildConfig, IndexSourceRoot};
 use reforger_language_server::lexer::TextSpan;
 use reforger_language_server::model::{
-    source_category_for_path, SourceFileMetadata, SourceKind, SymbolCatalog, SymbolKind,
-    SOURCE_PRIORITY_GAME_DATA,
+    source_category_for_path, SourceFileMetadata, SourceKind, SymbolKind, SOURCE_PRIORITY_GAME_DATA,
 };
 use reforger_language_server::parser::parse_source;
 use reforger_language_server::reference_finder::{
     scan_file_local_references_with_external, UnresolvedReferenceToken,
 };
 use reforger_language_server::scope::LexicalScopeModel;
+use reforger_language_server::semantic_file::SemanticFile;
 use std::collections::BTreeMap;
 use std::env;
 use std::fmt::Write as _;
@@ -75,7 +75,6 @@ fn run() -> Result<(), String> {
         let relative_path = relative_display(file, &args.scripts_path);
         let relative_path_buf = PathBuf::from(&relative_path);
         let parse = parse_source(&source);
-        let ast = reforger_language_server::ast::AstSourceFile::new(&source, &parse);
         let metadata = SourceFileMetadata {
             kind: SourceKind::GameData,
             category: source_category_for_path(SourceKind::GameData, Some(&relative_path_buf)),
@@ -85,8 +84,8 @@ fn run() -> Result<(), String> {
             relative_path: Some(relative_path_buf),
             priority: SOURCE_PRIORITY_GAME_DATA,
         };
-        let catalog = SymbolCatalog::from_ast_with_metadata(&source, &ast, metadata);
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let semantic_file = SemanticFile::build(&source, &parse);
+        let index = SymbolIndex::from_semantic_files([(&semantic_file, metadata)]);
         let scope = LexicalScopeModel::from_parse_and_index(&parse, &index);
         let scan = scan_file_local_references_with_external(
             &source,

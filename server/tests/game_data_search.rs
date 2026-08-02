@@ -1,4 +1,7 @@
-use reforger_language_server::game_data_catalogue::{GameDataCatalogue, GameDataCatalogueConfig};
+use reforger_language_server::addon_sources::load_or_build_loaded_addon_indexes;
+use reforger_language_server::game_data_catalogue::{
+    GameDataCatalogue, GameDataCatalogueConfig, GameDataExternalIndexMode,
+};
 use reforger_language_server::game_data_inspection::GameDataSourceReadRequest;
 use reforger_language_server::game_data_search::{
     search, search_scoped, GameDataAddonIdentity, GameDataAddonMap, GameDataSearchRequest,
@@ -7,9 +10,6 @@ use reforger_language_server::game_data_search::{
 use reforger_language_server::index::SymbolIndex;
 use reforger_language_server::index_build::{
     build_index, IndexBuildConfig, IndexBuildControl, IndexSourceRoot,
-};
-use reforger_language_server::index_cache::{
-    load_or_build_game_data_index, GameDataIndexCacheConfig,
 };
 use reforger_language_server::model::{SourceKind, SOURCE_PRIORITY_GAME_DATA};
 use std::collections::BTreeMap;
@@ -372,17 +372,7 @@ fn catalogue_search_keeps_source_lines_from_its_initialized_snapshot() {
     fs::create_dir_all(&scripts).expect("create scripts");
     let source = scripts.join("Snapshot.c");
     fs::write(&source, "\nclass SnapshotTarget {}\n").expect("write source");
-    let cache_path = fixture.path.join("cache.bin");
-    load_or_build_game_data_index(&GameDataIndexCacheConfig {
-        scripts_root: fixture.path.clone(),
-        metadata_path: None,
-        cache_path: cache_path.clone(),
-    })
-    .expect("create cache fixture");
-    let catalogue = GameDataCatalogue::new(GameDataCatalogueConfig {
-        cache_path: Some(cache_path),
-        ..GameDataCatalogueConfig::default()
-    });
+    let catalogue = layered_catalogue(&fixture.path);
     catalogue
         .status(&IndexBuildControl::default())
         .expect("initialize catalogue");
@@ -404,17 +394,7 @@ fn catalogue_source_read_returns_the_authoritative_source_line() {
     let scripts = fixture.path.join("Game");
     fs::create_dir_all(&scripts).expect("create scripts");
     fs::write(scripts.join("Source.c"), "// docs\nclass SourceTarget {}\n").expect("write source");
-    let cache_path = fixture.path.join("cache.bin");
-    load_or_build_game_data_index(&GameDataIndexCacheConfig {
-        scripts_root: fixture.path.clone(),
-        metadata_path: None,
-        cache_path: cache_path.clone(),
-    })
-    .expect("create cache fixture");
-    let catalogue = GameDataCatalogue::new(GameDataCatalogueConfig {
-        cache_path: Some(cache_path),
-        ..GameDataCatalogueConfig::default()
-    });
+    let catalogue = layered_catalogue(&fixture.path);
     let revision = catalogue
         .status(&IndexBuildControl::default())
         .expect("initialize catalogue")
@@ -587,6 +567,29 @@ fn broad_semantic_search_retains_only_the_best_reachable_results() {
     assert_eq!(page.results[0].name, "Common09900");
     assert_eq!(page.results[99].name, "Common09999");
     assert!(page.next_cursor.is_none());
+}
+
+fn layered_catalogue(source_root: &PathBuf) -> GameDataCatalogue {
+    let cache_root = source_root.join("cache");
+    let inventory = cache_root.join("loaded-addons.json");
+    let storage = cache_root.join("addon-indexes");
+    fs::create_dir_all(&cache_root).expect("create layered cache root");
+    fs::write(
+        &inventory,
+        format!(
+            r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"58D0FB3206B6F859","id":"ArmaReforger","title":"Arma Reforger","sourceRoot":{}}}]}}"#,
+            serde_json::to_string(source_root).expect("serialize fixture root"),
+        ),
+    )
+    .expect("write loaded add-on inventory");
+    load_or_build_loaded_addon_indexes(&inventory, &storage, &[], &IndexBuildControl::default())
+        .expect("build layered fixture index");
+    GameDataCatalogue::new(GameDataCatalogueConfig {
+        addon_source_inventory: Some(inventory),
+        addon_index_storage: Some(storage),
+        external_index_mode: GameDataExternalIndexMode::Loaded,
+        ..GameDataCatalogueConfig::default()
+    })
 }
 
 fn line_starts(

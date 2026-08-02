@@ -114,8 +114,6 @@ one of:
 npm run report:text-search -- --server <server.exe> --source workspace `
   --workspace-scripts <scripts-root> --query <literal>
 npm run report:text-search -- --server <server.exe> --source game-data `
-  --index-cache <symbols.bin> --query <literal>
-npm run report:text-search -- --server <server.exe> --source game-data `
   --addon-index-storage <addon-indexes> --addon-source-inventory <graph.json> `
   --dependency-project <addon.gproj> --external-index-mode loaded `
   --workspace-scripts <scripts-root> --query <literal>

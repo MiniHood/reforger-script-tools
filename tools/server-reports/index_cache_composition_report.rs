@@ -940,12 +940,12 @@ fn percent(part: usize, total: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reforger_language_server::ast::AstSourceFile;
     use reforger_language_server::index::SymbolIndex;
     use reforger_language_server::model::{
-        SourceFileMetadata, SourceKind, SymbolCatalog, SOURCE_PRIORITY_GAME_DATA,
+        SourceFileMetadata, SourceKind, SOURCE_PRIORITY_GAME_DATA,
     };
     use reforger_language_server::parser::parse_source;
+    use reforger_language_server::semantic_file::SemanticFile;
 
     #[test]
     fn composition_counts_categories_and_kinds() {
@@ -1038,14 +1038,29 @@ class RuntimeClass
 "#,
             metadata(SourceCategory::DocsDoxygen, "GameLib/WorldSystemsDocs.c"),
         );
-        SymbolIndex::from_catalogs([&runtime, &docs])
+        index_from([&runtime, &docs])
     }
 
-    fn catalog(source: &str, metadata: SourceFileMetadata) -> SymbolCatalog<'_> {
+    struct TestSemanticFile {
+        semantic: SemanticFile,
+        metadata: SourceFileMetadata,
+    }
+
+    fn catalog(source: &str, metadata: SourceFileMetadata) -> TestSemanticFile {
         let parse = parse_source(source);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
-        let ast = AstSourceFile::new(source, &parse);
-        SymbolCatalog::from_ast_with_metadata(source, &ast, metadata)
+        TestSemanticFile {
+            semantic: SemanticFile::build(source, &parse),
+            metadata,
+        }
+    }
+
+    fn index_from<'a>(files: impl IntoIterator<Item = &'a TestSemanticFile>) -> SymbolIndex {
+        SymbolIndex::from_semantic_files(
+            files
+                .into_iter()
+                .map(|file| (&file.semantic, file.metadata.clone())),
+        )
     }
 
     fn metadata(category: SourceCategory, relative_path: &str) -> SourceFileMetadata {

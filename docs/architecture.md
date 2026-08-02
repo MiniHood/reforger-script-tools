@@ -186,11 +186,14 @@ from the complete document; Official Wiki text remains Markdown evidence and
 does not enter that semantic pipeline. Workspace remains a separate live
 source, while Official Wiki is eligible only for explicit text search in the
 editor UI.
-The retired single-cache `--index-cache` startup remains only as a temporary
-compatibility route for existing direct MCP clients and integration fixtures.
-Remove it when those fixtures and supported external launch configurations all
-supply the inventory, add-on index-storage, and external-index-mode inputs;
-extension-generated launch configurations already use that explicit route.
+The Search page's resource mode is separate from those indexed-source modes:
+it queries Workbench's registered-resource catalogue by native terms and fixed
+resource kinds, then opens the exact canonical `ResourceName` through
+an `enfusion://` Workbench link rather than attempting filesystem navigation.
+MCP accepts only the explicit layered inputs: add-on source inventory, add-on
+index storage, external-index mode, and any workspace dependency descriptors.
+Configuration export and the extension-hosted Search page derive their child
+process arguments from the same launch policy.
 The generated [MCP API Reference](mcp-api.md) routes to the exact generated
 per-tool contracts that project the public tool interface.
 The [MCP Runtime guide](mcp-runtime.md) explains its process lifecycle,
@@ -367,20 +370,15 @@ not enumerate arbitrary properties, prove every relative, or make a display
 name an identity. The reusable AI workflow is documented in
 [Workbench world-entity relation search](workbench-world-entity-search.md).
 
-The read-only `workbench_list_resources` capability accepts only fixed resource
-kinds and an optional bounded text query. Workbench's resource database applies
-the filter and pagination before the response crosses the NET API. Continuation
-cursors are opaque and bound to the same kind/query set; results include a
-logical project revision derived from loaded addon identities, never a local
-filesystem path.
-
-The read-only `workbench_search_resources` capability uses that same native
+The read-only `workbench_search_resources` capability uses the native
 registered-resource database with fixed resource kinds, native text terms, and
 an optional `$Addon:Path` logical root or exact add-on GUID. Each bounded result carries only the
 canonical `ResourceName`, its add-on GUID, resolved add-on ID when Workbench can
 resolve one, logical path, file name, and extension. It is discovery only:
 inspect a returned resource or prefab for deeper facts. Native resource search
-does not make scripts or arbitrary filesystem files discoverable.
+does not make scripts or arbitrary filesystem files discoverable. Workbench
+applies filtering and pagination before the response crosses the NET API;
+opaque continuation cursors are bound to the same filter and project revision.
 
 Compiler validation is captured once per invocation and exposed as bounded,
 opaque-cursor pages so an MCP client can retrieve every finding without

@@ -18,10 +18,9 @@ use crate::game_data_search::{
 };
 use crate::index::{SourceFileId, SymbolIndex};
 use crate::index_build::{IndexBuildControl, INDEX_BUILD_CANCELLED};
-use crate::index_cache::{
-    load_game_data_index_cache_with_control, GameDataIndexCacheResult, IndexCacheStatus,
-    IndexCacheTimings, RuntimeIndexSummary, SourceFingerprint,
-};
+#[cfg(test)]
+use crate::index_cache::IndexCacheTimings;
+use crate::index_cache::{RuntimeIndexSummary, SourceFingerprint};
 use crate::model::SymbolKind;
 use crate::text_search::{
     page as page_text, physical_source_uri, scan as scan_text, TextSearchCorpus, TextSearchError,
@@ -32,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
@@ -52,7 +51,6 @@ pub enum GameDataExternalIndexMode {
 
 #[derive(Debug, Clone, Default)]
 pub struct GameDataCatalogueConfig {
-    pub cache_path: Option<PathBuf>,
     pub addon_source_inventory: Option<PathBuf>,
     pub addon_index_storage: Option<PathBuf>,
     pub external_index_mode: GameDataExternalIndexMode,
@@ -953,75 +951,13 @@ fn initialize_catalogue(
         }
         (None, None) => {}
     }
-    let Some(cache_path) = config.cache_path.clone() else {
-        return Ok(unavailable_state(
-            source,
-            started.elapsed(),
-            "game_data_index_not_configured",
-            "The language-engine Game Data index location is not configured.",
-            "Regenerate the MCP configuration from the extension.",
-        ));
-    };
-
-    let cache_path = resolve_current_index_pointer(&cache_path)?;
-    let result = load_game_data_index_cache_with_control(&cache_path, control);
-
-    match result {
-        Ok(Some(result)) => Ok(ready_state(result, cache_path)),
-        Ok(None) => Ok(unavailable_state(
-            source,
-            started.elapsed(),
-            "game_data_index_unavailable",
-            "The language-engine Game Data index is missing or incompatible.",
-            "Activate the language server so it builds the Game Data index, then restart MCP.",
-        )),
-        Err(error) if error == INDEX_BUILD_CANCELLED => Err(error),
-        Err(_) => Ok(unavailable_state(
-            source,
-            started.elapsed(),
-            "game_data_initialization_failed",
-            "The language-engine Game Data index could not be loaded.",
-            "Activate the language server to rebuild the index, then restart MCP.",
-        )),
-    }
-}
-
-fn resolve_current_index_pointer(path: &Path) -> Result<PathBuf, String> {
-    if path.extension().and_then(|value| value.to_str()) != Some("json") {
-        return Ok(path.to_path_buf());
-    }
-    let raw = fs::read_to_string(path).map_err(|error| {
-        format!(
-            "Failed to read add-on index pointer {}: {error}",
-            path.display()
-        )
-    })?;
-    let value: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|error| format!("Invalid add-on index pointer {}: {error}", path.display()))?;
-    if value.get("schema").and_then(serde_json::Value::as_str)
-        != Some("reforger-addon-current-revision-v1")
-    {
-        return Err(format!(
-            "Unsupported add-on index pointer {}",
-            path.display()
-        ));
-    }
-    let relative = value
-        .get("index")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| format!("Add-on index pointer has no index: {}", path.display()))?;
-    let relative = Path::new(relative);
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err(format!("Unsafe add-on index pointer: {}", path.display()));
-    }
-    Ok(path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(relative))
+    Ok(unavailable_state(
+        source,
+        started.elapsed(),
+        "game_data_addon_scope_not_configured",
+        "The parser-owned add-on scope is not configured.",
+        "Regenerate the MCP configuration from the extension.",
+    ))
 }
 
 fn ready_layered_state(result: LoadedAddonIndexResult) -> GameDataCatalogueState {
@@ -1097,97 +1033,6 @@ fn ready_layered_state(result: LoadedAddonIndexResult) -> GameDataCatalogueState
         source_line_starts: Arc::new(source_line_starts),
         addon_map: Arc::new(addon_map),
         addon_instances: Arc::new(result.instances),
-    }
-}
-
-fn ready_state(result: GameDataIndexCacheResult, cache_path: PathBuf) -> GameDataCatalogueState {
-    let mut warnings = Vec::new();
-    if result.summary.parse_diagnostics > 0 {
-        warnings.push(GameDataNotice {
-            code: "parse_diagnostics_present".to_string(),
-            message: format!(
-                "{} parser diagnostics were recorded while building the catalogue.",
-                result.summary.parse_diagnostics
-            ),
-        });
-    }
-    if result.summary.lossy_files > 0 {
-        warnings.push(GameDataNotice {
-            code: "lossy_files_present".to_string(),
-            message: format!(
-                "{} source files required lossy UTF-8 decoding.",
-                result.summary.lossy_files
-            ),
-        });
-    }
-
-    let source = source_status(Some(&result.fingerprint));
-    let status = GameDataStatus {
-        available: true,
-        catalogue_revision: Some(format!("gd1:{}", result.catalogue_digest)),
-        scope_revision: Some(format!("gd1:{}", result.catalogue_digest)),
-        scope_authority: Some("legacy-base-cache".to_string()),
-        addons: vec![GameDataAddonStatus {
-            addon_guid: BASE_GAME_GUID.to_string(),
-            display_id: "ArmaReforger".to_string(),
-            title: "Arma Reforger".to_string(),
-            script_count: result.summary.files,
-            available: true,
-            pinned: true,
-            default_selected: true,
-        }],
-        authorities: authorities(),
-        source,
-        coverage: coverage(&result.summary),
-        counts: counts(&result.index),
-        cache: Some(cache_status(&result)),
-        timings_ms: timings_ms(result.timings),
-        limits: limits(),
-        warnings,
-        recovery: vec![
-            "Activate the language server to refresh the Game Data index, then restart MCP."
-                .to_string(),
-        ],
-    };
-
-    let source_line_starts = result
-        .source_line_starts
-        .into_iter()
-        .map(|(file, starts)| (file, SourceLineStarts::from_cached_starts(starts)))
-        .collect();
-    let file_count = result.index.files().len();
-    let addon_identity = GameDataAddonIdentity {
-        guid: BASE_GAME_GUID.to_string(),
-        label: "Arma Reforger".to_string(),
-    };
-    let addon_map = result
-        .index
-        .files()
-        .iter()
-        .map(|file| (file.id, addon_identity.clone()))
-        .collect();
-    let instance = LoadedAddonIndexInstance {
-        guid: BASE_GAME_GUID.to_string(),
-        display_id: "ArmaReforger".to_string(),
-        title: "Arma Reforger".to_string(),
-        pack_count: 0,
-        script_count: result.summary.files,
-        file_start: 0,
-        file_count,
-        cache_path,
-        revision: result.catalogue_digest.clone(),
-        cache_status: result.cache_status.as_str().to_string(),
-        cache_detail: result.cache_status.detail().map(str::to_string),
-        summary: result.summary.clone(),
-        timings: result.timings,
-        cache_file_bytes: result.cache_file_bytes,
-    };
-    GameDataCatalogueState {
-        status,
-        index: Some(Arc::new(result.index)),
-        source_line_starts: Arc::new(source_line_starts),
-        addon_map: Arc::new(addon_map),
-        addon_instances: Arc::new(vec![instance]),
     }
 }
 
@@ -1385,6 +1230,7 @@ fn counts(index: &SymbolIndex) -> GameDataCounts {
 mod tests {
     use super::*;
     use crate::addon_sources::{load_or_build_loaded_addon_indexes, LoadedAddonInstanceIdentity};
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1650,33 +1496,6 @@ fn symbol_kind_name(kind: SymbolKind) -> &'static str {
         SymbolKind::Parameter => "parameter",
         SymbolKind::LocalVariable => "localVariable",
         SymbolKind::PreprocessorMacro => "preprocessorMacro",
-    }
-}
-
-fn cache_status(result: &GameDataIndexCacheResult) -> GameDataCacheStatus {
-    match &result.cache_status {
-        IndexCacheStatus::Loaded => GameDataCacheStatus {
-            outcome: GameDataCacheOutcome::Loaded,
-            rebuild_reason: None,
-            file_bytes: result.cache_file_bytes,
-        },
-        IndexCacheStatus::Rebuilt { .. } => GameDataCacheStatus {
-            outcome: GameDataCacheOutcome::Rebuilt,
-            rebuild_reason: Some("cache_miss_or_invalid".to_string()),
-            file_bytes: result.cache_file_bytes,
-        },
-    }
-}
-
-fn timings_ms(timings: IndexCacheTimings) -> GameDataTimingsMs {
-    GameDataTimingsMs {
-        cache_file_read: duration_ms(timings.cache_file_read),
-        cache_decode: duration_ms(timings.cache_decode),
-        cache_validate: duration_ms(timings.cache_validate),
-        map_rebuild: duration_ms(timings.map_rebuild),
-        rebuild: duration_ms(timings.rebuild),
-        cache_write: duration_ms(timings.cache_write),
-        total: duration_ms(timings.total),
     }
 }
 

@@ -1,8 +1,7 @@
 use crate::ast::DocCommentKind;
 use crate::lexer::TextSpan;
 use crate::model::{
-    CallableForm, ConditionalBranch, PreprocessorBranchKind, SourceFileMetadata, SourceKind,
-    SymbolCatalog, SymbolId, SymbolKind,
+    CallableForm, PreprocessorBranchKind, SourceFileMetadata, SourceKind, SymbolId, SymbolKind,
 };
 use crate::semantic_file::{
     FileContribution, FileContributionValidationError, PublicSymbol, PublicText,
@@ -371,12 +370,12 @@ impl<'de> Deserialize<'de> for SymbolIndex {
 }
 
 impl SymbolIndex {
-    pub fn from_catalogs<'source>(
-        catalogs: impl IntoIterator<Item = &'source SymbolCatalog<'source>>,
+    pub fn from_semantic_files<'a>(
+        files: impl IntoIterator<Item = (&'a SemanticFile, SourceFileMetadata)>,
     ) -> Self {
         let mut index = Self::default();
-        for catalog in catalogs {
-            index.append_catalog(catalog);
+        for (semantic_file, metadata) in files {
+            index.append_semantic_file(semantic_file, metadata);
         }
         if !index.files.is_empty() {
             index.rebuild_lookup_maps();
@@ -663,99 +662,20 @@ impl SymbolIndex {
         self.fields_by_owner_name = fields_by_owner_name;
     }
 
-    pub fn add_catalog<'source>(&mut self, catalog: &SymbolCatalog<'source>) -> SourceFileId {
-        let file_id = self.append_catalog(catalog);
+    /// Adds compiler-owned declaration facts. This is intentionally an
+    /// ingestion seam only: callers continue to choose when a file is parsed
+    /// and when its immutable facts are published into an index.
+    pub fn add_semantic_file(
+        &mut self,
+        semantic_file: &SemanticFile,
+        metadata: SourceFileMetadata,
+    ) -> SourceFileId {
+        let file_id = self.append_semantic_file(semantic_file, metadata);
         self.rebuild_lookup_maps();
         file_id
     }
 
-    fn append_catalog<'source>(&mut self, catalog: &SymbolCatalog<'source>) -> SourceFileId {
-        let file_id = SourceFileId(self.files.len());
-        let symbol_start = self.symbols.len();
-
-        self.files.push(IndexedFile {
-            id: file_id,
-            metadata: catalog.metadata().clone(),
-            symbol_start,
-            symbol_count: catalog.records().len(),
-            non_declaration_callable_fragments: catalog.non_declaration_callable_fragments(),
-        });
-
-        for record in catalog.records() {
-            let id = GlobalSymbolId {
-                file_id,
-                symbol_id: record.id,
-            };
-            let parent = record
-                .parent
-                .map(|symbol_id| GlobalSymbolId { file_id, symbol_id });
-            let name = catalog.record_name(record).map(str::to_string);
-            let symbol = IndexedSymbol {
-                id,
-                parent,
-                kind: record.kind,
-                name,
-                span: record.span,
-                selection_span: record.selection_span,
-                detail: IndexedSymbolDetail {
-                    type_text: record
-                        .detail
-                        .type_text
-                        .map(|span| catalog.text(span).to_string()),
-                    type_text_span: record.detail.type_text,
-                    return_type_text: record
-                        .detail
-                        .return_type_text
-                        .map(|span| catalog.text(span).to_string()),
-                    return_type_text_span: record.detail.return_type_text,
-                    base_type: record
-                        .detail
-                        .base_type
-                        .map(|span| catalog.text(span).to_string()),
-                    base_type_span: record.detail.base_type,
-                    default_text: record
-                        .detail
-                        .default_text
-                        .map(|span| catalog.text(span).to_string()),
-                    default_text_span: record.detail.default_text,
-                    enum_value_text: record
-                        .detail
-                        .enum_value_text
-                        .map(|span| catalog.text(span).to_string()),
-                    enum_value_text_span: record.detail.enum_value_text,
-                },
-                attributes: indexed_attributes(catalog, &record.attributes),
-                modifiers: record
-                    .modifiers
-                    .iter()
-                    .map(|span| catalog.text(*span).to_string())
-                    .collect(),
-                doc_comments: record
-                    .doc_comments
-                    .iter()
-                    .map(|comment| IndexedDocComment {
-                        kind: comment.kind,
-                        text: catalog.text(comment.span).to_string(),
-                    })
-                    .collect(),
-                conditional_context: indexed_conditional_context(
-                    catalog,
-                    &record.conditional_context,
-                ),
-                callable_form: record.callable_form,
-            };
-
-            self.symbols.push(symbol);
-        }
-
-        file_id
-    }
-
-    /// Adds compiler-owned declaration facts without constructing the legacy
-    /// `SymbolCatalog`.  This is intentionally an ingestion seam only: callers
-    /// continue to choose when a file is parsed and when its immutable facts
-    /// are published into an index.
-    pub fn add_semantic_file(
+    fn append_semantic_file(
         &mut self,
         semantic_file: &SemanticFile,
         metadata: SourceFileMetadata,
@@ -878,7 +798,6 @@ impl SymbolIndex {
             });
         }
 
-        self.rebuild_lookup_maps();
         file_id
     }
 
@@ -2303,48 +2222,6 @@ fn map_entry_count<K>(map: &BTreeMap<K, Vec<GlobalSymbolId>>) -> usize {
     map.values().map(Vec::len).sum()
 }
 
-fn indexed_attributes<'source>(
-    catalog: &SymbolCatalog<'source>,
-    attributes: &[TextSpan],
-) -> Vec<IndexedAttribute> {
-    attributes
-        .iter()
-        .map(|span| IndexedAttribute {
-            name: catalog.attribute_name(*span).map(str::to_string),
-            text: indexed_attribute_text(catalog, *span),
-        })
-        .collect()
-}
-
-fn indexed_attribute_text<'source>(catalog: &SymbolCatalog<'source>, span: TextSpan) -> String {
-    let source = catalog.source();
-    let bytes = source.as_bytes();
-    let start = if span.start > 0 && bytes[span.start - 1] == b'[' {
-        span.start - 1
-    } else {
-        span.start
-    };
-    let end = if span.end < bytes.len() && bytes[span.end] == b']' {
-        span.end + 1
-    } else {
-        span.end
-    };
-    source[start..end].to_string()
-}
-
-fn indexed_conditional_context<'source>(
-    catalog: &SymbolCatalog<'source>,
-    context: &[ConditionalBranch],
-) -> Vec<IndexedConditionalBranch> {
-    context
-        .iter()
-        .map(|branch| IndexedConditionalBranch {
-            kind: branch.kind,
-            condition: branch.condition.map(|span| catalog.text(span).to_string()),
-        })
-        .collect()
-}
-
 pub(crate) fn indexed_symbol_kind(kind: SemanticDeclarationKind) -> SymbolKind {
     match kind {
         SemanticDeclarationKind::Class => SymbolKind::Class,
@@ -2482,7 +2359,6 @@ pub struct IndexMapCounts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
     use crate::model::{
         source_category_for_path, SourceCategory, SourceFileMetadata, SOURCE_PRIORITY_GAME_DATA,
         SOURCE_PRIORITY_WORKSPACE,
@@ -2490,54 +2366,6 @@ mod tests {
     use crate::parser::parse_source;
     use crate::semantic_file::SemanticFile;
     use std::path::PathBuf;
-
-    #[test]
-    fn semantic_file_ingestion_matches_legacy_declaration_indexing() {
-        let source = r#"typedef int Count;
-class Example : Base
-{
-    int m_Value;
-    void Run(string label = "x");
-}
-void Start();
-"#;
-        let metadata = SourceFileMetadata::unknown();
-        let legacy_catalog = catalog(source, metadata.clone());
-        let legacy = SymbolIndex::from_catalogs([&legacy_catalog]);
-
-        let parse = parse_source(source);
-        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
-        let semantic_file = SemanticFile::build(source, &parse);
-        let mut semantic = SymbolIndex::default();
-        semantic.add_semantic_file(&semantic_file, metadata);
-
-        assert_eq!(semantic.files(), legacy.files());
-        assert_eq!(semantic.symbols().len(), legacy.symbols().len());
-        for (actual, expected) in semantic.symbols().iter().zip(legacy.symbols()) {
-            assert_eq!(actual.id, expected.id);
-            assert_eq!(actual.parent, expected.parent);
-            assert_eq!(actual.kind, expected.kind);
-            assert_eq!(actual.name, expected.name);
-            assert_eq!(actual.span, expected.span);
-            assert_eq!(actual.selection_span, expected.selection_span);
-            assert_eq!(actual.detail, expected.detail);
-            assert_eq!(actual.attributes, expected.attributes);
-            assert_eq!(actual.modifiers, expected.modifiers);
-            assert_eq!(actual.doc_comments, expected.doc_comments);
-        }
-        assert_eq!(
-            semantic.methods_by_owner_name("Example", "Run"),
-            legacy.methods_by_owner_name("Example", "Run")
-        );
-        assert_eq!(
-            semantic.fields_by_owner_name("Example", "m_Value"),
-            legacy.fields_by_owner_name("Example", "m_Value")
-        );
-        assert_eq!(
-            semantic.functions_by_name("Start"),
-            legacy.functions_by_name("Start")
-        );
-    }
 
     #[test]
     fn validated_contribution_ingestion_matches_semantic_file_indexing() {
@@ -2649,7 +2477,7 @@ class Example : Base
                 priority: SOURCE_PRIORITY_GAME_DATA,
             },
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         assert_eq!(index.files().len(), 1);
         assert_eq!(index.symbols().len(), 5);
@@ -2684,7 +2512,7 @@ class Example : Base
 }
 "#;
         let catalog = catalog(source, SourceFileMetadata::unknown());
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let sequential = LookupMaps::build_sequential(index.files(), index.symbols());
 
         assert_eq!(
@@ -2704,7 +2532,7 @@ class scr_Beta {}
 class Other {}
 "#;
         let catalog = catalog(source, SourceFileMetadata::unknown());
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let names = index
             .top_level_symbols_with_ascii_case_insensitive_prefix("ScR_")
@@ -2744,7 +2572,7 @@ class Other {}
                 priority: SOURCE_PRIORITY_WORKSPACE,
             },
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
 
         let symbols = index.symbols_for_name("Example");
         assert_eq!(symbols.len(), 2);
@@ -2792,7 +2620,7 @@ class Other {}
                 priority: SOURCE_PRIORITY_WORKSPACE,
             },
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
 
         let all = index.symbols_for_name("Example");
         assert_eq!(all.len(), 3);
@@ -2841,7 +2669,7 @@ class Example : Base
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let class = index.symbol(index.classes_by_name("Example")[0]).unwrap();
         assert_eq!(class.detail.base_type.as_deref(), Some("Base"));
@@ -2878,7 +2706,7 @@ modded class Example
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let class = index.symbol(index.classes_by_name("Example")[0]).unwrap();
         assert_eq!(class.modifiers, vec!["modded"]);
@@ -2924,7 +2752,7 @@ modded class Example
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         assert_eq!(
             index
@@ -2958,7 +2786,7 @@ modded class Example
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let on_game_start = index.methods_by_owner_name("SCR_BaseGameMode", "OnGameStart")[0];
         let begin = index.methods_by_owner_name("SCR_BaseGameMode", "Begin")[0];
@@ -3000,7 +2828,7 @@ class Example
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let global_fn = index.symbols_for_name("GlobalFn")[0];
         let run = index.methods_by_owner_name("Example", "Run")[0];
@@ -3052,7 +2880,7 @@ class Example
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let fields = index.fields_by_owner_name("Example", "m_Value");
         assert_eq!(fields.len(), 1);
@@ -3099,7 +2927,7 @@ class GrandChild : Child
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let members = index.raw_members_for_class_including_bases("GrandChild");
         let member_names = member_names(&index, &members);
@@ -3123,7 +2951,7 @@ class GrandChild : Child
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let members = index.raw_members_for_class_including_bases("Child");
 
@@ -3145,7 +2973,7 @@ class B : A
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let members = index.raw_members_for_class_including_bases("A");
 
@@ -3173,7 +3001,7 @@ class Child : Base
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let raw = index.raw_members_for_class_including_bases("Child");
         assert_eq!(
@@ -3226,7 +3054,7 @@ class Child : Base
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         assert_eq!(index.fields_by_owner_name("Example", "COUNT").len(), 1);
         assert_eq!(index.fields_by_owner_name("Example", "TAGS").len(), 1);
@@ -3256,7 +3084,7 @@ class Child : Base
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         for name in [
             "m_ContentWidget",
@@ -3316,7 +3144,7 @@ class Child : Base
 "#,
             workspace_metadata("SCR_BaseGameMode.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
 
         let raw = index.raw_members_for_class_including_bases("SCR_BaseGameMode");
         assert_eq!(
@@ -3391,7 +3219,7 @@ class Child : Base
 "#,
             workspace_metadata("SCR_BaseGameMode.c"),
         );
-        let index = SymbolIndex::from_catalogs([&base, &game, &workspace]);
+        let index = index_from([&base, &game, &workspace]);
 
         let raw = index.raw_completion_members_for_owner_name("SCR_BaseGameMode");
         assert_eq!(
@@ -3476,7 +3304,7 @@ class Child : Base
 "#,
             workspace_metadata("SCR_BaseGameMode.c"),
         );
-        let index = SymbolIndex::from_catalogs([&base, &game, &workspace]);
+        let index = index_from([&base, &game, &workspace]);
 
         let full = index.completion_members_for_preferred_class("SCR_BaseGameMode");
         let named = index.preferred_members_named_for_class("SCR_BaseGameMode", "OnGameStart");
@@ -3508,7 +3336,7 @@ class Child : Base
 "#,
             game_metadata("Child.c"),
         );
-        let index = SymbolIndex::from_catalogs([&base, &child]);
+        let index = index_from([&base, &child]);
 
         let completion = index.completion_members_for_preferred_class("Child");
         let run = completion.members[0];
@@ -3541,7 +3369,7 @@ class Child : Base
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let completion = index.completion_members_for_preferred_class("Child");
 
@@ -3569,7 +3397,7 @@ class B : A
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let completion = index.completion_members_for_preferred_class("A");
 
@@ -3599,7 +3427,7 @@ class B : A
 "#,
             game_metadata("Child.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game_base, &game_child]);
+        let index = index_from([&game_base, &game_child]);
 
         let completion = index.raw_completion_members_for_owner_name("Child");
         let run = completion.members[0];
@@ -3632,7 +3460,7 @@ class B : A
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let completion = index.raw_completion_members_for_owner_name("Child");
 
@@ -3660,7 +3488,7 @@ class B : A
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let completion = index.raw_completion_members_for_owner_name("A");
 
@@ -3689,7 +3517,7 @@ class Child : Base
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let completion = index.raw_completion_members_for_owner_name("Child");
 
@@ -3738,7 +3566,7 @@ class Child : Base
                 priority: SOURCE_PRIORITY_GAME_DATA,
             },
         );
-        let index = SymbolIndex::from_catalogs([&first_game, &workspace, &second_game]);
+        let index = index_from([&first_game, &workspace, &second_game]);
         let unsorted = [
             GlobalSymbolId {
                 file_id: SourceFileId(2),
@@ -3771,7 +3599,7 @@ class Child : Base
             "modded class SCR_BaseGameMode {}",
             workspace_metadata("SCR_BaseGameMode.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
 
         let classes = index.classes_by_name("SCR_BaseGameMode");
         assert_eq!(classes.len(), 2);
@@ -3797,7 +3625,7 @@ class Child : Base
 "#,
             workspace_metadata("SharedName.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let all = index.symbols_for_name("SharedName");
         assert_eq!(all.len(), 3);
@@ -3833,7 +3661,7 @@ class Child : Base
 "#,
             workspace_metadata("Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let all = index.symbols_for_name("value");
         assert_eq!(all.len(), 3);
@@ -3878,7 +3706,7 @@ class Child : Base
 "#,
             workspace_metadata("SCR_BaseGameMode.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
 
         let methods = index.methods_by_owner_name("SCR_BaseGameMode", "OnGameStart");
         assert_eq!(methods.len(), 2);
@@ -3901,7 +3729,7 @@ class FactionKey : string {}
 "#,
             game_metadata("GameCode/Faction/FactionKey.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let duplicates = index.duplicate_top_level_names();
         let faction_key = duplicates
@@ -3938,7 +3766,7 @@ void FactionKey(int value);
 "#,
             workspace_metadata("GameCode/Faction/FactionKey.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let generic = index.preferred_top_level_symbols_for_name("FactionKey");
         assert_eq!(generic.len(), 3);
@@ -3989,7 +3817,7 @@ void ExampleFn(int value);
 "#,
             workspace_metadata("Workspace.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
 
         let preferred_class = index.preferred_classes_by_name("Example");
         let preferred_typedef = index.preferred_typedefs_by_name("ExampleAlias");
@@ -4028,7 +3856,7 @@ void Shared();
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         assert_eq!(index.top_level_symbols_for_name("Shared").len(), 3);
         assert_eq!(index.functions_by_name("Shared").len(), 1);
@@ -4065,7 +3893,7 @@ class FactionKey : string
 "#,
             workspace_metadata("Workspace.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
 
         let source_counts = index.source_kind_counts();
         assert_eq!(source_counts.get(&SourceKind::GameData), Some(&1));
@@ -4114,11 +3942,11 @@ class FactionKey : string
 
     #[test]
     fn merged_indexes_preserve_file_symbol_ranges_and_parent_links() {
-        let first = SymbolIndex::from_catalogs([&catalog(
+        let first = index_from([&catalog(
             "class First { void FirstMethod(); }",
             game_metadata("Game/First.c"),
         )]);
-        let second = SymbolIndex::from_catalogs([&catalog(
+        let second = index_from([&catalog(
             "class Second { void SecondMethod(); }",
             workspace_metadata("Scripts/Second.c"),
         )]);
@@ -4148,11 +3976,11 @@ class FactionKey : string
 
     #[test]
     fn layered_indexes_route_global_ids_without_copying_symbols() {
-        let first = SymbolIndex::from_catalogs([&catalog(
+        let first = index_from([&catalog(
             "class First { void FirstMethod(); }",
             game_metadata("Game/First.c"),
         )]);
-        let second = SymbolIndex::from_catalogs([&catalog(
+        let second = index_from([&catalog(
             "class Second { void SecondMethod(); }",
             game_metadata("Game/Second.c"),
         )]);
@@ -4191,11 +4019,11 @@ class FactionKey : string
     #[test]
     fn parallel_layer_lookup_projection_matches_sequential_projection() {
         let indexes = vec![
-            SymbolIndex::from_catalogs([&catalog(
+            index_from([&catalog(
                 "class First { int m_Value; void FirstMethod(); }",
                 game_metadata("Game/First.c"),
             )]),
-            SymbolIndex::from_catalogs([&catalog(
+            index_from([&catalog(
                 "typedef int SecondType; class Second { void SecondMethod(); }",
                 game_metadata("Game/Second.c"),
             )]),
@@ -4226,7 +4054,7 @@ class FactionKey : string
 "#,
             game_metadata("Game/Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let pruned = index.without_local_variables();
 
         assert_eq!(index.symbols_for_kind(SymbolKind::LocalVariable).len(), 2);
@@ -4265,7 +4093,7 @@ class FactionKey : string
 "#,
             game_metadata("Game/Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let reference = index.compact_for_runtime_cache();
         let compact = index.clone().into_runtime_cache().unwrap();
         assert_eq!(compact.files(), reference.files());
@@ -4331,7 +4159,7 @@ class Second : SecondBase
 "#,
             game_metadata("Game/Second.c"),
         );
-        let index = SymbolIndex::from_catalogs([&first, &second]);
+        let index = index_from([&first, &second]);
         let reference = index.compact_for_runtime_cache();
         let compact = index.into_runtime_cache().unwrap();
         assert_eq!(compact.files(), reference.files());
@@ -4379,7 +4207,7 @@ class Second : SecondBase
 "#,
             game_metadata("Game/Example.c"),
         );
-        let pruned = SymbolIndex::from_catalogs([&catalog]).without_local_variables();
+        let pruned = index_from([&catalog]).without_local_variables();
 
         let first = pruned.methods_by_owner_name("Example", "First")[0];
         let second = pruned.methods_by_owner_name("Example", "Second")[0];
@@ -4400,11 +4228,26 @@ class Second : SecondBase
         assert_no_dangling_symbol_references(&pruned);
     }
 
-    fn catalog(source: &str, metadata: SourceFileMetadata) -> SymbolCatalog<'_> {
+    struct TestSemanticFile {
+        semantic: SemanticFile,
+        metadata: SourceFileMetadata,
+    }
+
+    fn catalog(source: &str, metadata: SourceFileMetadata) -> TestSemanticFile {
         let parse = parse_source(source);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
-        let ast = AstSourceFile::new(source, &parse);
-        SymbolCatalog::from_ast_with_metadata(source, &ast, metadata)
+        TestSemanticFile {
+            semantic: SemanticFile::build(source, &parse),
+            metadata,
+        }
+    }
+
+    fn index_from<'a>(files: impl IntoIterator<Item = &'a TestSemanticFile>) -> SymbolIndex {
+        SymbolIndex::from_semantic_files(
+            files
+                .into_iter()
+                .map(|file| (&file.semantic, file.metadata.clone())),
+        )
     }
 
     fn game_metadata(path: &str) -> SourceFileMetadata {

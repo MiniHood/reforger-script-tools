@@ -582,12 +582,12 @@ fn default_storage_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reforger_language_server::ast::AstSourceFile;
     use reforger_language_server::index::SymbolIndex;
     use reforger_language_server::model::{
-        SourceCategory, SourceFileMetadata, SourceKind, SymbolCatalog, SOURCE_PRIORITY_GAME_DATA,
+        SourceCategory, SourceFileMetadata, SourceKind, SOURCE_PRIORITY_GAME_DATA,
     };
     use reforger_language_server::parser::parse_source;
+    use reforger_language_server::semantic_file::SemanticFile;
 
     #[test]
     fn counts_duplicate_strings_by_group() {
@@ -653,7 +653,6 @@ class Example : BaseExample
 
     fn index_for_source(source: &str) -> SymbolIndex {
         let parse = parse_source(source);
-        let ast = AstSourceFile::new(source, &parse);
         let metadata = SourceFileMetadata {
             kind: SourceKind::GameData,
             category: SourceCategory::Game,
@@ -663,7 +662,7 @@ class Example : BaseExample
             relative_path: Some(PathBuf::from("Game/Example.c")),
             priority: SOURCE_PRIORITY_GAME_DATA,
         };
-        let catalog = SymbolCatalog::from_ast_with_metadata(source, &ast, metadata);
-        SymbolIndex::from_catalogs([&catalog])
+        let semantic_file = SemanticFile::build(source, &parse);
+        SymbolIndex::from_semantic_files([(&semantic_file, metadata)])
     }
 }

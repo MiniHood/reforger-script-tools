@@ -1,6 +1,5 @@
-use reforger_language_server::index_cache::{
-    load_or_build_game_data_index, GameDataIndexCacheConfig,
-};
+use reforger_language_server::addon_sources::load_or_build_loaded_addon_indexes;
+use reforger_language_server::index_build::IndexBuildControl;
 use reforger_language_server::workbench::WORKBENCH_BRIDGE_VERSION;
 use serde_json::{json, Value};
 use std::fs;
@@ -12,14 +11,50 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+const BASE_GAME_ADDON_GUID: &str = "58D0FB3206B6F859";
 
-fn build_game_data_cache(scripts_root: &Path, cache_path: &Path) {
-    load_or_build_game_data_index(&GameDataIndexCacheConfig {
-        scripts_root: scripts_root.to_path_buf(),
-        cache_path: cache_path.to_path_buf(),
-        metadata_path: None,
-    })
-    .expect("build parser-owned game-data cache");
+struct LayeredGameDataLaunch {
+    arguments: Vec<String>,
+    storage_root: PathBuf,
+}
+
+fn build_game_data_cache(scripts_root: &Path, cache_path: &Path) -> LayeredGameDataLaunch {
+    let source_root = scripts_root
+        .parent()
+        .expect("fixture scripts root has an add-on root");
+    let cache_root = cache_path
+        .parent()
+        .expect("fixture cache path has a parent");
+    let inventory_path = cache_root.join("loaded-addons.json");
+    let storage_root = cache_root.join("addon-indexes");
+    fs::create_dir_all(cache_root).expect("create layered cache root");
+    fs::write(
+        &inventory_path,
+        format!(
+            r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"{BASE_GAME_ADDON_GUID}","id":"ArmaReforger","title":"Arma Reforger","sourceRoot":{}}}]}}"#,
+            serde_json::to_string(source_root).expect("serialize fixture source root"),
+        ),
+    )
+    .expect("write layered game-data inventory");
+    load_or_build_loaded_addon_indexes(
+        &inventory_path,
+        &storage_root,
+        &[],
+        &IndexBuildControl::default(),
+    )
+    .expect("build layered parser-owned game-data cache");
+    LayeredGameDataLaunch {
+        arguments: vec![
+            "mcp".to_string(),
+            "--addon-source-inventory".to_string(),
+            inventory_path.to_string_lossy().into_owned(),
+            "--addon-index-storage".to_string(),
+            storage_root.to_string_lossy().into_owned(),
+            "--external-index-mode".to_string(),
+            "loaded".to_string(),
+        ],
+        storage_root,
+    }
 }
 
 fn assert_tool_error_code(response: &Value, code: &str) {
@@ -58,18 +93,8 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
     )
     .expect("write game-data fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
-    load_or_build_game_data_index(&GameDataIndexCacheConfig {
-        scripts_root: scripts_root.clone(),
-        cache_path: cache_path.clone(),
-        metadata_path: None,
-    })
-    .expect("build parser-owned game-data cache");
-
-    let mut client = McpClient::spawn(&[
-        "mcp",
-        "--index-cache",
-        cache_path.to_str().expect("utf-8 cache path"),
-    ]);
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
+    let mut client = McpClient::spawn_owned(&game_data.arguments);
 
     let initialize = client.initialize(1);
     assert_eq!(
@@ -119,7 +144,10 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
             .find(|tool| tool.get("name") == Some(&json!(name)))
             .unwrap_or_else(|| panic!("missing tool {name}"))
     };
-    assert_eq!(listed.len(), 86);
+    assert_eq!(listed.len(), 85);
+    assert!(listed
+        .iter()
+        .all(|tool| tool.get("name") != Some(&json!("workbench_list_resources"))));
     let game_data_status = tool("game_data_status");
     assert!(listed
         .iter()
@@ -208,7 +236,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         "workbench_state",
         "workbench_project_context",
         "workbench_inspect_resource",
-        "workbench_list_resources",
+        "workbench_search_resources",
         "workbench_world_selection_summary",
         "workbench_selected_entity_hierarchy",
         "workbench_list_entities",
@@ -284,12 +312,16 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         structured.pointer("/authorities/semanticCatalogue"),
         Some(&json!("language-engine"))
     );
-    assert_eq!(structured.pointer("/cache/outcome"), Some(&json!("loaded")));
+    assert_eq!(structured.get("cache"), None);
+    assert_eq!(
+        structured.get("scopeAuthority"),
+        Some(&json!("workbench-loaded"))
+    );
     assert_eq!(structured.pointer("/coverage/files"), Some(&json!(1)));
     assert!(structured
         .get("catalogueRevision")
         .and_then(Value::as_str)
-        .is_some_and(|revision| revision.starts_with("gd1:")));
+        .is_some_and(|revision| revision.starts_with("gd2:")));
     assert!(structured.get("limits").is_some());
     assert!(structured.get("warnings").is_some());
     assert!(structured.get("recovery").is_some());
@@ -335,7 +367,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
     );
     assert_eq!(
         results[0].pointer("/readSourceInput/relativePath"),
-        Some(&json!("Game/McpFixture.c"))
+        Some(&json!("scripts/Game/McpFixture.c"))
     );
 
     client.send(json!({
@@ -372,7 +404,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
     );
     assert_eq!(
         inspected.pointer("/relativePath"),
-        Some(&json!("Game/McpFixture.c"))
+        Some(&json!("scripts/Game/McpFixture.c"))
     );
 
     client.send(json!({
@@ -417,7 +449,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .is_some_and(|line| line > 0));
     assert_eq!(
         text_hit_search.pointer("/result/structuredContent/results/0/readSourceInput/relativePath"),
-        Some(&json!("Game/McpFixture.c"))
+        Some(&json!("scripts/Game/McpFixture.c"))
     );
 
     client.send(json!({
@@ -473,12 +505,8 @@ fn mcp_inspection_and_source_read_reject_stale_and_changed_handoffs() {
     )
     .expect("write game-data fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
-    build_game_data_cache(&scripts_root, &cache_path);
-    let mut client = McpClient::spawn(&[
-        "mcp",
-        "--index-cache",
-        cache_path.to_str().expect("utf-8 cache path"),
-    ]);
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
+    let mut client = McpClient::spawn_owned(&game_data.arguments);
     client.initialize(1);
     client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Run"}}}));
     let search = client.response(2);
@@ -528,13 +556,13 @@ fn mcp_inspection_and_source_read_reject_stale_and_changed_handoffs() {
     assert_eq!(invalid.pointer("/result/isError"), Some(&json!(true)));
     assert_tool_error_code(&invalid, "invalid_symbol_ref");
 
-    client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"../Inspectable.c"}}}));
+    client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"addonGuid":BASE_GAME_ADDON_GUID,"relativePath":"../Inspectable.c"}}}));
     let invalid_path = client.response(5);
     assert_eq!(invalid_path.pointer("/result/isError"), Some(&json!(true)));
     assert_tool_error_code(&invalid_path, "invalid_arguments");
 
     fs::write(&source_path, "class Inspectable { int changed; }\n").expect("change backing data");
-    client.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Inspectable.c"}}}));
+    client.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"addonGuid":BASE_GAME_ADDON_GUID,"relativePath":"scripts/Game/Inspectable.c"}}}));
     let changed = client.response(6);
     assert_eq!(changed.pointer("/result/isError"), Some(&json!(false)));
     assert!(changed
@@ -563,12 +591,8 @@ fn mcp_progressive_retrieval_enforces_member_documentation_and_source_bounds() {
     }
     fs::write(&source_path, source).expect("write bounds fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
-    build_game_data_cache(&scripts_root, &cache_path);
-    let mut client = McpClient::spawn(&[
-        "mcp",
-        "--index-cache",
-        cache_path.to_str().expect("utf-8 cache path"),
-    ]);
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
+    let mut client = McpClient::spawn_owned(&game_data.arguments);
     client.initialize(1);
     client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Bounds"}}}));
     let search = client.response(2);
@@ -608,13 +632,13 @@ fn mcp_progressive_retrieval_enforces_member_documentation_and_source_bounds() {
         .and_then(Value::as_str)
         .is_some_and(|text| text.contains("list_game_data_symbol_members")));
 
-    client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Missing.c"}}}));
+    client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"addonGuid":BASE_GAME_ADDON_GUID,"relativePath":"scripts/Game/Missing.c"}}}));
     assert_tool_error_code(&client.response(4), "invalid_arguments");
-    client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":"gd1:stale","relativePath":"Game/Bounds.c"}}}));
+    client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":"gd2:stale","addonGuid":BASE_GAME_ADDON_GUID,"relativePath":"scripts/Game/Bounds.c"}}}));
     assert_tool_error_code(&client.response(5), "stale_symbol_ref");
-    client.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Bounds.c","startLine":0}}}));
+    client.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"addonGuid":BASE_GAME_ADDON_GUID,"relativePath":"scripts/Game/Bounds.c","startLine":0}}}));
     assert_tool_error_code(&client.response(6), "invalid_arguments");
-    client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Bounds.c","startLine":1,"lineCount":999}}}));
+    client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"addonGuid":BASE_GAME_ADDON_GUID,"relativePath":"scripts/Game/Bounds.c","startLine":1,"lineCount":999}}}));
     let read = client.response(7);
     assert_eq!(read.pointer("/result/isError"), Some(&json!(false)));
     assert_eq!(
@@ -692,12 +716,8 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
     )
     .expect("write widget fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
-    build_game_data_cache(&scripts_root, &cache_path);
-    let mut client = McpClient::spawn(&[
-        "mcp",
-        "--index-cache",
-        cache_path.to_str().expect("utf-8 cache path"),
-    ]);
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
+    let mut client = McpClient::spawn_owned(&game_data.arguments);
     client.initialize(1);
 
     client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}));
@@ -819,7 +839,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
     let replication_examples = client.response(26);
     assert_eq!(
         replication_examples.pointer("/result/structuredContent/results/0/relativePath"),
-        Some(&json!("Game/Examples/ReplicationPattern.c"))
+        Some(&json!("scripts/Game/Examples/ReplicationPattern.c"))
     );
     assert!(replication_examples
         .pointer("/result/structuredContent/results/0/evidenceTerms")
@@ -846,7 +866,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
     let lifecycle_examples = client.response(28);
     assert_eq!(
         lifecycle_examples.pointer("/result/structuredContent/results/0/relativePath"),
-        Some(&json!("Game/Examples/EntityLifecyclePattern.c"))
+        Some(&json!("scripts/Game/Examples/EntityLifecyclePattern.c"))
     );
     assert!(lifecycle_examples
         .pointer("/result/structuredContent/results/0/evidenceTerms")
@@ -863,7 +883,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
     let widget_examples = client.response(29);
     assert_eq!(
         widget_examples.pointer("/result/structuredContent/results/0/relativePath"),
-        Some(&json!("Game/Examples/WidgetPattern.c"))
+        Some(&json!("scripts/Game/Examples/WidgetPattern.c"))
     );
     assert!(widget_examples
         .pointer("/result/structuredContent/results/0/evidenceTerms")
@@ -982,7 +1002,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
     );
     assert!(!relationships
         .iter()
-        .any(|result| result["relativePath"] == "Game/Examples/CommentOnly.c"));
+        .any(|result| result["relativePath"] == "scripts/Game/Examples/CommentOnly.c"));
     assert!(api_relationships
         .pointer("/result/structuredContent/nextCursor")
         .is_none());
@@ -1070,14 +1090,10 @@ fn game_data_research_handoffs_reject_stale_references_and_cursors() {
     )
     .expect("write second example");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
-    build_game_data_cache(&scripts_root, &cache_path);
-    let arguments = [
-        "mcp",
-        "--index-cache",
-        cache_path.to_str().expect("utf-8 cache path"),
-    ];
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
+    let arguments = game_data.arguments;
 
-    let mut first = McpClient::spawn(&arguments);
+    let mut first = McpClient::spawn_owned(&arguments);
     first.initialize(1);
     first.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Paged","kinds":["class"]}}}));
     let old_symbol_ref = first
@@ -1132,7 +1148,7 @@ fn game_data_research_handoffs_reject_stale_references_and_cursors() {
     )
     .expect("change source revision");
     build_game_data_cache(&scripts_root, &cache_path);
-    let mut second = McpClient::spawn(&arguments);
+    let mut second = McpClient::spawn_owned(&arguments);
     second.initialize(4);
     second.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Paged","kinds":["class"]}}}));
     let fresh_symbol_ref = second
@@ -1171,12 +1187,8 @@ fn lossy_utf8_game_data_remains_searchable_and_readable() {
     fs::write(scripts_root.join("Game").join("LossyFixture.c"), source)
         .expect("write lossy UTF-8 fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
-    build_game_data_cache(&scripts_root, &cache_path);
-    let mut client = McpClient::spawn(&[
-        "mcp",
-        "--index-cache",
-        cache_path.to_str().expect("utf-8 cache path"),
-    ]);
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
+    let mut client = McpClient::spawn_owned(&game_data.arguments);
     client.initialize(1);
 
     client.send(status_call(2));
@@ -1237,19 +1249,16 @@ fn game_data_revision_is_immutable_per_process_and_shared_cache_loads_warm() {
     )
     .expect("write game-data fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
-    build_game_data_cache(&scripts_root, &cache_path);
-    let arguments = [
-        "mcp",
-        "--index-cache",
-        cache_path.to_str().expect("utf-8 cache path"),
-    ];
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
+    let arguments = game_data.arguments;
 
-    let mut first = McpClient::spawn(&arguments);
+    let mut first = McpClient::spawn_owned(&arguments);
     first.initialize(1);
     let cold = first.call_status(2);
     let repeated = first.call_status(3);
     assert_eq!(cold, repeated, "one process retains one immutable snapshot");
-    assert_eq!(cold.pointer("/cache/outcome"), Some(&json!("loaded")));
+    assert_eq!(cold.get("scopeAuthority"), Some(&json!("workbench-loaded")));
+    assert_eq!(cold.get("cache"), None);
     let revision = cold
         .get("catalogueRevision")
         .cloned()
@@ -1257,10 +1266,11 @@ fn game_data_revision_is_immutable_per_process_and_shared_cache_loads_warm() {
     first.close_stdin();
     assert!(first.wait_for_exit(Duration::from_secs(3)));
 
-    let mut second = McpClient::spawn(&arguments);
+    let mut second = McpClient::spawn_owned(&arguments);
     second.initialize(4);
     let warm = second.call_status(5);
-    assert_eq!(warm.pointer("/cache/outcome"), Some(&json!("loaded")));
+    assert_eq!(warm.get("scopeAuthority"), Some(&json!("workbench-loaded")));
+    assert_eq!(warm.get("cache"), None);
     assert_eq!(warm.get("catalogueRevision"), Some(&revision));
     second.close_stdin();
     assert!(second.wait_for_exit(Duration::from_secs(3)));
@@ -1275,7 +1285,7 @@ fn unavailable_status_and_malformed_calls_are_sanitized_and_process_isolated() {
     assert_eq!(unavailable.get("available"), Some(&json!(false)));
     assert_eq!(
         unavailable.pointer("/warnings/0/code"),
-        Some(&json!("game_data_index_not_configured"))
+        Some(&json!("game_data_addon_scope_not_configured"))
     );
     assert_eq!(
         unavailable.pointer("/limits/initializationDeadlineMs"),
@@ -1840,13 +1850,10 @@ fn cancellation_and_eof_with_in_flight_initialization_shutdown_cleanly() {
     )
     .expect("write cancellation fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
     let started_marker = fixture.path().join("initialization-started");
-    let mut client = McpClient::spawn_with_env(
-        &[
-            "mcp",
-            "--index-cache",
-            cache_path.to_str().expect("utf-8 cache path"),
-        ],
+    let mut client = McpClient::spawn_owned_with_env(
+        &game_data.arguments,
         &[
             ("REFORGER_MCP_TEST_INITIALIZATION_DELAY_MS", "5000"),
             (
@@ -1907,14 +1914,10 @@ fn initialization_deadline_cancels_work_and_returns_stable_tool_error() {
     fs::write(scripts_root.join("Deadline.c"), "class Deadline {}")
         .expect("write game-data fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
-    build_game_data_cache(&scripts_root, &cache_path);
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
     let started_marker = fixture.path().join("initialization-started");
-    let mut client = McpClient::spawn_with_env(
-        &[
-            "mcp",
-            "--index-cache",
-            cache_path.to_str().expect("utf-8 cache path"),
-        ],
+    let mut client = McpClient::spawn_owned_with_env(
+        &game_data.arguments,
         &[
             ("REFORGER_MCP_TEST_UNINTERRUPTIBLE_DELAY_MS", "5000"),
             ("REFORGER_MCP_TEST_INITIALIZATION_DEADLINE_MS", "50"),
@@ -1951,7 +1954,7 @@ fn initialization_deadline_cancels_work_and_returns_stable_tool_error() {
         "runtime shutdown must not wait for a stalled blocking worker"
     );
     assert!(
-        cache_path.exists(),
+        game_data.storage_root.is_dir(),
         "the test uses the language-server cache artifact"
     );
 }
@@ -1964,13 +1967,9 @@ fn ready_game_data_operations_use_their_own_five_second_deadline() {
     fs::write(scripts_root.join("Deadline.c"), "class Deadline {}")
         .expect("write game-data fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
-    build_game_data_cache(&scripts_root, &cache_path);
-    let mut client = McpClient::spawn_with_env(
-        &[
-            "mcp",
-            "--index-cache",
-            cache_path.to_str().expect("utf-8 cache path"),
-        ],
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
+    let mut client = McpClient::spawn_owned_with_env(
+        &game_data.arguments,
         &[
             ("REFORGER_MCP_TEST_GAME_DATA_OPERATION_DELAY_MS", "5000"),
             ("REFORGER_MCP_TEST_GAME_DATA_OPERATION_DEADLINE_MS", "50"),
@@ -2009,13 +2008,9 @@ fn first_game_data_search_uses_the_cold_initialization_deadline() {
     fs::write(scripts_root.join("Deadline.c"), "class Deadline {}")
         .expect("write game-data fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
-    build_game_data_cache(&scripts_root, &cache_path);
-    let mut client = McpClient::spawn_with_env(
-        &[
-            "mcp",
-            "--index-cache",
-            cache_path.to_str().expect("utf-8 cache path"),
-        ],
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
+    let mut client = McpClient::spawn_owned_with_env(
+        &game_data.arguments,
         &[
             ("REFORGER_MCP_TEST_INITIALIZATION_DELAY_MS", "5000"),
             ("REFORGER_MCP_TEST_INITIALIZATION_DEADLINE_MS", "50"),
@@ -2041,13 +2036,10 @@ fn request_admission_bounds_in_flight_tool_calls() {
     fs::write(scripts_root.join("Admission.c"), "class Admission {}")
         .expect("write game-data fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
     let admission_marker = fixture.path().join("admitted-requests");
-    let mut client = McpClient::spawn_with_env(
-        &[
-            "mcp",
-            "--index-cache",
-            cache_path.to_str().expect("utf-8 cache path"),
-        ],
+    let mut client = McpClient::spawn_owned_with_env(
+        &game_data.arguments,
         &[
             ("REFORGER_MCP_TEST_INITIALIZATION_DELAY_MS", "750"),
             (
@@ -2089,14 +2081,10 @@ fn timed_out_research_workers_retain_admission_until_they_exit() {
     fs::write(scripts_root.join("Admission.c"), "class Admission {}")
         .expect("write game-data fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
-    build_game_data_cache(&scripts_root, &cache_path);
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
     let admission_marker = fixture.path().join("admitted-requests");
-    let mut client = McpClient::spawn_with_env(
-        &[
-            "mcp",
-            "--index-cache",
-            cache_path.to_str().expect("utf-8 cache path"),
-        ],
+    let mut client = McpClient::spawn_owned_with_env(
+        &game_data.arguments,
         &[
             ("REFORGER_MCP_TEST_RESEARCH_NONCOOPERATIVE_DELAY_MS", "500"),
             ("REFORGER_MCP_TEST_GAME_DATA_OPERATION_DEADLINE_MS", "50"),
@@ -2153,14 +2141,10 @@ fn cancelled_example_searches_release_admission_for_the_next_request() {
     )
     .expect("write large example-search fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
-    build_game_data_cache(&scripts_root, &cache_path);
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
     let admission_marker = fixture.path().join("admitted-requests");
-    let mut client = McpClient::spawn_with_env(
-        &[
-            "mcp",
-            "--index-cache",
-            cache_path.to_str().expect("utf-8 cache path"),
-        ],
+    let mut client = McpClient::spawn_owned_with_env(
+        &game_data.arguments,
         &[(
             "REFORGER_MCP_TEST_ADMISSION_MARKER",
             admission_marker.to_str().expect("utf-8 marker path"),
@@ -2659,12 +2643,22 @@ impl McpClient {
         Self::spawn_program_with_env(program, args, &[])
     }
 
+    fn spawn_owned(args: &[String]) -> Self {
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        Self::spawn(&args)
+    }
+
     fn spawn_with_env(args: &[&str], environment: &[(&str, &str)]) -> Self {
         Self::spawn_program_with_env(
             Path::new(env!("CARGO_BIN_EXE_reforger_language_server")),
             args,
             environment,
         )
+    }
+
+    fn spawn_owned_with_env(args: &[String], environment: &[(&str, &str)]) -> Self {
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        Self::spawn_with_env(&args, environment)
     }
 
     fn spawn_program_with_env(program: &Path, args: &[&str], environment: &[(&str, &str)]) -> Self {

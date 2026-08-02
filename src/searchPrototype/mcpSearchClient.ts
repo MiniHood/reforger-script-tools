@@ -4,9 +4,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import { searchLimits } from '../extensionConfig/search';
 import type { ExternalIndexMode } from '../extensionConfig/workbench';
+import { buildMcpLaunchConfiguration } from '../mcp/mcpConfiguration';
 
-export type SearchSource = 'workspace' | 'gameData' | 'wiki';
-export type SearchMode = 'semantic' | 'text';
+export type SearchSource = 'workspace' | 'gameData' | 'wiki' | 'workbench';
+export type SearchMode = 'semantic' | 'text' | 'resource';
 export const workspaceScopeId = 'workspace';
 export const wikiScopeId = 'wiki';
 
@@ -77,10 +78,51 @@ export const searchKindFilters: readonly SearchKindFilter[] = [
 	{ value: 'enum', label: 'Enums', kinds: ['enum', 'enumMember'] },
 ];
 
+export type SearchResourceKind =
+	| 'world'
+	| 'script'
+	| 'prefab'
+	| 'config'
+	| 'material'
+	| 'layout'
+	| 'texture'
+	| 'imageset'
+	| 'audio'
+	| 'animation'
+	| 'particle'
+	| 'string'
+	| 'ai';
+
+export interface SearchResourceKindFilter {
+	value: string;
+	label: string;
+	kinds?: readonly SearchResourceKind[];
+}
+
+export const searchResourceKindFilters: readonly SearchResourceKindFilter[] = [
+	{ value: 'all', label: 'All resources' },
+	{ value: 'prefab', label: 'Prefabs', kinds: ['prefab'] },
+	{ value: 'script', label: 'Scripts', kinds: ['script'] },
+	{ value: 'audio', label: 'Audio', kinds: ['audio'] },
+	{ value: 'world', label: 'Worlds', kinds: ['world'] },
+	{ value: 'config', label: 'Configs', kinds: ['config'] },
+	{ value: 'material', label: 'Materials', kinds: ['material'] },
+	{ value: 'texture', label: 'Textures', kinds: ['texture', 'imageset'] },
+	{ value: 'layout', label: 'Layouts', kinds: ['layout'] },
+	{ value: 'animation', label: 'Animations', kinds: ['animation'] },
+	{ value: 'particle', label: 'Particles', kinds: ['particle'] },
+	{ value: 'string', label: 'Strings', kinds: ['string'] },
+	{ value: 'ai', label: 'AI', kinds: ['ai'] },
+];
+
+const allSearchResourceKinds = searchResourceKindFilters
+	.flatMap(filter => filter.kinds ?? [])
+	.filter((kind, index, values) => values.indexOf(kind) === index);
+
 export interface SearchHit {
 	id: string;
 	source: SearchSource;
-	kind: 'symbol' | 'documentation' | 'text';
+	kind: 'symbol' | 'documentation' | 'text' | 'resource';
 	title: string;
 	detail: string;
 	path: string;
@@ -95,6 +137,7 @@ export interface SearchHit {
 	addonLabel?: string;
 	textMatchStart?: number;
 	textMatchLength?: number;
+	resourceName?: string;
 }
 
 export interface SearchResponse {
@@ -384,7 +427,11 @@ export class McpSearchClient {
 		symbolKinds?: readonly SearchSymbolKind[],
 		mode: SearchMode = 'semantic',
 		textOptions: TextSearchOptions = defaultTextSearchOptions,
+		resourceKinds?: readonly SearchResourceKind[],
 	): Promise<SearchResponse> {
+		if (mode === 'resource') {
+			return this.searchResources(query, pageSize, page, resourceKinds ?? allSearchResourceKinds);
+		}
 		const trace = createSearchPerformanceTrace();
 		await this.start();
 		trace.startupMs = performance.now() - trace.startedAt;
@@ -584,21 +631,77 @@ export class McpSearchClient {
 		}
 	}
 
+	private async searchResources(
+		query: string,
+		pageSize: number,
+		page: number,
+		kinds: readonly SearchResourceKind[],
+	): Promise<SearchResponse> {
+		const trace = createSearchPerformanceTrace();
+		await this.start();
+		trace.startupMs = performance.now() - trace.startedAt;
+		const normalizedPageSize = Math.min(100, Math.max(1, Number.isFinite(pageSize) ? Math.floor(pageSize) : 25));
+		const requestedPage = Math.min(maxSearchPages, Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1));
+		const source: SearchSource = 'workbench';
+		const cacheKey = `resource\u0000${normalizedPageSize}\u0000${query}\u0000${kinds.join(',')}`;
+		let pages = this.searchPageCaches.get(cacheKey);
+		if (!pages) {
+			if (this.searchPageCaches.size >= maxSearchPageCaches) {
+				const oldest = this.searchPageCaches.keys().next().value;
+				if (oldest !== undefined) {
+					this.searchPageCaches.delete(oldest);
+				}
+			}
+			pages = new Map<number, CachedSearchPage>();
+			this.searchPageCaches.set(cacheKey, pages);
+		}
+		for (let current = 1; current <= requestedPage; current += 1) {
+			if (pages.has(current)) {
+				continue;
+			}
+			const previous = current > 1 ? pages.get(current - 1) : undefined;
+			if (current > 1 && !previous?.nextCursor) {
+				break;
+			}
+			const startedAt = performance.now();
+			const value = asRecord(await this.callTool('workbench_search_resources', {
+				kinds,
+				query,
+				limit: normalizedPageSize,
+				...(previous?.nextCursor ? { cursor: previous.nextCursor } : {}),
+			}));
+			const results = normalizeResourceSearchPage(value);
+			pages.set(current, {
+				results,
+				total: (current - 1) * normalizedPageSize + results.length + (value.truncated === true ? 1 : 0),
+				truncated: value.truncated === true,
+				...(typeof value.nextCursor === 'string' && value.nextCursor.length > 0 ? { nextCursor: value.nextCursor } : {}),
+			});
+			const sourceTrace = sourcePerformanceFor(trace, source);
+			sourceTrace.remoteRequests += 1;
+			sourceTrace.remoteMs += performance.now() - startedAt;
+			recordVisitedPage(sourceTrace, current);
+		}
+		const currentPage = pages.get(requestedPage) ?? pages.get(1) ?? {
+			results: [], total: 0, truncated: false,
+		};
+		const total = currentPage.total;
+		trace.initialSearchMs = performance.now() - trace.startedAt;
+		return {
+			results: currentPage.results,
+			warnings: [],
+			total,
+			truncated: currentPage.truncated,
+			totalBySource: { workbench: total },
+			page: pages.has(requestedPage) ? requestedPage : 1,
+			pageSize: normalizedPageSize,
+			performance: finishSearchPerformance(trace, requestedPage, normalizedPageSize, [source], 'resource', defaultTextSearchOptions, [], []),
+		};
+	}
+
 	private async startProcess(): Promise<void> {
-		const args = [
-			'mcp',
-			'--addon-source-inventory',
-			this.options.addonSourceInventory,
-			'--addon-index-storage',
-			this.options.addonIndexStorage,
-			'--external-index-mode',
-			this.options.externalIndexMode,
-			'--official-wiki-root',
-			this.options.officialWikiRoot,
-			...this.options.workspaceScripts.flatMap(root => ['--workspace-scripts', root]),
-			...this.options.dependencyProjectFiles.flatMap(projectFile => ['--dependency-project', projectFile]),
-		];
-		const child = spawn(this.options.serverPath, args, {
+		const launch = buildMcpLaunchConfiguration(this.options);
+		const child = spawn(launch.command, launch.args, {
 			stdio: ['pipe', 'pipe', 'pipe'],
 			windowsHide: true,
 		});
@@ -677,6 +780,7 @@ export class McpSearchClient {
 		trace?: SearchPerformanceTrace,
 		mode: SearchMode = 'semantic',
 		textOptions: TextSearchOptions = defaultTextSearchOptions,
+		retryInvalidCursor = true,
 	): Promise<CachedSearchPage> {
 		const sourceTrace = trace ? sourcePerformanceFor(trace, source) : undefined;
 		const cacheKey = `${mode}\u0000${source}\u0000${pageSize}\u0000${query}\u0000${addonGuids.join(',')}\u0000${symbolKinds?.join(',') ?? ''}\u0000${textOptions.matchCase}\u0000${textOptions.matchWholeWord}\u0000${textOptions.useRegex}`;
@@ -722,7 +826,27 @@ export class McpSearchClient {
 			...(source !== 'wiki' && symbolKinds?.length ? { kinds: symbolKinds } : {}),
 		};
 		const remoteStartedAt = performance.now();
-		const value = asRecord(await this.callTool(searchToolFor(source, mode), argumentsValue));
+		let value: RecordValue;
+		try {
+			value = asRecord(await this.callTool(searchToolFor(source, mode), argumentsValue));
+		} catch (error) {
+			if (usesCursor && previousPage?.nextCursor && retryInvalidCursor && isInvalidTextCursor(error)) {
+				pages.clear();
+				return this.searchPage(
+					query,
+					source,
+					pageSize,
+					page,
+					addonGuids,
+					symbolKinds,
+					trace,
+					mode,
+					textOptions,
+					false,
+				);
+			}
+			throw error;
+		}
 		if (sourceTrace) {
 			sourceTrace.remoteRequests += 1;
 			sourceTrace.remoteMs += performance.now() - remoteStartedAt;
@@ -844,6 +968,12 @@ export class McpSearchClient {
 	}
 }
 
+function isInvalidTextCursor(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return message === 'cursor is invalid for this text query or source revision.'
+		|| message === 'cursor belongs to another source revision.';
+}
+
 export function searchToolFor(source: SearchSource, mode: SearchMode = 'semantic'): string {
 	if (source === 'wiki') {
 		return 'search_official_wiki';
@@ -874,6 +1004,42 @@ export function normalizeSearchPage(source: SearchSource, value: unknown, mode: 
 			return normalizeWikiHit(hit, index);
 		}
 		return mode === 'text' ? normalizeTextHit(source, hit, index) : normalizeSymbolHit(source, hit, index);
+	});
+}
+
+export function resourceKindsFor(value: string): readonly SearchResourceKind[] {
+	return searchResourceKindFilters.find(filter => filter.value === value)?.kinds ?? allSearchResourceKinds;
+}
+
+export function normalizeResourceSearchPage(value: unknown): SearchHit[] {
+	const results = asRecord(value).results;
+	if (!Array.isArray(results)) {
+		return [];
+	}
+	return results.flatMap((entry, index) => {
+		const hit = asRecord(entry);
+		const resourceName = asOptionalString(hit.resourceName);
+		if (!resourceName) {
+			return [];
+		}
+		const logicalPath = asString(hit.logicalPath, resourceName);
+		const name = asString(hit.name, logicalPath);
+		const extension = asString(hit.extension, 'resource');
+		const addonGuid = asOptionalString(hit.addonGuid);
+		return [{
+			id: `workbench-resource-${index}-${resourceName}`,
+			source: 'workbench' as const,
+			kind: 'resource' as const,
+			title: name,
+			detail: extension,
+			path: logicalPath,
+			excerpt: resourceName,
+			matchKind: 'resource',
+			readInput: {},
+			resourceName,
+			...(addonGuid ? { addonGuid } : {}),
+			...(asOptionalString(hit.addonId) ? { addonLabel: asOptionalString(hit.addonId) } : {}),
+		}];
 	});
 }
 

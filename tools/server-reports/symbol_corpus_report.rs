@@ -1,10 +1,12 @@
 use reforger_language_server::ast::{AstSourceFile, ClassMember, Declaration};
 use reforger_language_server::lexer::TextSpan;
 use reforger_language_server::model::{
-    source_category_for_path, SourceFileMetadata, SourceKind, SymbolCatalog, SymbolKind,
-    SymbolRecord, SOURCE_PRIORITY_GAME_DATA,
+    declaration_type_shape, SourceKind, SOURCE_PRIORITY_GAME_DATA,
 };
 use reforger_language_server::parser::parse_source;
+use reforger_language_server::semantic_file::{
+    SemanticDeclaration, SemanticDeclarationKind, SemanticFile, SemanticText,
+};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::env;
@@ -206,16 +208,12 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
         let parse = parse_source(&source);
         totals.parse_diagnostics += parse.diagnostics.len();
         let ast = AstSourceFile::new(&source, &parse);
-        let catalog = SymbolCatalog::from_ast_with_metadata(
-            &source,
-            &ast,
-            game_data_metadata(scripts_path, file),
-        );
-        scan_catalog(
+        let semantic_file = SemanticFile::build(&source, &parse);
+        scan_semantic_file(
             scripts_path,
             file,
             &source,
-            &catalog,
+            &semantic_file,
             &mut totals,
             &mut frequencies,
             &mut doc_coverage,
@@ -341,28 +339,12 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
     Ok(report)
 }
 
-fn game_data_metadata(scripts_path: &Path, file: &Path) -> SourceFileMetadata {
-    let relative_path = file
-        .strip_prefix(scripts_path)
-        .unwrap_or(file)
-        .to_path_buf();
-    SourceFileMetadata {
-        kind: SourceKind::GameData,
-        category: source_category_for_path(SourceKind::GameData, Some(&relative_path)),
-        absolute_path: Some(file.to_path_buf()),
-        virtual_source: None,
-        root_path: Some(scripts_path.to_path_buf()),
-        relative_path: Some(relative_path),
-        priority: SOURCE_PRIORITY_GAME_DATA,
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
-fn scan_catalog(
+fn scan_semantic_file(
     scripts_path: &Path,
     file: &Path,
     source: &str,
-    catalog: &SymbolCatalog<'_>,
+    semantic_file: &SemanticFile,
     totals: &mut Totals,
     frequencies: &mut Frequencies,
     doc_coverage: &mut BTreeMap<String, DocCoverage>,
@@ -372,10 +354,10 @@ fn scan_catalog(
     destructor_groups: &mut BTreeMap<String, Vec<Occurrence>>,
     samples_by_kind: &mut BTreeMap<String, Vec<SymbolSample>>,
 ) {
-    totals.symbols += catalog.records().len();
-    totals.non_declaration_callable_fragments += catalog.non_declaration_callable_fragments();
+    totals.symbols += semantic_file.declarations().len();
+    totals.non_declaration_callable_fragments += semantic_file.non_declaration_callable_fragments();
 
-    for record in catalog.records() {
+    for record in semantic_file.declarations() {
         let kind = kind_name(record.kind);
         count(&mut frequencies.symbol_kinds, kind);
 
@@ -399,7 +381,7 @@ fn scan_catalog(
         }
 
         if record.parent.is_none() {
-            if let Some(name) = catalog.record_name(record) {
+            if let Some(name) = record.name.as_ref().map(|name| name.text.as_str()) {
                 top_level_names
                     .entry(name.to_string())
                     .or_default()
@@ -411,9 +393,10 @@ fn scan_catalog(
             totals.records_with_attributes += 1;
             totals.attributes += record.attributes.len();
             for attribute in &record.attributes {
-                if let Some(name) = catalog.attribute_name(*attribute) {
-                    count(&mut frequencies.attribute_names, name);
-                }
+                count(
+                    &mut frequencies.attribute_names,
+                    attribute_name(&attribute.text),
+                );
             }
         }
 
@@ -423,18 +406,24 @@ fn scan_catalog(
         }
 
         for modifier in &record.modifiers {
-            count(&mut frequencies.modifiers, catalog.text(*modifier));
+            count(&mut frequencies.modifiers, &modifier.text);
         }
 
-        if let Some(base_type) = record.detail.base_type {
-            count(&mut frequencies.base_types, catalog.text(base_type));
+        if let Some(base_type) = &record.detail.base_type {
+            count(&mut frequencies.base_types, &base_type.text);
         }
 
-        if let Some(type_text) = record.detail.type_text {
-            count(&mut frequencies.type_texts, catalog.text(type_text));
+        if let Some(type_text) = &record.detail.type_text {
+            count(&mut frequencies.type_texts, &type_text.text);
         }
 
-        if let Some(type_shape) = catalog.record_type_shape(record) {
+        if let Some(type_text) = &record.detail.type_text {
+            let type_shape = declaration_type_shape(
+                source,
+                type_text.span,
+                record.span,
+                record.name.as_ref().map(|name| name.span),
+            );
             if let Some(base_name) = type_shape.base_name_text() {
                 count(&mut frequencies.type_shape_base_names, base_name);
             }
@@ -450,32 +439,36 @@ fn scan_catalog(
             }
         }
 
-        if let Some(return_type_text) = record.detail.return_type_text {
-            if matches!(record.kind, SymbolKind::Function | SymbolKind::Method) {
-                count(
-                    &mut frequencies.return_type_texts,
-                    catalog.text(return_type_text),
-                );
+        if let Some(return_type_text) = &record.detail.return_type {
+            if matches!(
+                record.kind,
+                SemanticDeclarationKind::Function | SemanticDeclarationKind::Method
+            ) {
+                count(&mut frequencies.return_type_texts, &return_type_text.text);
             }
         }
 
         if matches!(
             record.kind,
-            SymbolKind::Method | SymbolKind::Constructor | SymbolKind::Destructor
+            SemanticDeclarationKind::Method
+                | SemanticDeclarationKind::Constructor
+                | SemanticDeclarationKind::Destructor
         ) {
-            if let Some(name) = catalog.record_name(record) {
-                let owner = owner_name(catalog, record);
+            if let Some(name) = record.name.as_ref().map(|name| name.text.as_str()) {
+                let owner = owner_name(semantic_file, record);
                 let group = format!("{owner}.{name}");
                 let occurrence = occurrence(source, file, record);
                 match record.kind {
-                    SymbolKind::Method => method_groups.entry(group).or_default().push(occurrence),
-                    SymbolKind::Constructor => {
+                    SemanticDeclarationKind::Method => {
+                        method_groups.entry(group).or_default().push(occurrence)
+                    }
+                    SemanticDeclarationKind::Constructor => {
                         constructor_groups
                             .entry(group)
                             .or_default()
                             .push(occurrence);
                     }
-                    SymbolKind::Destructor => {
+                    SemanticDeclarationKind::Destructor => {
                         destructor_groups.entry(group).or_default().push(occurrence);
                     }
                     _ => {}
@@ -492,11 +485,12 @@ fn scan_catalog(
                     .unwrap_or(file)
                     .to_path_buf(),
                 line: line_column(source, record.selection_span.start).0,
-                name: catalog
-                    .record_name(record)
-                    .map(str::to_string)
+                name: record
+                    .name
+                    .as_ref()
+                    .map(|name| name.text.clone())
                     .unwrap_or_else(|| "<unknown>".to_string()),
-                detail: detail_text(catalog, record),
+                detail: detail_text(record),
             });
         }
     }
@@ -522,7 +516,7 @@ fn collect_fragment_spans(ast: &AstSourceFile<'_, '_>) -> Vec<TextSpan> {
     spans
 }
 
-fn occurrence(source: &str, file: &Path, record: &SymbolRecord) -> Occurrence {
+fn occurrence(source: &str, file: &Path, record: &SemanticDeclaration) -> Occurrence {
     Occurrence {
         kind: kind_name(record.kind),
         path: file.to_path_buf(),
@@ -530,74 +524,60 @@ fn occurrence(source: &str, file: &Path, record: &SymbolRecord) -> Occurrence {
     }
 }
 
-fn owner_name(catalog: &SymbolCatalog<'_>, record: &SymbolRecord) -> String {
+fn owner_name(semantic_file: &SemanticFile, record: &SemanticDeclaration) -> String {
     record
         .parent
-        .and_then(|parent| catalog.record(parent))
-        .and_then(|parent| catalog.record_name(parent))
+        .and_then(|parent| semantic_file.declaration(parent))
+        .and_then(|parent| parent.name.as_ref())
+        .map(|name| name.text.as_str())
         .unwrap_or("<unknown>")
         .to_string()
 }
 
-fn detail_text(catalog: &SymbolCatalog<'_>, record: &SymbolRecord) -> String {
+fn detail_text(record: &SemanticDeclaration) -> String {
     let mut values = Vec::new();
-    push_detail(catalog, &mut values, "type", record.detail.type_text);
-    push_detail(
-        catalog,
-        &mut values,
-        "return",
-        record.detail.return_type_text,
-    );
-    push_detail(catalog, &mut values, "base", record.detail.base_type);
-    push_detail(catalog, &mut values, "default", record.detail.default_text);
-    push_detail(
-        catalog,
-        &mut values,
-        "enum_value",
-        record.detail.enum_value_text,
-    );
+    push_detail(&mut values, "type", record.detail.type_text.as_ref());
+    push_detail(&mut values, "return", record.detail.return_type.as_ref());
+    push_detail(&mut values, "base", record.detail.base_type.as_ref());
+    push_detail(&mut values, "default", record.detail.default_value.as_ref());
+    push_detail(&mut values, "enum_value", record.detail.enum_value.as_ref());
     values.join(" ")
 }
 
-fn push_detail(
-    catalog: &SymbolCatalog<'_>,
-    values: &mut Vec<String>,
-    label: &str,
-    span: Option<TextSpan>,
-) {
-    if let Some(span) = span {
-        values.push(format!("{label}: {}", catalog.text(span)));
+fn push_detail(values: &mut Vec<String>, label: &str, text: Option<&SemanticText>) {
+    if let Some(text) = text {
+        values.push(format!("{label}: {}", text.text));
     }
 }
 
-fn is_child_kind(kind: SymbolKind) -> bool {
+fn is_child_kind(kind: SemanticDeclarationKind) -> bool {
     matches!(
         kind,
-        SymbolKind::EnumMember
-            | SymbolKind::Field
-            | SymbolKind::Method
-            | SymbolKind::Constructor
-            | SymbolKind::Destructor
-            | SymbolKind::Parameter
+        SemanticDeclarationKind::EnumMember
+            | SemanticDeclarationKind::Field
+            | SemanticDeclarationKind::Method
+            | SemanticDeclarationKind::Constructor
+            | SemanticDeclarationKind::Destructor
+            | SemanticDeclarationKind::Parameter
     )
 }
 
-fn kind_name(kind: SymbolKind) -> &'static str {
+fn kind_name(kind: SemanticDeclarationKind) -> &'static str {
     match kind {
-        SymbolKind::Class => "Class",
-        SymbolKind::TypeParameter => "TypeParameter",
-        SymbolKind::Enum => "Enum",
-        SymbolKind::EnumMember => "EnumMember",
-        SymbolKind::Typedef => "Typedef",
-        SymbolKind::Function => "Function",
-        SymbolKind::GlobalField => "GlobalField",
-        SymbolKind::Field => "Field",
-        SymbolKind::Method => "Method",
-        SymbolKind::Constructor => "Constructor",
-        SymbolKind::Destructor => "Destructor",
-        SymbolKind::Parameter => "Parameter",
-        SymbolKind::LocalVariable => "LocalVariable",
-        SymbolKind::PreprocessorMacro => "PreprocessorMacro",
+        SemanticDeclarationKind::Class => "Class",
+        SemanticDeclarationKind::TypeParameter => "TypeParameter",
+        SemanticDeclarationKind::Enum => "Enum",
+        SemanticDeclarationKind::EnumMember => "EnumMember",
+        SemanticDeclarationKind::Typedef => "Typedef",
+        SemanticDeclarationKind::Function => "Function",
+        SemanticDeclarationKind::GlobalField => "GlobalField",
+        SemanticDeclarationKind::Field => "Field",
+        SemanticDeclarationKind::Method => "Method",
+        SemanticDeclarationKind::Constructor => "Constructor",
+        SemanticDeclarationKind::Destructor => "Destructor",
+        SemanticDeclarationKind::Parameter => "Parameter",
+        SemanticDeclarationKind::LocalVariable => "LocalVariable",
+        SemanticDeclarationKind::PreprocessorMacro => "PreprocessorMacro",
     }
 }
 
@@ -893,6 +873,15 @@ fn sorted_counts(counts: &BTreeMap<String, usize>) -> Vec<(String, usize)> {
 
 fn count(counts: &mut BTreeMap<String, usize>, value: &str) {
     *counts.entry(value.to_string()).or_default() += 1;
+}
+
+fn attribute_name(text: &str) -> &str {
+    text.trim()
+        .trim_start_matches('[')
+        .split(['(', ']'])
+        .next()
+        .unwrap_or(text)
+        .trim()
 }
 
 fn timestamp() -> u64 {

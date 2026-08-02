@@ -57,7 +57,7 @@ const toolFamilyRules = [
 const corpusWorkflowTools = {
   "owned-process": ["workbench_launch", "workbench_status", "workbench_list_windows", "workbench_capture_window"],
   readiness: ["workbench_install_bridge", "workbench_project_context", "workbench_validate_scripts", "workbench_list_editors", "workbench_open_editor"],
-  "world-read": ["workbench_search_resources", "workbench_list_resources", "workbench_inspect_resource", "workbench_open_resource", "workbench_state", "workbench_world_selection_summary", "workbench_list_entities", "workbench_search_world_entities", "workbench_layer_state", "workbench_find_entities_by_radius", "workbench_sample_terrain", "workbench_get_viewport_context", "workbench_trace"],
+  "world-read": ["workbench_search_resources", "workbench_inspect_resource", "workbench_open_resource", "workbench_state", "workbench_world_selection_summary", "workbench_list_entities", "workbench_search_world_entities", "workbench_layer_state", "workbench_find_entities_by_radius", "workbench_sample_terrain", "workbench_get_viewport_context", "workbench_trace"],
   entity: ["workbench_selected_entity_hierarchy", "workbench_inspect_entity", "workbench_list_components", "workbench_inspect_component", "workbench_list_entity_properties", "workbench_create_entity", "workbench_add_component", "workbench_set_component_properties", "workbench_set_entity_properties", "workbench_rename_entity", "workbench_move_entity", "workbench_rotate_entity", "workbench_transform_entity", "workbench_duplicate_entity", "workbench_reparent_entity", "workbench_set_selection", "workbench_clear_selection", "workbench_remove_component", "workbench_delete_entity", "workbench_undo", "workbench_redo"],
   shape: ["workbench_get_shape_points", "workbench_edit_shape_points", "workbench_set_polyline_regular_polygon", "workbench_convert_shape_points", "workbench_transform_shape_points", "workbench_resample_polyline", "workbench_inspect_spline", "workbench_edit_spline", "workbench_sample_spline"],
   "prefab-resource": ["workbench_create_prefab", "workbench_create_generic_prefab", "workbench_inspect_prefab_context", "workbench_inspect_prefab_component", "workbench_add_prefab_resource_component", "workbench_set_prefab_resource_property", "workbench_remove_prefab_resource_component", "workbench_save_prefab"],
@@ -143,7 +143,7 @@ const corpusToolDependencies = Object.fromEntries([
   [["workbench_validate_scripts"], ["managedBridge", "projectContext"]],
   [["workbench_list_editors"], ["managedBridge"]],
   [["workbench_open_editor"], ["managedBridge"]],
-  [["workbench_search_resources", "workbench_list_resources"], ["managedBridge", "projectContext"]],
+  [["workbench_search_resources"], ["managedBridge", "projectContext"]],
   [["workbench_inspect_resource"], ["canonicalResource"]],
   [["workbench_open_resource"], ["canonicalResource", "worldEditor"]],
   [["workbench_state"], ["managedBridge"]],
@@ -1709,15 +1709,11 @@ export async function runWorkbenchCorpus({
   serverPath = resolveServerPath(),
   apiReferencePath = defaultApiReference,
   reportPath = defaultReportPath,
-  indexCachePath,
   scenarioPath,
   fixturePath,
   requireLiveCoverage = false,
 } = {}) {
   const args = ["mcp"];
-  if (indexCachePath) {
-    args.push("--index-cache", indexCachePath);
-  }
   const started = performanceNow();
   const fixture = fixturePath
     ? new WorkbenchMcpSession(loadFixtureManifest(fixturePath))
@@ -2251,7 +2247,6 @@ function parseArguments(argumentsList) {
         "--server",
         "--api-reference",
         "--out",
-        "--index-cache",
         "--scenario",
         "--fixture",
       ].includes(argument)
@@ -2274,7 +2269,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (options.help) {
       console.log(
         "Usage: node tools/workbench-mcp-conformance.mjs [--server PATH] " +
-          "[--api-reference PATH] [--index-cache PATH] [--scenario PATH] [--fixture PATH] " +
+          "[--api-reference PATH] [--scenario PATH] [--fixture PATH] " +
           "[--require-live-coverage] [--out PATH]",
       );
       process.exit(0);
@@ -2285,7 +2280,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const report = await runWorkbenchCorpus({
       serverPath: resolveServerPath(options.server),
       apiReferencePath: options.apireference ?? defaultApiReference,
-      indexCachePath: options.indexcache,
       scenarioPath: options.scenario,
       fixturePath: options.fixture,
       requireLiveCoverage: options.requirelivecoverage === true,

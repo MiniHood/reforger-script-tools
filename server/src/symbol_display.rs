@@ -339,12 +339,10 @@ fn truncate_preview(value: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
     use crate::index::SymbolIndex;
-    use crate::model::{
-        SourceCategory, SourceFileMetadata, SymbolCatalog, SOURCE_PRIORITY_WORKSPACE,
-    };
+    use crate::model::{SourceCategory, SourceFileMetadata, SOURCE_PRIORITY_WORKSPACE};
     use crate::parser::parse_source;
+    use crate::semantic_file::SemanticFile;
 
     #[test]
     fn displays_class_with_base_attributes_modifiers_docs_and_source() {
@@ -590,10 +588,9 @@ class Example {}
     fn index(source: &str) -> SymbolIndex {
         let parse = parse_source(source);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
-        let ast = AstSourceFile::new(source, &parse);
-        let catalog = SymbolCatalog::from_ast_with_metadata(
-            source,
-            &ast,
+        let semantic = SemanticFile::build(source, &parse);
+        SymbolIndex::from_semantic_files([(
+            &semantic,
             SourceFileMetadata {
                 kind: SourceKind::Workspace,
                 category: SourceCategory::Workspace,
@@ -603,8 +600,7 @@ class Example {}
                 relative_path: None,
                 priority: SOURCE_PRIORITY_WORKSPACE,
             },
-        );
-        SymbolIndex::from_catalogs([&catalog])
+        )])
     }
 
     fn find(index: &SymbolIndex, kind: SymbolKind, name: &str) -> GlobalSymbolId {

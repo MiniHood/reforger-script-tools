@@ -35,13 +35,13 @@ use crate::workbench::{
     WorkbenchOpenResourceResult, WorkbenchPlaySessionResult, WorkbenchPolylineResample,
     WorkbenchPrefabComponentInspection, WorkbenchPrefabContext,
     WorkbenchPrefabResourceMutationResult, WorkbenchProcessResult, WorkbenchProjectContext,
-    WorkbenchPropertyList, WorkbenchResourceInspection, WorkbenchResourceListPage,
-    WorkbenchResourceSearchPage, WorkbenchSaveResult, WorkbenchScriptActivationResult,
-    WorkbenchSelectedEntityHierarchy, WorkbenchShapePointConversion, WorkbenchShapePointEdit,
-    WorkbenchShapePointSpace, WorkbenchShapePoints, WorkbenchShapeTransformOperation,
-    WorkbenchSpline, WorkbenchSplineAnchorInput, WorkbenchSplineTangentModeInput,
-    WorkbenchTerrainSample, WorkbenchTerrainSampleOptions, WorkbenchTraceOptions,
-    WorkbenchTraceResult, WorkbenchTraceShape, WorkbenchValidationPage, WorkbenchViewportContext,
+    WorkbenchPropertyList, WorkbenchResourceInspection, WorkbenchResourceSearchPage,
+    WorkbenchSaveResult, WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy,
+    WorkbenchShapePointConversion, WorkbenchShapePointEdit, WorkbenchShapePointSpace,
+    WorkbenchShapePoints, WorkbenchShapeTransformOperation, WorkbenchSpline,
+    WorkbenchSplineAnchorInput, WorkbenchSplineTangentModeInput, WorkbenchTerrainSample,
+    WorkbenchTerrainSampleOptions, WorkbenchTraceOptions, WorkbenchTraceResult,
+    WorkbenchTraceShape, WorkbenchValidationPage, WorkbenchViewportContext,
     WorkbenchViewportContextOptions, WorkbenchWorldSelectionSummary,
 };
 use crate::workbench_capture::{
@@ -91,7 +91,6 @@ pub const WORKBENCH_INSTALL_BRIDGE_TOOL_NAME: &str = "workbench_install_bridge";
 pub const WORKBENCH_STATE_TOOL_NAME: &str = "workbench_state";
 pub const WORKBENCH_PROJECT_CONTEXT_TOOL_NAME: &str = "workbench_project_context";
 pub const WORKBENCH_INSPECT_RESOURCE_TOOL_NAME: &str = "workbench_inspect_resource";
-pub const WORKBENCH_LIST_RESOURCES_TOOL_NAME: &str = "workbench_list_resources";
 pub const WORKBENCH_SEARCH_RESOURCES_TOOL_NAME: &str = "workbench_search_resources";
 pub const WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME: &str = "workbench_world_selection_summary";
 pub const WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME: &str =
@@ -230,7 +229,6 @@ const WORKBENCH_STATE_DESCRIPTION: &str =
     "Read bounded live editor state from the compatible managed Workbench handler package.";
 const WORKBENCH_PROJECT_CONTEXT_DESCRIPTION: &str = "Read the loaded Workbench addon identities from the compatible managed handler package. This is live editor context, not a filesystem project scan.";
 const WORKBENCH_INSPECT_RESOURCE_DESCRIPTION: &str = "Inspect one canonical Workbench resource identity through the compatible managed handler package. It returns compact resource metadata only and never accepts filesystem paths.";
-const WORKBENCH_LIST_RESOURCES_DESCRIPTION: &str = "Compatibility listing surface for existing callers. Prefer workbench_search_resources for all new discovery because it returns canonical resource identity and supports exact add-on filtering. This bounded page accepts fixed resource kinds, an optional text query, and an optional canonical logical $Addon:Path root; filesystem paths and arbitrary extensions are not accepted.";
 const WORKBENCH_SEARCH_RESOURCES_DESCRIPTION: &str = "Canonical Workbench resource-discovery surface. Search registered resources by fixed kinds, native text terms, an optional canonical logical $Addon:Path root, and an optional exact add-on GUID. Results expose canonical resource identity, add-on, logical path, and extension only; use exact resource inspection or prefab inspection for deeper facts.";
 const WORKBENCH_WORLD_SELECTION_SUMMARY_DESCRIPTION: &str = "Read a bounded live World Editor selection summary through the compatible managed handler package. It returns stable entity IDs, classes, subscenes, and layers; it never changes the editor selection.";
 const WORKBENCH_SELECTED_ENTITY_HIERARCHY_DESCRIPTION: &str = "Inspect the bounded parent and direct-child hierarchy for one current World Editor selection index. It uses only stable entity identities, never display-name matching, and never changes the editor selection.";
@@ -979,20 +977,6 @@ fn resource_extensions(kinds: &[McpWorkbenchResourceKind]) -> Vec<&'static str> 
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect()
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct McpWorkbenchResourceListInput {
-    kinds: Vec<McpWorkbenchResourceKind>,
-    #[schemars(length(max = 256))]
-    query: Option<String>,
-    #[schemars(length(min = 1, max = 512))]
-    root_path: Option<String>,
-    #[schemars(range(min = 1, max = 200))]
-    limit: Option<usize>,
-    #[schemars(length(min = 1, max = 256))]
-    cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -2263,7 +2247,6 @@ impl ReforgerMcpServer {
             workbench_state_tool(),
             workbench_project_context_tool(),
             workbench_inspect_resource_tool(),
-            workbench_list_resources_tool(),
             workbench_search_resources_tool(),
             workbench_world_selection_summary_tool(),
             workbench_selected_entity_hierarchy_tool(),
@@ -2493,36 +2476,6 @@ impl ReforgerMcpServer {
                     workbench
                         .inspect_resource(&input.resource_name)
                         .map_err(|failure| workbench.correlate_failure("inspect_resource", failure))
-                },
-            )
-            .await;
-        }
-        if request.name == WORKBENCH_LIST_RESOURCES_TOOL_NAME {
-            let input = parse_workbench_input::<McpWorkbenchResourceListInput>(&request)?;
-            if input.kinds.is_empty() {
-                return Ok(tool_error(
-                    "invalid_input",
-                    "At least one resource kind is required.",
-                    "Provide one or more fixed resource kinds.",
-                ));
-            }
-            let extensions = resource_extensions(&input.kinds);
-            let workbench = self.workbench.clone();
-            return blocking_workbench_call(
-                self.admission.clone(),
-                context,
-                "list_resources",
-                move || {
-                    workbench
-                        .list_resources(
-                            &extensions,
-                            input.query.as_deref(),
-                            input.root_path.as_deref(),
-                            None,
-                            input.cursor.as_deref(),
-                            input.limit.unwrap_or(100),
-                        )
-                        .map_err(|failure| workbench.correlate_failure("list_resources", failure))
                 },
             )
             .await;
@@ -4595,10 +4548,6 @@ fn api_reference_summary(name: &str) -> (&'static str, &'static str) {
             "Resources and editors",
             "Inspect compact metadata for one canonical resource.",
         ),
-        "workbench_list_resources" => (
-            "Resources and editors",
-            "Support legacy bounded resource listing; prefer canonical search.",
-        ),
         "workbench_search_resources" => (
             "Resources and editors",
             "Discover canonical resources by kind, terms, root, or add-on.",
@@ -5756,17 +5705,6 @@ fn workbench_inspect_resource_tool() -> Tool {
     )
 }
 
-fn workbench_list_resources_tool() -> Tool {
-    workbench_input_tool::<McpWorkbenchResourceListInput, WorkbenchResourceListPage>(
-        WORKBENCH_LIST_RESOURCES_TOOL_NAME,
-        WORKBENCH_LIST_RESOURCES_DESCRIPTION,
-        "List Workbench resources",
-        ToolAnnotations::with_title("List Workbench resources")
-            .read_only(true)
-            .open_world(false),
-    )
-}
-
 fn workbench_search_resources_tool() -> Tool {
     workbench_input_tool::<McpWorkbenchResourceSearchInput, WorkbenchResourceSearchPage>(
         WORKBENCH_SEARCH_RESOURCES_TOOL_NAME,
@@ -6693,18 +6631,18 @@ mod tests {
         workbench_inspect_prefab_context_tool, workbench_inspect_spline_tool,
         workbench_install_bridge_tool, workbench_layer_state_tool, workbench_list_components_tool,
         workbench_list_editors_tool, workbench_list_entities_tool,
-        workbench_list_entity_properties_tool, workbench_list_resources_tool,
-        workbench_list_windows_tool, workbench_move_entity_tool, workbench_open_editor_tool,
-        workbench_open_resource_tool, workbench_project_context_tool, workbench_reload_tool,
-        workbench_remove_component_tool, workbench_reparent_entity_tool,
-        workbench_resample_polyline_tool, workbench_rotate_entity_tool,
-        workbench_sample_spline_tool, workbench_sample_terrain_tool, workbench_save_prefab_tool,
-        workbench_save_tool, workbench_search_resources_tool, workbench_search_world_entities_tool,
-        workbench_selected_entity_hierarchy_tool, workbench_set_component_properties_tool,
-        workbench_set_entity_property_tool, workbench_set_polyline_regular_polygon_tool,
-        workbench_set_prefab_component_property_tool, workbench_set_prefab_property_tool,
-        workbench_start_play_session_tool, workbench_status_tool, workbench_stop_play_session_tool,
-        workbench_tool_error, workbench_trace_tool, workbench_transform_shape_points_tool,
+        workbench_list_entity_properties_tool, workbench_list_windows_tool,
+        workbench_move_entity_tool, workbench_open_editor_tool, workbench_open_resource_tool,
+        workbench_project_context_tool, workbench_reload_tool, workbench_remove_component_tool,
+        workbench_reparent_entity_tool, workbench_resample_polyline_tool,
+        workbench_rotate_entity_tool, workbench_sample_spline_tool, workbench_sample_terrain_tool,
+        workbench_save_prefab_tool, workbench_save_tool, workbench_search_resources_tool,
+        workbench_search_world_entities_tool, workbench_selected_entity_hierarchy_tool,
+        workbench_set_component_properties_tool, workbench_set_entity_property_tool,
+        workbench_set_polyline_regular_polygon_tool, workbench_set_prefab_component_property_tool,
+        workbench_set_prefab_property_tool, workbench_start_play_session_tool,
+        workbench_status_tool, workbench_stop_play_session_tool, workbench_tool_error,
+        workbench_trace_tool, workbench_transform_shape_points_tool,
         workbench_validate_scripts_tool, workbench_viewport_context_tool,
         workbench_world_selection_summary_tool, ReforgerMcpServer, DEADLINE_EXCEEDED_CODE,
         GAME_DATA_STATUS_TOOL_NAME, RESPONSE_TOO_LARGE_CODE, WORKBENCH_ADD_COMPONENT_TOOL_NAME,
@@ -6715,15 +6653,15 @@ mod tests {
         WORKBENCH_INSPECT_SPLINE_TOOL_NAME, WORKBENCH_LAYER_STATE_TOOL_NAME,
         WORKBENCH_LIST_COMPONENTS_TOOL_NAME, WORKBENCH_LIST_EDITORS_TOOL_NAME,
         WORKBENCH_LIST_ENTITIES_TOOL_NAME, WORKBENCH_LIST_ENTITY_PROPERTIES_TOOL_NAME,
-        WORKBENCH_LIST_RESOURCES_TOOL_NAME, WORKBENCH_LIST_WINDOWS_TOOL_NAME,
-        WORKBENCH_MOVE_ENTITY_TOOL_NAME, WORKBENCH_OPEN_EDITOR_TOOL_NAME,
-        WORKBENCH_OPEN_RESOURCE_TOOL_NAME, WORKBENCH_PROJECT_CONTEXT_TOOL_NAME,
-        WORKBENCH_RELOAD_TOOL_NAME, WORKBENCH_REMOVE_COMPONENT_TOOL_NAME,
-        WORKBENCH_REPARENT_ENTITY_TOOL_NAME, WORKBENCH_RESAMPLE_POLYLINE_TOOL_NAME,
-        WORKBENCH_ROTATE_ENTITY_TOOL_NAME, WORKBENCH_SAMPLE_SPLINE_TOOL_NAME,
-        WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME, WORKBENCH_SAVE_PREFAB_TOOL_NAME,
-        WORKBENCH_SAVE_TOOL_NAME, WORKBENCH_SEARCH_RESOURCES_TOOL_NAME,
-        WORKBENCH_SEARCH_WORLD_ENTITIES_TOOL_NAME, WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
+        WORKBENCH_LIST_WINDOWS_TOOL_NAME, WORKBENCH_MOVE_ENTITY_TOOL_NAME,
+        WORKBENCH_OPEN_EDITOR_TOOL_NAME, WORKBENCH_OPEN_RESOURCE_TOOL_NAME,
+        WORKBENCH_PROJECT_CONTEXT_TOOL_NAME, WORKBENCH_RELOAD_TOOL_NAME,
+        WORKBENCH_REMOVE_COMPONENT_TOOL_NAME, WORKBENCH_REPARENT_ENTITY_TOOL_NAME,
+        WORKBENCH_RESAMPLE_POLYLINE_TOOL_NAME, WORKBENCH_ROTATE_ENTITY_TOOL_NAME,
+        WORKBENCH_SAMPLE_SPLINE_TOOL_NAME, WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME,
+        WORKBENCH_SAVE_PREFAB_TOOL_NAME, WORKBENCH_SAVE_TOOL_NAME,
+        WORKBENCH_SEARCH_RESOURCES_TOOL_NAME, WORKBENCH_SEARCH_WORLD_ENTITIES_TOOL_NAME,
+        WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
         WORKBENCH_SET_COMPONENT_PROPERTIES_TOOL_NAME, WORKBENCH_SET_ENTITY_PROPERTY_TOOL_NAME,
         WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_TOOL_NAME,
         WORKBENCH_SET_PREFAB_COMPONENT_PROPERTY_TOOL_NAME, WORKBENCH_SET_PREFAB_PROPERTY_TOOL_NAME,
@@ -6945,7 +6883,6 @@ mod tests {
         assert!(reference.contains("`retryable`"));
         assert!(reference.contains("`phase`"));
         assert!(reference.contains("`logReference`"));
-        assert!(contracts["workbench_list_resources"].contains("Compatibility listing surface"));
         assert!(contracts["workbench_search_resources"]
             .contains("Canonical Workbench resource-discovery surface"));
     }
@@ -7138,7 +7075,6 @@ mod tests {
         let open_editor = workbench_open_editor_tool();
         let open_resource = workbench_open_resource_tool();
         let project_context = workbench_project_context_tool();
-        let list_resources = workbench_list_resources_tool();
         let search_resources = workbench_search_resources_tool();
         let world_selection = workbench_world_selection_summary_tool();
         let hierarchy = workbench_selected_entity_hierarchy_tool();
@@ -7176,7 +7112,6 @@ mod tests {
         assert_eq!(open_editor.name, WORKBENCH_OPEN_EDITOR_TOOL_NAME);
         assert_eq!(open_resource.name, WORKBENCH_OPEN_RESOURCE_TOOL_NAME);
         assert_eq!(project_context.name, WORKBENCH_PROJECT_CONTEXT_TOOL_NAME);
-        assert_eq!(list_resources.name, WORKBENCH_LIST_RESOURCES_TOOL_NAME);
         assert_eq!(search_resources.name, WORKBENCH_SEARCH_RESOURCES_TOOL_NAME);
         assert_eq!(
             search_resources

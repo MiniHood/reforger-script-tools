@@ -329,7 +329,6 @@ runner executes.
 | `workbench_list_editors` | 2 | `managedBridge` | Returns native editor IDs including World Editor without opening one. | `not-run` |
 | `workbench_open_editor` | 2 | editor ID from `workbench_list_editors` | Opens the returned World Editor ID and subsequent state proves availability. | `not-run` |
 | `workbench_search_resources` | 3 | `managedBridge`, `projectContext` | Finds the fixture by supported kind/query and returns canonical resource identity and add-on facts. | `not-run` |
-| `workbench_list_resources` | 3 | `managedBridge`, fixture query | Returns a bounded compatibility page containing the fixture; canonical search remains the source of target identity. | `not-run` |
 | `workbench_inspect_resource` | 3 | `canonicalResource` | Returns `found:true`, the same canonical identity, class, and source add-on metadata. | `not-run` |
 | `workbench_open_resource` | 3 | `canonicalResource`, `worldEditor` | Native routing opens the fixture and `workbench_state` reads back the expected active world. | `not-run` |
 | `workbench_state` | 3, 8 | `managedBridge`; later `activeWorld` and stopped play | Reports loaded context and active world; after stop-play reports edit mode again. | `not-run` |

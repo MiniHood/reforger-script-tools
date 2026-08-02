@@ -2467,7 +2467,8 @@ mod tests {
     use crate::ast::{AstSourceFile, ClassMember, Declaration};
     use crate::index::SymbolIndex;
     use crate::lexer::{lex, TokenKind};
-    use crate::model::SymbolCatalog;
+    use crate::model::SourceFileMetadata;
+    use crate::semantic_file::SemanticFile;
     use crate::syntax::SyntaxKind;
 
     fn count_kind(node: &SyntaxNode, kind: SyntaxKind) -> usize {
@@ -2839,9 +2840,9 @@ ArmaReforgerScripted g_ARGame;
         assert_eq!(count_kind(&parse.root, SyntaxKind::ClassDecl), 2);
         assert_eq!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement), 1);
 
-        let ast = AstSourceFile::new(&source, &parse);
-        let catalog = SymbolCatalog::from_ast(&source, &ast);
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let semantic_file = SemanticFile::build(&source, &parse);
+        let index =
+            SymbolIndex::from_semantic_files([(&semantic_file, SourceFileMetadata::unknown())]);
         assert!(!index.files().is_empty());
     }
 

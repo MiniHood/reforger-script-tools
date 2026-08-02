@@ -1012,13 +1012,13 @@ fn subsequence_match_score(value: &str, prefix: &str) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
     use crate::index::SymbolIndex;
     use crate::model::{
-        source_category_for_path, SourceCategory, SourceFileMetadata, SymbolCatalog,
-        SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE,
+        source_category_for_path, SourceCategory, SourceFileMetadata, SOURCE_PRIORITY_GAME_DATA,
+        SOURCE_PRIORITY_WORKSPACE,
     };
     use crate::parser::parse_source;
+    use crate::semantic_file::SemanticFile;
     use std::path::PathBuf;
 
     #[test]
@@ -1037,7 +1037,7 @@ void ExampleFn(int value);
 "#,
             workspace_metadata("Workspace.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
         let query = IndexQuery::new(&index);
 
         for id in [
@@ -1074,7 +1074,7 @@ void FactionKey(int value);
 "#,
             workspace_metadata("FactionKey.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let conflicts = query.top_level_conflicts("FactionKey");
@@ -1105,7 +1105,7 @@ int SCR_Global;
 "#,
             workspace_metadata("Types.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_top_level("SCR_", EditorTopLevelCompletionMode::Type);
@@ -1131,7 +1131,7 @@ int SCR_Global;
         }
         source.push_str("class RplProp {}\n");
         let catalog = catalog(&source, game_metadata("Game.c"));
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion =
@@ -1157,7 +1157,7 @@ int SCR_Global;
         source.push_str("class scr_lowercase {}\n");
         source.push_str("class SpecialCandidateReference {}\n");
         let catalog = catalog(&source, game_metadata("Game.c"));
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         for mode in [
@@ -1180,7 +1180,7 @@ class RenderPipeline {}
 "#,
             game_metadata("Game.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let accelerated =
@@ -1212,7 +1212,7 @@ int SCR_A;
         }
         let game = catalog(&game_source, game_metadata("Game.c"));
         let workspace = catalog("class SCR_A {}\n", workspace_metadata("Workspace.c"));
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
         let query = IndexQuery::new(&index);
 
         let completion =
@@ -1252,7 +1252,7 @@ class LooksLikeAttribute : NotAttributeBase {}
 "#,
             game_metadata("Game/Attributes.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_top_level("Custom", EditorTopLevelCompletionMode::Type);
@@ -1289,7 +1289,7 @@ void SCR_WorkspaceOnly();
 "#,
             workspace_metadata("Workspace.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_top_level("SCR_", EditorTopLevelCompletionMode::Value);
@@ -1337,7 +1337,7 @@ class SCR_BaseGameMode : BaseMode
 "#,
             workspace_metadata("Workspace.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_members_for_class("SCR_BaseGameMode");
@@ -1416,7 +1416,7 @@ class SCR_BaseGameMode : BaseMode
 "#,
             workspace_metadata("Workspace.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
         let query = IndexQuery::new(&index);
 
         let raw = query.raw_completion_members_for_owner_name("SCR_BaseGameMode");
@@ -1456,7 +1456,7 @@ class SCR_BaseGameMode : BaseMode
 "#,
             game_metadata("Game/Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&docs, &workbench, &runtime]);
+        let index = index_from([&docs, &workbench, &runtime]);
         let query = IndexQuery::new(&index);
 
         let raw = query.raw_completion_members_for_owner_name("Example");
@@ -1489,7 +1489,7 @@ class WorldSystem
 "#,
             game_metadata("GameLib/WorldSystemsDocs.c"),
         );
-        let index = SymbolIndex::from_catalogs([&docs]);
+        let index = index_from([&docs]);
         let query = IndexQuery::new(&index);
 
         let editor = query.completion_members_for_class("HelloWorldSystem");
@@ -1518,7 +1518,7 @@ class WorldSystem
 "#,
             game_metadata("Game/Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&docs, &runtime]);
+        let index = index_from([&docs, &runtime]);
         let query = IndexQuery::new(&index);
 
         let editor = query.completion_members_for_class("Example");
@@ -1545,7 +1545,7 @@ class Example
 "#,
             game_metadata("Game/Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_members_for_class("Example");
@@ -1575,7 +1575,7 @@ class Example
 "#,
             game_metadata("Game/Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_members_for_class("Example");
@@ -1608,7 +1608,7 @@ typedef LogLevel ELogLevel;
 "#,
             game_metadata("Game/LogLevel.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let direct = query.completion_static_members_for_type("LogLevel");
@@ -1646,7 +1646,7 @@ typedef LogLevel ELogLevel;
 "#,
             game_metadata("Game/Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_static_members_for_type("Example");
@@ -1677,7 +1677,7 @@ class Example
 "#,
             game_metadata("Game/Class.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_static_members_for_type("Example");
@@ -1704,7 +1704,7 @@ typedef array<int> TIntArray;
 "#,
             game_metadata("Game/Arrays.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_members_for_class("TIntArray");
@@ -1734,7 +1734,7 @@ class Example
 "#,
             workspace_metadata("Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         assert_eq!(
@@ -1779,7 +1779,7 @@ class Example
 "#,
             workspace_metadata("Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
         let method = find(&index, SymbolKind::Method, "Run");
 
@@ -1811,7 +1811,7 @@ class Example
 "#,
             workspace_metadata("Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_members_for_class("Example");
@@ -1833,7 +1833,7 @@ class Example
     #[test]
     fn missing_names_are_empty_and_do_not_panic() {
         let catalog = catalog("class Example {}", workspace_metadata("Example.c"));
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         assert_eq!(query.preferred_class("Missing"), None);
@@ -1858,11 +1858,26 @@ class Example
             .unwrap_or_else(|| panic!("missing {kind:?} {name}"))
     }
 
-    fn catalog(source: &str, metadata: SourceFileMetadata) -> SymbolCatalog<'_> {
+    struct TestSemanticFile {
+        semantic: SemanticFile,
+        metadata: SourceFileMetadata,
+    }
+
+    fn catalog(source: &str, metadata: SourceFileMetadata) -> TestSemanticFile {
         let parse = parse_source(source);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
-        let ast = AstSourceFile::new(source, &parse);
-        SymbolCatalog::from_ast_with_metadata(source, &ast, metadata)
+        TestSemanticFile {
+            semantic: SemanticFile::build(source, &parse),
+            metadata,
+        }
+    }
+
+    fn index_from<'a>(files: impl IntoIterator<Item = &'a TestSemanticFile>) -> SymbolIndex {
+        SymbolIndex::from_semantic_files(
+            files
+                .into_iter()
+                .map(|file| (&file.semantic, file.metadata.clone())),
+        )
     }
 
     fn game_metadata(path: &str) -> SourceFileMetadata {

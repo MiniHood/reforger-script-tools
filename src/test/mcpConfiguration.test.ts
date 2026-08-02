@@ -58,6 +58,21 @@ suite('MCP configuration', () => {
 		assert.deepStrictEqual(launch.args.slice(-2), ['--external-index-mode', 'all']);
 	});
 
+	test('adds optional evidence inputs through the same launch policy', () => {
+		const launch = buildMcpLaunchConfiguration({
+			serverPath: '/extension/reforger_language_server',
+			addonSourceInventory: '/storage/graph.json',
+			addonIndexStorage: '/storage/addon-indexes',
+			externalIndexMode: 'loaded',
+			officialWikiRoot: '/extension/data/official-wiki',
+		});
+
+		assert.deepStrictEqual(launch.args.slice(-2), [
+			'--official-wiki-root',
+			'/extension/data/official-wiki',
+		]);
+	});
+
 	test('passes discovered add-on script roots to workspace semantic search', () => {
 		const launch = buildMcpLaunchConfiguration({
 			serverPath: '/extension/reforger_language_server',
@@ -98,7 +113,7 @@ suite('MCP configuration', () => {
 	test('renders generic JSON and Codex TOML from the same launch', () => {
 		const launch = {
 			command: 'C:\\Extension\\reforger_language_server.exe',
-			args: ['mcp', '--index-cache', 'C:\\Storage\\cache.bin'],
+			args: ['mcp', '--external-index-mode', 'loaded'],
 		};
 
 		const generic = JSON.parse(renderGenericMcpConfiguration(launch));
@@ -111,7 +126,7 @@ suite('MCP configuration', () => {
 		const codex = renderCodexMcpConfiguration(launch);
 		assert.match(codex, /^\[mcp_servers\.reforger-script-tools\]/m);
 		assert.match(codex, /command = "C:\\\\Extension\\\\reforger_language_server\.exe"/);
-		assert.match(codex, /args = \["mcp", "--index-cache", "C:\\\\Storage\\\\cache\.bin"\]/);
+		assert.match(codex, /args = \["mcp", "--external-index-mode", "loaded"\]/);
 		assert.match(codex, /startup_timeout_sec = 120\.0/);
 		assert.match(codex, /tool_timeout_sec = 130\.0/);
 	});

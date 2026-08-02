@@ -1,3 +1,4 @@
+use crate::callable::builtin_callable_fact;
 use crate::index_query::{EditorCompletionCandidate, EditorCompletionOrigin, IndexQuery};
 use crate::lexer::{lex, TokenKind};
 use crate::lsp::file_uri_for_path;
@@ -10,17 +11,6 @@ const OPEN_SYMBOL_LOCATION_COMMAND: &str = "reforger-sript-tools.openSymbolLocat
 // Keep rich member summaries below VS Code's undocumented hover-payload cutoff.
 // This budget applies only to repeated member entries; a normal hover is unchanged.
 const MAX_HOVER_MEMBER_SUMMARY_BYTES: usize = 48 * 1024;
-const ATTRIBUTE_CONSTRUCTOR_SIGNATURE: &str = r#"void Attribute(
-	string defvalue = "",
-	string uiwidget = "auto",
-	string desc = "",
-	string params = "",
-	ParamEnumArray enums = NULL,
-	string category = "",
-	int precision = 3,
-	typename enumType = void,
-	bool prefabbed = false
-)"#;
 
 pub(crate) struct HoverRenderContext<'a, 'index> {
     pub query: &'a IndexQuery<'index>,
@@ -1033,7 +1023,7 @@ fn attribute_display(display: &SymbolDisplayInfo) -> Option<AttributeDisplay> {
         return None;
     }
 
-    let specs = attribute_param_specs();
+    let specs = builtin_callable_fact("Attribute")?.parameters;
     let mut params = Vec::new();
     let mut description = None;
     for (index, argument) in args.into_iter().enumerate() {
@@ -1042,13 +1032,13 @@ fn attribute_display(display: &SymbolDisplayInfo) -> Option<AttributeDisplay> {
                 (name.trim().to_string(), value.trim().to_string())
             }
             _ => {
-                let Some((name, _type_text)) = specs.get(index) else {
+                let Some(spec) = specs.get(index) else {
                     continue;
                 };
-                ((*name).to_string(), argument.trim().to_string())
+                (spec.name.to_string(), argument.trim().to_string())
             }
         };
-        let Some((_, type_text)) = specs.iter().find(|(spec_name, _)| *spec_name == name) else {
+        let Some(spec) = specs.iter().find(|spec| spec.name == name) else {
             continue;
         };
         if name == "desc" {
@@ -1057,7 +1047,7 @@ fn attribute_display(display: &SymbolDisplayInfo) -> Option<AttributeDisplay> {
         }
         params.push(AttributeParamDisplay {
             name,
-            type_text,
+            type_text: spec.type_text,
             value,
         });
     }
@@ -1098,16 +1088,19 @@ fn render_attribute_constructor(context: Option<&HoverRenderContext<'_, '_>>) ->
 }
 
 fn render_attribute_constructor_signature(context: Option<&HoverRenderContext<'_, '_>>) -> String {
-    let Some(open) = ATTRIBUTE_CONSTRUCTOR_SIGNATURE.find('(') else {
-        return escape_html_text(ATTRIBUTE_CONSTRUCTOR_SIGNATURE);
+    let signature = builtin_callable_fact("Attribute")
+        .expect("the compiler owns the Attribute callable fact")
+        .signature;
+    let Some(open) = signature.find('(') else {
+        return escape_html_text(signature);
     };
-    let prefix = ATTRIBUTE_CONSTRUCTOR_SIGNATURE[..open].trim();
-    let params_and_suffix = &ATTRIBUTE_CONSTRUCTOR_SIGNATURE[open..];
+    let prefix = signature[..open].trim();
+    let params_and_suffix = &signature[open..];
     let mut tokens = prefix.split_whitespace();
     let return_type = tokens.next().unwrap_or_default();
     let name = tokens.next().unwrap_or_default();
     if return_type.is_empty() || name.is_empty() {
-        return escape_html_text(ATTRIBUTE_CONSTRUCTOR_SIGNATURE);
+        return escape_html_text(signature);
     }
     format!(
         "{} {}{}",
@@ -1117,24 +1110,12 @@ fn render_attribute_constructor_signature(context: Option<&HoverRenderContext<'_
     )
 }
 
-fn attribute_param_specs() -> &'static [(&'static str, &'static str)] {
-    &[
-        ("defvalue", "string"),
-        ("uiwidget", "string"),
-        ("desc", "string"),
-        ("params", "string"),
-        ("enums", "ParamEnumArray"),
-        ("category", "string"),
-        ("precision", "int"),
-        ("enumType", "typename"),
-        ("prefabbed", "bool"),
-    ]
-}
-
 fn is_named_attribute_arg(value: &str) -> bool {
-    attribute_param_specs()
+    builtin_callable_fact("Attribute")
+        .expect("the compiler owns the Attribute callable fact")
+        .parameters
         .iter()
-        .any(|(name, _)| *name == value)
+        .any(|parameter| parameter.name == value)
 }
 
 fn attribute_argument_values(attribute_text: &str) -> Vec<String> {
@@ -1347,12 +1328,10 @@ fn percent_encode_command_arg(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
     use crate::index::SymbolIndex;
-    use crate::model::{
-        SourceCategory, SourceFileMetadata, SourceKind, SymbolCatalog, SOURCE_PRIORITY_WORKSPACE,
-    };
+    use crate::model::{SourceCategory, SourceFileMetadata, SourceKind, SOURCE_PRIORITY_WORKSPACE};
     use crate::parser::parse_source;
+    use crate::semantic_file::SemanticFile;
 
     #[test]
     fn renders_field_with_type_modifiers_and_attributes() {
@@ -1952,10 +1931,9 @@ class Example
     fn index(source: &str) -> SymbolIndex {
         let parse = parse_source(source);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
-        let ast = AstSourceFile::new(source, &parse);
-        let catalog = SymbolCatalog::from_ast_with_metadata(
-            source,
-            &ast,
+        let semantic = SemanticFile::build(source, &parse);
+        SymbolIndex::from_semantic_files([(
+            &semantic,
             SourceFileMetadata {
                 kind: SourceKind::Workspace,
                 category: SourceCategory::Workspace,
@@ -1965,8 +1943,7 @@ class Example
                 relative_path: Some("Example.c".into()),
                 priority: SOURCE_PRIORITY_WORKSPACE,
             },
-        );
-        SymbolIndex::from_catalogs([&catalog])
+        )])
     }
 
     fn find(index: &SymbolIndex, kind: SymbolKind, name: &str) -> crate::index::GlobalSymbolId {

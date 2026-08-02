@@ -1,11 +1,11 @@
-use reforger_language_server::ast::AstSourceFile;
 use reforger_language_server::index::{GlobalSymbolId, SymbolIndex};
 use reforger_language_server::model::{
-    source_category_for_path, SourceFileMetadata, SourceKind, SymbolCatalog, SymbolKind,
-    SOURCE_PRIORITY_FIXTURE, SOURCE_PRIORITY_GAME_DATA,
+    source_category_for_path, SourceFileMetadata, SourceKind, SymbolKind, SOURCE_PRIORITY_FIXTURE,
+    SOURCE_PRIORITY_GAME_DATA,
 };
 use reforger_language_server::parser::parse_source;
 use reforger_language_server::resolver::{ReferenceCandidate, ReferenceResolver};
+use reforger_language_server::semantic_file::SemanticFile;
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
@@ -412,15 +412,21 @@ fn load_external_sources(scripts_root: &Path) -> Result<Vec<OwnedSource>, String
 }
 
 fn index_for_owned_sources(sources: &[OwnedSource]) -> SymbolIndex {
-    let catalogs = sources
+    let files = sources
         .iter()
         .map(|source| {
             let parse = parse_source(&source.source);
-            let ast = AstSourceFile::new(&source.source, &parse);
-            SymbolCatalog::from_ast_with_metadata(&source.source, &ast, source.metadata.clone())
+            (
+                SemanticFile::build(&source.source, &parse),
+                source.metadata.clone(),
+            )
         })
         .collect::<Vec<_>>();
-    SymbolIndex::from_catalogs(catalogs.iter())
+    SymbolIndex::from_semantic_files(
+        files
+            .iter()
+            .map(|(semantic, metadata)| (semantic, metadata.clone())),
+    )
 }
 
 struct Check {
@@ -688,9 +694,8 @@ fn parse_args() -> Result<Args, String> {
 
 fn index_for_source(source: &str, metadata: SourceFileMetadata) -> SymbolIndex {
     let parse = parse_source(source);
-    let ast = AstSourceFile::new(source, &parse);
-    let catalog = SymbolCatalog::from_ast_with_metadata(source, &ast, metadata);
-    SymbolIndex::from_catalogs([&catalog])
+    let semantic_file = SemanticFile::build(source, &parse);
+    SymbolIndex::from_semantic_files([(&semantic_file, metadata)])
 }
 
 fn fixture_metadata(path: &str) -> SourceFileMetadata {

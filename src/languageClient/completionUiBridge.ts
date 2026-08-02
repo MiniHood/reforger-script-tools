@@ -9,14 +9,8 @@ let pendingSnippetSuggestTransaction: SnippetSuggestTransaction | undefined;
 let pendingEmptyCompletionRefresh: EmptyCompletionRefresh | undefined;
 let pendingIfSpaceCommit: IfSpaceCommit | undefined;
 let latestEditorDocumentChange: EditorDocumentChange | undefined;
-const completionLifecycleTraceLimit = 80;
-const completionLifecycleTrace: CompletionLifecycleTraceEvent[] = [];
 const completionPresentationObservations = new Map<string, CompletionPresentationObservation>();
-
-// TEMPORARY: release-gated forensic trace for the RplRpc multi-placeholder
-// bridge. OpenSpec task 3.3 tracks removing this once live editor behavior is
-// proven. It records only counts, lengths, and state transitions.
-const snippetSuggestTraceVersion = 3;
+const completionRequestPositions = new Map<string, { line: number; character: number }>();
 const maxSnippetSuggestSelectionProbes = 8;
 
 interface SnippetSuggestTransaction {
@@ -54,12 +48,6 @@ interface EditorDocumentChange {
 	documentUri: string;
 	version: number;
 	hasDeletion: boolean;
-}
-
-interface CompletionLifecycleTraceEvent {
-	documentUri: string;
-	event: string;
-	fields: Record<string, string | number | boolean | undefined>;
 }
 
 interface CompletionPresentationObservation {
@@ -146,14 +134,10 @@ function isRefreshableEmptyCompletion(
 }
 
 function recordCompletionLifecycle(
-	documentUri: string,
+	_documentUri: string,
 	event: string,
 	fields: Record<string, string | number | boolean | undefined>,
 ): void {
-	completionLifecycleTrace.push({ documentUri, event, fields });
-	if (completionLifecycleTrace.length > completionLifecycleTraceLimit) {
-		completionLifecycleTrace.shift();
-	}
 	diagnostic(`completion.lifecycle.${event}`, fields);
 }
 
@@ -192,7 +176,6 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 		? expectedSelectionTexts.slice(0, -1)
 		: expectedSelectionTexts;
 	diagnostic('completion.transaction.commandReceived', {
-		traceVersion: snippetSuggestTraceVersion,
 		placeholderCount: placeholderArguments.length,
 		finalTabstop,
 	});
@@ -295,7 +278,6 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 	resetSnippetSuggestTransactionTimeout(pendingSnippetSuggestTransaction, 'placeholderNotObserved');
 	diagnostic('completion.transaction.armed', {
 		transactionId: id,
-		traceVersion: snippetSuggestTraceVersion,
 		placeholderCount: expectedSelectionTextSequence.length,
 	});
 	// An empty tabstop can be published after the completion command can run.
@@ -630,29 +612,6 @@ function clearSnippetSuggestTransaction(expectedId?: number): void {
 	pendingSnippetSuggestTransaction = undefined;
 }
 
-export function completionLifecycleTraceForDocument(documentUri: string): string {
-	const events = completionLifecycleTrace.filter(event => event.documentUri === documentUri);
-	const lines = [
-		'## Extension Completion Lifecycle Trace (temporary)',
-		'',
-		'Bounded to the latest 80 Enforce events in this extension host. It records no source text, cursor text, or completion payloads.',
-		'',
-	];
-	if (events.length === 0) {
-		lines.push('No lifecycle events were captured for this document.');
-		return lines.join('\n');
-	}
-	lines.push('| Event | Fields |', '| --- | --- |');
-	for (const event of events) {
-		const fields = Object.entries(event.fields)
-			.filter(([, value]) => value !== undefined)
-			.map(([key, value]) => `${key}=${String(value)}`)
-			.join(', ');
-		lines.push(`| ${event.event} | ${fields || '<none>'} |`);
-	}
-	return lines.join('\n');
-}
-
 /** Diagnostic-only snapshot of the latest completion result handed to VS Code's suggest pipeline. */
 export function completionPresentationObservationForDocument(documentUri: string): string {
 	const observation = completionPresentationObservations.get(documentUri);
@@ -686,6 +645,10 @@ export function completionPresentationObservationForDocument(documentUri: string
 export const completionUiMiddlewareCallbacks: CompletionMiddlewareCallbacks = {
 	begin: (document, position, triggerKind) => {
 		const transaction = pendingSnippetSuggestTransaction;
+		completionRequestPositions.set(document.uri.toString(), {
+			line: position.line,
+			character: position.character,
+		});
 		recordCompletionLifecycle(document.uri.toString(), 'request', {
 			requestVersion: document.version,
 			line: position.line,
@@ -695,11 +658,9 @@ export const completionUiMiddlewareCallbacks: CompletionMiddlewareCallbacks = {
 		return { transactionId: transaction?.documentUri === document.uri.toString() && transaction.awaitingCompletionResponse ? transaction.id : undefined };
 	},
 	respond: (document, triggerKind, requestVersion, transactionId, result, elapsedMs) => {
-		const latestRequest = [...completionLifecycleTrace]
-			.reverse()
-			.find(event => event.documentUri === document.uri.toString() && event.event === 'request');
-		const line = typeof latestRequest?.fields.line === 'number' ? latestRequest.fields.line : -1;
-		const character = typeof latestRequest?.fields.character === 'number' ? latestRequest.fields.character : -1;
+		const latestRequest = completionRequestPositions.get(document.uri.toString());
+		const line = latestRequest?.line ?? -1;
+		const character = latestRequest?.character ?? -1;
 		const items = completionPresentationItems(result);
 		completionPresentationObservations.set(document.uri.toString(), {
 			requestVersion,

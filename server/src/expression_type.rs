@@ -1514,25 +1514,22 @@ fn looks_like_numeric_expression(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
-    use crate::model::{SourceFileMetadata, SymbolCatalog};
+    use crate::model::SourceFileMetadata;
     use crate::parser::parse_source;
     use crate::scope::LexicalScopeModel;
+    use crate::semantic_file::SemanticFile;
 
     fn index_for_source(source: &str) -> SymbolIndex {
         let parse = parse_source(source);
-        let ast = AstSourceFile::new(source, &parse);
-        let catalog =
-            SymbolCatalog::from_ast_with_metadata(source, &ast, SourceFileMetadata::unknown());
-        SymbolIndex::from_catalogs([&catalog])
+        let semantic_file = SemanticFile::build(source, &parse);
+        SymbolIndex::from_semantic_files([(&semantic_file, SourceFileMetadata::unknown())])
     }
 
     fn analysis_for_source(source: &str) -> (Parse, SymbolIndex, LexicalScopeModel) {
         let parse = parse_source(source);
-        let ast = AstSourceFile::new(source, &parse);
-        let catalog =
-            SymbolCatalog::from_ast_with_metadata(source, &ast, SourceFileMetadata::unknown());
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let semantic_file = SemanticFile::build(source, &parse);
+        let index =
+            SymbolIndex::from_semantic_files([(&semantic_file, SourceFileMetadata::unknown())]);
         let scope = LexicalScopeModel::from_parse_and_index(&parse, &index);
         (parse, index, scope)
     }

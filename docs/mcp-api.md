@@ -121,7 +121,6 @@ Discover resources and open them in the appropriate Workbench editor.
 | Tool | Parameters | Returns | What it does / when to use |
 | --- | --- | --- | --- |
 | [`workbench_inspect_resource`](mcp-api/tools/workbench_inspect_resource.md) | `resourceName` | `className?`, `found`, `resourceName?`, `sourceAddons?`, `sourceAddonsTruncated?`, `status` | Inspect compact metadata for one canonical resource. |
-| [`workbench_list_resources`](mcp-api/tools/workbench_list_resources.md) | `cursor?`, `kinds`, `limit?`, `query?`, `rootPath?` | `bridgeVersion`, `limit`, `nextCursor?`, `projectRevision`, `protocolVersion`, `resources`, `truncated` | Support legacy bounded resource listing; prefer canonical search. |
 | [`workbench_search_resources`](mcp-api/tools/workbench_search_resources.md) | `addonGuid?`, `cursor?`, `kinds`, `limit?`, `query?`, `rootPath?` | `bridgeVersion`, `limit`, `nextCursor?`, `projectRevision`, `protocolVersion`, `results`, `truncated` | Discover canonical resources by kind, terms, root, or add-on. |
 | [`workbench_list_editors`](mcp-api/tools/workbench_list_editors.md) | — | `editors` | Discover editor IDs before opening an editor. |
 | [`workbench_open_editor`](mcp-api/tools/workbench_open_editor.md) | `editorId` | `editorId`, `opened`, `status` | Open one editor using its discovered ID. |

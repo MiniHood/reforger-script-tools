@@ -7,7 +7,6 @@ async function main() {
 	const options = parseArguments(process.argv.slice(2));
 	const serverPath = resolve(options.server);
 	const serverArguments = ['mcp'];
-	if (options.indexCache) serverArguments.push('--index-cache', resolve(options.indexCache));
 	if (options.addonIndexStorage) serverArguments.push('--addon-index-storage', resolve(options.addonIndexStorage));
 	if (options.addonSourceInventory) serverArguments.push('--addon-source-inventory', resolve(options.addonSourceInventory));
 	serverArguments.push('--external-index-mode', options.externalIndexMode);
@@ -275,7 +274,6 @@ function parseArguments(args) {
 		};
 		switch (argument) {
 			case '--server': parsed.server = value(); break;
-			case '--index-cache': parsed.indexCache = value(); break;
 			case '--addon-index-storage': parsed.addonIndexStorage = value(); break;
 			case '--addon-source-inventory': parsed.addonSourceInventory = value(); break;
 			case '--dependency-project': parsed.dependencyProjects.push(value()); break;
@@ -296,8 +294,8 @@ function parseArguments(args) {
 			default: usage(`Unknown argument: ${argument}`);
 		}
 	}
-	if (!parsed.server || (!parsed.indexCache && !parsed.addonIndexStorage)) {
-		usage('--server and --index-cache or --addon-index-storage are required.');
+	if (!parsed.server || !parsed.addonIndexStorage) {
+		usage('--server and --addon-index-storage are required.');
 	}
 	if (parsed.textQueries.length < 2) usage('Provide at least two distinct --text-query values.');
 	if (parsed.readRepeat < 2) usage('--read-repeat must be at least 2.');
@@ -328,7 +326,7 @@ function positiveNumber(value, argument) {
 function usage(error) {
 	if (error) process.stderr.write(`${error}\n\n`);
 	process.stderr.write(
-		'Usage: node tools/pack-read-performance.mjs --server <exe> (--index-cache <file> | --addon-index-storage <dir>) --text-query <query> --text-query <query> [options]\n' +
+		'Usage: node tools/pack-read-performance.mjs --server <exe> --addon-index-storage <dir> --text-query <query> --text-query <query> [options]\n' +
 		'  Scope: --addon-source-inventory <json> --dependency-project <gproj> --workspace-scripts <root> --external-index-mode <all|loaded|none>\n' +
 		'  Reads: --symbol-query <query> --source-addon-guid <guid> --read-repeat <n> --post-search-read-repeat <n> --interval-ms <ms>\n' +
 		'  Verdict: --first-search-budget-ms <ms> --repeated-search-budget-ms <ms> --repeated-read-budget-ms <ms> --post-search-read-budget-ms <ms> --timeout-ms <ms>\n',

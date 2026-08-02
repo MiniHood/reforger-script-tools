@@ -2,7 +2,7 @@ import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { searchLimits } from '../extensionConfig/search';
-import { addonScopeLabel, formatSearchKind, maxSearchPages, normalizeSearchPage, searchKindFilters, searchToolFor, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
+import { addonScopeLabel, formatSearchKind, maxSearchPages, normalizeResourceSearchPage, normalizeSearchPage, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
 import { semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
 
 const searchUiSource = fs.readFileSync(
@@ -15,6 +15,60 @@ const searchClientSource = fs.readFileSync(
 );
 
 suite('Reforger search UI MCP mapping', () => {
+	test('maps canonical Workbench resources and exposes their fixed kind filters', () => {
+		assert.deepStrictEqual(resourceKindsFor('audio'), ['audio']);
+		assert.deepStrictEqual(resourceKindsFor('texture'), ['texture', 'imageset']);
+		assert.ok(resourceKindsFor('all').includes('prefab'));
+		assert.ok(searchResourceKindFilters.some(filter => filter.value === 'script'));
+		assert.deepStrictEqual(normalizeResourceSearchPage({
+			results: [{
+				resourceName: '{58D0FB3206B6F859}Prefabs/Props/Radio.et',
+				addonGuid: '58D0FB3206B6F859',
+				addonId: 'ArmaReforger',
+				logicalPath: 'Prefabs/Props/Radio.et',
+				name: 'Radio',
+				extension: 'et',
+			}],
+		}), [{
+			id: 'workbench-resource-0-{58D0FB3206B6F859}Prefabs/Props/Radio.et',
+			source: 'workbench',
+			kind: 'resource',
+			title: 'Radio',
+			detail: 'et',
+			path: 'Prefabs/Props/Radio.et',
+			excerpt: '{58D0FB3206B6F859}Prefabs/Props/Radio.et',
+			matchKind: 'resource',
+			readInput: {},
+			resourceName: '{58D0FB3206B6F859}Prefabs/Props/Radio.et',
+			addonGuid: '58D0FB3206B6F859',
+			addonLabel: 'ArmaReforger',
+		}]);
+	});
+
+	test('offers a resource search mode backed by the canonical Workbench tools', () => {
+		assert.match(searchUiSource, /data-mode="resource">Resources/);
+		assert.match(searchUiSource, /resourceResultTypes/);
+		assert.match(searchUiSource, /resourceKindsFor\(typeValue\)/);
+		assert.match(searchUiSource, /hit\.kind === 'resource'/);
+		assert.match(searchClientSource, /workbench_search_resources/);
+		assert.match(searchUiSource, /enfusion:\/\/\$\{resourceName\}/);
+	});
+
+	test('supersedes an in-flight search when a mode or type filter changes', () => {
+		assert.match(searchUiSource, /function cancelInFlightSearch\(active: ActiveSearch\): void/);
+		assert.match(searchUiSource, /cancelInFlightSearch\(active\);/);
+		assert.match(searchUiSource, /active\.client = undefined;/);
+		assert.match(searchUiSource, /previousClient\.then\(client => client\.dispose\(\)/);
+		assert.match(searchUiSource, /state\.page = 1; render\(false\); search\(true\);/);
+	});
+
+	test('refreshes a text cursor once when its source revision changes between pages', () => {
+		assert.match(searchClientSource, /function isInvalidTextCursor\(error: unknown\): boolean/);
+		assert.match(searchClientSource, /pages\.clear\(\);[\s\S]*?return this\.searchPage\(/);
+		assert.match(searchClientSource, /retryInvalidCursor = true/);
+		assert.match(searchClientSource, /cursor is invalid for this text query or source revision/);
+	});
+
 	test('shows one human-facing add-on name in Search Scope', () => {
 		assert.strictEqual(
 			addonScopeLabel('GlobalConflictsCore (Global Conflicts CORE)', 'GlobalConflictsCore', '623555110E2B2CA0'),
@@ -152,7 +206,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /state\.mode === 'text'/);
 		assert.match(searchUiSource, /data-mode="semantic"/);
 		assert.match(searchUiSource, /data-mode="text"/);
-		assert.match(searchUiSource, /state\.mode === 'text' \? '' : resultTypes/);
+		assert.match(searchUiSource, /state\.mode === 'resource' \? resourceResultTypes : resultTypes/);
 		assert.match(searchUiSource, /query\.addEventListener\('input', event => \{ state\.query = event\.target\.value; if \(state\.mode !== 'text'\) search\(true\); \}\)/);
 		assert.doesNotMatch(searchUiSource, /searchTimer|scheduleSearch/);
 		assert.match(searchUiSource, /searchMode: state\.mode/);
@@ -162,6 +216,26 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchClientSource, /mode === 'semantic'[\s\S]*sources\.filter\(source => source !== 'wiki'\)/);
 		assert.match(searchUiSource, /state\.scopeSources\.filter\(source => source\.kind !== 'wiki' \|\| state\.mode === 'text'\)/);
 		assert.match(searchUiSource, /selectedEligibleScopeIds\(\)/);
+	});
+
+	test('focuses the search field when reopening the panel and routes unclaimed typing to it', () => {
+		assert.match(searchUiSource, /activePanel\.webview\.postMessage\(\{ type: 'focusQuery' \}\)/);
+		assert.match(searchUiSource, /message\.type === 'focusQuery'\) \{ document\.getElementById\('query'\)\?\.focus\(\); return; \}/);
+		assert.match(searchUiSource, /event\.data\?\.type !== 'focusQuery'[\s\S]*?query\.setSelectionRange\(query\.value\.length, query\.value\.length\)/);
+		assert.match(searchUiSource, /document\.activeElement !== document\.body \|\| event\.ctrlKey \|\| event\.altKey \|\| event\.metaKey \|\| event\.isComposing \|\| event\.key\.length !== 1/);
+		assert.match(searchUiSource, /query\.setRangeText\(event\.key, query\.selectionStart, query\.selectionEnd, 'end'\);/);
+		assert.match(searchUiSource, /query\.dispatchEvent\(new Event\('input', \{ bubbles: true \}\)\);/);
+	});
+
+	test('preserves a query selection when an asynchronous search response rerenders the page', () => {
+		assert.match(searchUiSource, /function render\(focusQuery = false\)/);
+		assert.match(searchUiSource, /\nrender\(true\);\n<\/script>/);
+	});
+
+	test('focuses and preserves the selection of the selected-source filter', () => {
+		assert.match(searchUiSource, /if \(state\.scopeOpen\) focusScopeFilter\(state\.scopeFilter\.length\);/);
+		assert.match(searchUiSource, /const selectionStart = element\.selectionStart \?\? element\.value\.length;[\s\S]*?focusScopeFilter\(selectionStart, selectionEnd\);/);
+		assert.doesNotMatch(searchUiSource, /filter\.setSelectionRange\(filter\.value\.length, filter\.value\.length\)/);
 	});
 
 	test('uses discovered loaded add-ons as the production Search Scope', () => {
@@ -231,10 +305,11 @@ suite('Reforger search UI MCP mapping', () => {
 
 	test('starts the custom Search MCP process with the configured external index mode', () => {
 		assert.match(searchClientSource, /externalIndexMode: ExternalIndexMode/);
-		assert.match(searchClientSource, /'--external-index-mode',[\s\S]*?this\.options\.externalIndexMode/);
+		assert.match(searchClientSource, /buildMcpLaunchConfiguration\(this\.options\)/);
+		assert.doesNotMatch(searchClientSource, /'--external-index-mode'/);
 		assert.match(searchUiSource, /externalIndexMode: readExternalIndexMode\(\)/);
 		assert.match(searchUiSource, /dependencyProjectFiles: await discoverWorkspaceProjectFiles\(\)/);
-		assert.match(searchClientSource, /this\.options\.dependencyProjectFiles\.flatMap\(projectFile => \['--dependency-project', projectFile\]\)/);
+		assert.doesNotMatch(searchClientSource, /dependencyProjectFiles\.flatMap/);
 		assert.match(searchUiSource, /affectsConfiguration\(`\$\{workbenchConfig\.section\}\.\$\{workbenchConfig\.settings\.externalIndexMode\}`\)/);
 		assert.match(searchUiSource, /restartSearchScopeForIndexMode\(context, active\)/);
 		assert.match(searchUiSource, /\(await previousClient\)\.dispose\(\)/);
@@ -434,12 +509,12 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /\.page-status \{ display: inline-flex; flex: 0 0 150px; align-items: center; justify-content: flex-end;/);
 		assert.match(searchUiSource, /value="' \+ state\.page \+ '"/);
 		assert.match(searchUiSource, /of ' \+ pageTotal \+ '<\/span>/);
-		assert.match(searchUiSource, /state\.type = element\.dataset\.type; state\.page = 1; search\(true\)/);
+		assert.match(searchUiSource, /state\.type = element\.dataset\.type; state\.page = 1; render\(false\); search\(true\)/);
 		assert.match(searchUiSource, /resultType: state\.type/);
 		assert.match(searchUiSource, /message\.resultType/);
 		assert.match(searchUiSource, /const resultTypes = \$\{JSON\.stringify\(searchKindFilters\.map\(\(\{ value, label \}\) => \(\{ value, label \}\)\)\)\};/);
 		assert.match(searchUiSource, /searchKindsFor\(typeValue\)/);
-		assert.match(searchUiSource, /if \(!isSearchKindValue\(message\.resultType\)\) \{/);
+		assert.match(searchUiSource, /isSearchKindValue\(message\.resultType\) && !isSearchResourceKindValue\(message\.resultType\)/);
 		assert.match(searchClientSource, /const sourcePageSize = 100;/);
 		assert.match(searchUiSource, /const sourcePreviewWorkerCount = 8;/);
 		assert.match(searchUiSource, /Math\.min\(sourcePreviewWorkerCount, previewHits\.length\)/);

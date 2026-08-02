@@ -1,4 +1,4 @@
-use crate::ast::{AstSourceFile, Expression};
+use crate::ast::Expression;
 use crate::game_data_inspection::{resolve_symbol_ref, GameDataInspectionError};
 use crate::game_data_search::{
     compact_signature, documentation_summary, encode_symbol_ref, kind_name, logical_path,
@@ -8,12 +8,13 @@ use crate::game_data_search::{
 use crate::index::{GlobalSymbolId, SourceFileId, SymbolIndex};
 use crate::index_build::IndexBuildControl;
 use crate::lexer::{lex, lex_with_control, TextSpan, TokenKind};
-use crate::model::{SourceCategory, SymbolCatalog, SymbolKind};
+use crate::model::{SourceCategory, SymbolKind};
 use crate::parser::parse_source;
 use crate::resolver::{
     callable_override_key, CandidateSource, ReferenceResolution, ReferenceResolver,
     ResolutionReason,
 };
+use crate::semantic_file::SemanticFile;
 use crate::syntax::{SyntaxElement, SyntaxKind, SyntaxNode};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -955,9 +956,8 @@ fn collect_resolved_usages(
             continue;
         }
         let parse = parse_source(source);
-        let ast = AstSourceFile::new(source, &parse);
-        let catalog = SymbolCatalog::from_ast_with_metadata(source, &ast, file.metadata.clone());
-        let local = SymbolIndex::from_catalogs([&catalog]);
+        let semantic_file = SemanticFile::build(source, &parse);
+        let local = SymbolIndex::from_semantic_files([(&semantic_file, file.metadata.clone())]);
         control
             .check()
             .map_err(|_| GameDataResearchError::Cancelled)?;

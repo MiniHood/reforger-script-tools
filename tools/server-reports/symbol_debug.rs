@@ -1,10 +1,12 @@
-use reforger_language_server::ast::AstSourceFile;
 use reforger_language_server::lexer::TextSpan;
 use reforger_language_server::model::{
-    source_category_for_path, SourceCategory, SourceFileMetadata, SourceKind, SymbolCatalog,
-    SymbolId, SymbolKind, SymbolRecord, SOURCE_PRIORITY_FIXTURE, SOURCE_PRIORITY_WORKSPACE,
+    source_category_for_path, SourceCategory, SourceFileMetadata, SourceKind,
+    SOURCE_PRIORITY_FIXTURE, SOURCE_PRIORITY_WORKSPACE,
 };
 use reforger_language_server::parser::parse_source;
+use reforger_language_server::semantic_file::{
+    SemanticDeclaration, SemanticDeclarationId, SemanticDeclarationKind, SemanticFile, SemanticText,
+};
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
@@ -22,49 +24,48 @@ fn main() -> Result<(), String> {
     let source = fs::read_to_string(&file)
         .map_err(|error| format!("Failed to read {}: {error}", file.display()))?;
     let parse = parse_source(&source);
-    let ast = AstSourceFile::new(&source, &parse);
     let metadata = file_metadata(&file);
-    let catalog = SymbolCatalog::from_ast_with_metadata(&source, &ast, metadata);
+    let semantic_file = SemanticFile::build(&source, &parse);
 
     println!("# Symbol Debug");
     println!();
     println!("File: `{}`", file.display());
-    println!("Source kind: `{}`", catalog.metadata().kind.as_str());
+    println!("Source kind: `{}`", metadata.kind.as_str());
     println!(
         "Absolute path: `{}`",
-        display_optional_path(&catalog.metadata().absolute_path)
+        display_optional_path(&metadata.absolute_path)
     );
     println!(
         "Root path: `{}`",
-        display_optional_path(&catalog.metadata().root_path)
+        display_optional_path(&metadata.root_path)
     );
     println!(
         "Relative path: `{}`",
-        display_optional_path(&catalog.metadata().relative_path)
+        display_optional_path(&metadata.relative_path)
     );
-    println!("Source priority: {}", catalog.metadata().priority);
+    println!("Source priority: {}", metadata.priority);
     println!("Bytes: {}", source.len());
     println!("Parse diagnostics: {}", parse.diagnostics.len());
-    println!("Symbols: {}", catalog.records().len());
+    println!("Symbols: {}", semantic_file.declarations().len());
     println!(
         "Non-declaration callable fragments: {}",
-        catalog.non_declaration_callable_fragments()
+        semantic_file.non_declaration_callable_fragments()
     );
     println!();
 
     if let Some(symbol) = args.symbol {
-        print_symbol_filter(&catalog, &symbol);
+        print_symbol_filter(&semantic_file, &source, &symbol);
     } else if let Some(line) = args.line {
-        print_line_filter(&catalog, &source, line);
+        print_line_filter(&semantic_file, &source, line);
     } else {
         println!("## Symbol Tree");
         println!();
-        for record in catalog
-            .records()
+        for record in semantic_file
+            .declarations()
             .iter()
             .filter(|record| record.parent.is_none())
         {
-            print_tree(&catalog, record, 0);
+            print_tree(&semantic_file, &source, record, 0);
         }
     }
 
@@ -163,13 +164,13 @@ fn file_metadata(file: &Path) -> SourceFileMetadata {
     }
 }
 
-fn print_symbol_filter(catalog: &SymbolCatalog<'_>, symbol: &str) {
+fn print_symbol_filter(semantic_file: &SemanticFile, source: &str, symbol: &str) {
     println!("## Symbol `{}`", escape_inline(symbol));
     println!();
-    let matches = catalog
-        .records()
+    let matches = semantic_file
+        .declarations()
         .iter()
-        .filter(|record| catalog.record_name(record) == Some(symbol))
+        .filter(|record| record.name.as_ref().is_some_and(|name| name.text == symbol))
         .collect::<Vec<_>>();
 
     if matches.is_empty() {
@@ -178,11 +179,11 @@ fn print_symbol_filter(catalog: &SymbolCatalog<'_>, symbol: &str) {
     }
 
     for record in matches {
-        print_record_context(catalog, record);
+        print_record_context(semantic_file, source, record);
     }
 }
 
-fn print_line_filter(catalog: &SymbolCatalog<'_>, source: &str, line: usize) {
+fn print_line_filter(semantic_file: &SemanticFile, source: &str, line: usize) {
     println!("## Line {line}");
     println!();
     let Some((line_start, line_end)) = line_span(source, line) else {
@@ -190,8 +191,8 @@ fn print_line_filter(catalog: &SymbolCatalog<'_>, source: &str, line: usize) {
         return;
     };
 
-    let matches = catalog
-        .records()
+    let matches = semantic_file
+        .declarations()
         .iter()
         .filter(|record| {
             intersects(record.span, line_start, line_end)
@@ -205,54 +206,55 @@ fn print_line_filter(catalog: &SymbolCatalog<'_>, source: &str, line: usize) {
     }
 
     for record in matches {
-        print_record_context(catalog, record);
+        print_record_context(semantic_file, source, record);
     }
 }
 
-fn print_record_context(catalog: &SymbolCatalog<'_>, record: &SymbolRecord) {
-    println!(
-        "### {} `{}`",
-        kind_name(record.kind),
-        display_name(catalog, record)
-    );
+fn print_record_context(semantic_file: &SemanticFile, source: &str, record: &SemanticDeclaration) {
+    println!("### {} `{}`", kind_name(record.kind), display_name(record));
     println!();
     println!("Parent chain:");
-    for ancestor in parent_chain(catalog, record) {
-        println!("  - {}", summary(catalog, ancestor));
+    for ancestor in parent_chain(semantic_file, record) {
+        println!("  - {}", summary(source, ancestor));
     }
     println!("Record:");
-    println!("  - {}", summary(catalog, record));
+    println!("  - {}", summary(source, record));
 
-    let children = catalog
-        .records()
+    let children = semantic_file
+        .declarations()
         .iter()
         .filter(|child| child.parent == Some(record.id))
         .collect::<Vec<_>>();
     if !children.is_empty() {
         println!("Children:");
         for child in children {
-            println!("  - {}", summary(catalog, child));
+            println!("  - {}", summary(source, child));
         }
     }
     println!();
 }
 
-fn print_tree(catalog: &SymbolCatalog<'_>, record: &SymbolRecord, depth: usize) {
+fn print_tree(
+    semantic_file: &SemanticFile,
+    source: &str,
+    record: &SemanticDeclaration,
+    depth: usize,
+) {
     let indent = "  ".repeat(depth);
-    println!("{indent}- {}", summary(catalog, record));
-    for child in catalog
-        .records()
+    println!("{indent}- {}", summary(source, record));
+    for child in semantic_file
+        .declarations()
         .iter()
         .filter(|child| child.parent == Some(record.id))
     {
-        print_tree(catalog, child, depth + 1);
+        print_tree(semantic_file, source, child, depth + 1);
     }
 }
 
 fn parent_chain<'a>(
-    catalog: &'a SymbolCatalog<'_>,
-    record: &SymbolRecord,
-) -> Vec<&'a SymbolRecord> {
+    semantic_file: &'a SemanticFile,
+    record: &SemanticDeclaration,
+) -> Vec<&'a SemanticDeclaration> {
     let mut chain = Vec::new();
     let mut current = record.parent;
     let mut seen = BTreeSet::new();
@@ -260,7 +262,7 @@ fn parent_chain<'a>(
         if !seen.insert(id.0) {
             break;
         }
-        let Some(parent) = catalog.record(id) else {
+        let Some(parent) = semantic_file.declaration(id) else {
             break;
         };
         chain.push(parent);
@@ -270,72 +272,63 @@ fn parent_chain<'a>(
     chain
 }
 
-fn summary(catalog: &SymbolCatalog<'_>, record: &SymbolRecord) -> String {
+fn summary(source: &str, record: &SemanticDeclaration) -> String {
     format!(
         "{} `{}` id {} parent `{}` decl {} selection {}{} attrs {} modifiers `{}` docs {} preview `{}`",
         kind_name(record.kind),
-        display_name(catalog, record),
+        display_name(record),
         record.id.0,
         display_parent(record.parent),
-        display_location(catalog, record.span),
-        display_location(catalog, record.selection_span),
-        display_detail(catalog, record),
-        display_attributes(catalog, &record.attributes),
-        display_spans(catalog, &record.modifiers),
+        display_location(source, record.span),
+        display_location(source, record.selection_span),
+        display_detail(record),
+        display_attributes(&record.attributes),
+        display_texts(&record.modifiers),
         record.doc_comments.len(),
-        doc_preview(catalog, record),
+        doc_preview(record),
     )
 }
 
-fn kind_name(kind: SymbolKind) -> &'static str {
+fn kind_name(kind: SemanticDeclarationKind) -> &'static str {
     match kind {
-        SymbolKind::Class => "Class",
-        SymbolKind::TypeParameter => "TypeParameter",
-        SymbolKind::Enum => "Enum",
-        SymbolKind::EnumMember => "EnumMember",
-        SymbolKind::Typedef => "Typedef",
-        SymbolKind::Function => "Function",
-        SymbolKind::GlobalField => "GlobalField",
-        SymbolKind::Field => "Field",
-        SymbolKind::Method => "Method",
-        SymbolKind::Constructor => "Constructor",
-        SymbolKind::Destructor => "Destructor",
-        SymbolKind::Parameter => "Parameter",
-        SymbolKind::LocalVariable => "LocalVariable",
-        SymbolKind::PreprocessorMacro => "PreprocessorMacro",
+        SemanticDeclarationKind::Class => "Class",
+        SemanticDeclarationKind::TypeParameter => "TypeParameter",
+        SemanticDeclarationKind::Enum => "Enum",
+        SemanticDeclarationKind::EnumMember => "EnumMember",
+        SemanticDeclarationKind::Typedef => "Typedef",
+        SemanticDeclarationKind::Function => "Function",
+        SemanticDeclarationKind::GlobalField => "GlobalField",
+        SemanticDeclarationKind::Field => "Field",
+        SemanticDeclarationKind::Method => "Method",
+        SemanticDeclarationKind::Constructor => "Constructor",
+        SemanticDeclarationKind::Destructor => "Destructor",
+        SemanticDeclarationKind::Parameter => "Parameter",
+        SemanticDeclarationKind::LocalVariable => "LocalVariable",
+        SemanticDeclarationKind::PreprocessorMacro => "PreprocessorMacro",
     }
 }
 
-fn display_name(catalog: &SymbolCatalog<'_>, record: &SymbolRecord) -> String {
-    catalog
-        .record_name(record)
-        .map(escape_inline)
+fn display_name(record: &SemanticDeclaration) -> String {
+    record
+        .name
+        .as_ref()
+        .map(|name| escape_inline(&name.text))
         .unwrap_or_else(|| "<unknown>".to_string())
 }
 
-fn display_parent(parent: Option<SymbolId>) -> String {
+fn display_parent(parent: Option<SemanticDeclarationId>) -> String {
     parent
         .map(|id| id.0.to_string())
         .unwrap_or_else(|| "none".to_string())
 }
 
-fn display_detail(catalog: &SymbolCatalog<'_>, record: &SymbolRecord) -> String {
+fn display_detail(record: &SemanticDeclaration) -> String {
     let mut values = Vec::new();
-    push_detail(catalog, &mut values, "type", record.detail.type_text);
-    push_detail(
-        catalog,
-        &mut values,
-        "return",
-        record.detail.return_type_text,
-    );
-    push_detail(catalog, &mut values, "base", record.detail.base_type);
-    push_detail(catalog, &mut values, "default", record.detail.default_text);
-    push_detail(
-        catalog,
-        &mut values,
-        "enum_value",
-        record.detail.enum_value_text,
-    );
+    push_detail(&mut values, "type", record.detail.type_text.as_ref());
+    push_detail(&mut values, "return", record.detail.return_type.as_ref());
+    push_detail(&mut values, "base", record.detail.base_type.as_ref());
+    push_detail(&mut values, "default", record.detail.default_value.as_ref());
+    push_detail(&mut values, "enum_value", record.detail.enum_value.as_ref());
 
     if values.is_empty() {
         String::new()
@@ -344,21 +337,16 @@ fn display_detail(catalog: &SymbolCatalog<'_>, record: &SymbolRecord) -> String 
     }
 }
 
-fn push_detail(
-    catalog: &SymbolCatalog<'_>,
-    values: &mut Vec<String>,
-    label: &str,
-    span: Option<TextSpan>,
-) {
-    if let Some(span) = span {
-        values.push(format!("{label} `{}`", escape_inline(catalog.text(span))));
+fn push_detail(values: &mut Vec<String>, label: &str, text: Option<&SemanticText>) {
+    if let Some(text) = text {
+        values.push(format!("{label} `{}`", escape_inline(&text.text)));
     }
 }
 
-fn display_spans(catalog: &SymbolCatalog<'_>, spans: &[TextSpan]) -> String {
-    let text = spans
+fn display_texts(values: &[SemanticText]) -> String {
+    let text = values
         .iter()
-        .map(|span| escape_inline(catalog.text(*span)))
+        .map(|value| escape_inline(&value.text))
         .collect::<Vec<_>>();
     if text.is_empty() {
         "<none>".to_string()
@@ -367,15 +355,10 @@ fn display_spans(catalog: &SymbolCatalog<'_>, spans: &[TextSpan]) -> String {
     }
 }
 
-fn display_attributes(catalog: &SymbolCatalog<'_>, spans: &[TextSpan]) -> String {
-    let names = spans
+fn display_attributes(attributes: &[SemanticText]) -> String {
+    let names = attributes
         .iter()
-        .map(|span| {
-            catalog
-                .attribute_name(*span)
-                .map(escape_inline)
-                .unwrap_or_else(|| escape_inline(catalog.text(*span)))
-        })
+        .map(|attribute| escape_inline(attribute_name(&attribute.text)))
         .collect::<Vec<_>>();
     if names.is_empty() {
         "<none>".to_string()
@@ -384,11 +367,20 @@ fn display_attributes(catalog: &SymbolCatalog<'_>, spans: &[TextSpan]) -> String
     }
 }
 
-fn doc_preview(catalog: &SymbolCatalog<'_>, record: &SymbolRecord) -> String {
+fn attribute_name(text: &str) -> &str {
+    text.trim()
+        .trim_start_matches('[')
+        .split(['(', ']'])
+        .next()
+        .unwrap_or(text)
+        .trim()
+}
+
+fn doc_preview(record: &SemanticDeclaration) -> String {
     record
         .doc_comments
         .first()
-        .map(|comment| doc_text_preview(catalog.text(comment.span)))
+        .map(|comment| doc_text_preview(&comment.text))
         .unwrap_or_else(|| "<none>".to_string())
 }
 
@@ -415,8 +407,8 @@ fn clean_doc_line(line: &str) -> String {
         .to_string()
 }
 
-fn display_location(catalog: &SymbolCatalog<'_>, span: TextSpan) -> String {
-    let (line, column) = line_column(catalog.source(), span.start);
+fn display_location(source: &str, span: TextSpan) -> String {
+    let (line, column) = line_column(source, span.start);
     format!("{}:{} span {}..{}", line, column, span.start, span.end)
 }
 

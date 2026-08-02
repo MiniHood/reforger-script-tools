@@ -1,11 +1,11 @@
 use reforger_language_server::ast::{AstSourceFile, ClassMember, Declaration, LocalVariableKind};
 use reforger_language_server::index::{GlobalSymbolId, SymbolIndex};
 use reforger_language_server::model::{
-    source_category_for_path, SourceFileMetadata, SourceKind, SymbolCatalog, SymbolKind,
-    SOURCE_PRIORITY_GAME_DATA,
+    source_category_for_path, SourceFileMetadata, SourceKind, SymbolKind, SOURCE_PRIORITY_GAME_DATA,
 };
 use reforger_language_server::parser::parse_source;
 use reforger_language_server::scope::{LexicalScopeKind, LexicalScopeModel};
+use reforger_language_server::semantic_file::SemanticFile;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::env;
@@ -192,9 +192,8 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
 
         let ast = AstSourceFile::new(&source, &parse);
         let metadata = game_data_metadata(scripts_path, file);
-        let catalog = SymbolCatalog::from_ast_with_metadata(&source, &ast, metadata);
-        let mut index = SymbolIndex::default();
-        index.add_catalog(&catalog);
+        let semantic_file = SemanticFile::build(&source, &parse);
+        let index = SymbolIndex::from_semantic_files([(&semantic_file, metadata)]);
         let scope_model = LexicalScopeModel::from_parse_and_index(&parse, &index);
         let local_kinds = ast_local_kind_counts(&ast);
 
@@ -774,10 +773,11 @@ fn append_deep_scope_samples(report: &mut String, root: &Path, file_stats: &[Fil
 fn index_for_file(stats: &[FileStats], path: &Path) -> Option<SymbolIndex> {
     let stats = stats.iter().find(|stats| stats.path == path)?;
     let parse = parse_source(&stats.source);
-    let ast = AstSourceFile::new(&stats.source, &parse);
-    let catalog =
-        SymbolCatalog::from_ast_with_metadata(&stats.source, &ast, SourceFileMetadata::unknown());
-    Some(SymbolIndex::from_catalogs([&catalog]))
+    let semantic_file = SemanticFile::build(&stats.source, &parse);
+    Some(SymbolIndex::from_semantic_files([(
+        &semantic_file,
+        SourceFileMetadata::unknown(),
+    )]))
 }
 
 fn game_data_metadata(root: &Path, file: &Path) -> SourceFileMetadata {

@@ -9,7 +9,6 @@
     {"name":"project-context","tool":"workbench_project_context","arguments":{},"expect":{"contains":{"/result/structuredContent/loadedAddons":["ArmaReforger","TestBullshit"]}}},
     {"name":"validate-scripts","tool":"workbench_validate_scripts","arguments":{"limit":20},"expect":{"pointers":{"/result/structuredContent/success":true}}},
     {"name":"discover-world-resource","tool":"workbench_search_resources","arguments":{"kinds":["world"],"query":"empty_test","limit":20},"capture":{"worldResourceName":"/result/structuredContent/results/0/resourceName"},"expect":{"exists":["/result/structuredContent/results/0/resourceName"]}},
-    {"name":"list-world-resources","tool":"workbench_list_resources","arguments":{"kinds":["world"],"query":"empty_test","limit":20},"expect":{"exists":["/result/structuredContent/resources"]}},
     {"name":"inspect-world-resource","tool":"workbench_inspect_resource","arguments":{"resourceName":"$scenario.worldResourceName"},"expect":{"pointers":{"/result/structuredContent/found":true,"/result/structuredContent/status":"found","/result/structuredContent/resourceName":"$scenario.worldResourceName"},"exists":["/result/structuredContent/className"]}},
     {"name":"list-editors","tool":"workbench_list_editors","arguments":{},"capture":{"worldEditorId":"/result/structuredContent/editors/0/id"},"expect":{"exists":["/result/structuredContent/editors/0/id"]}},
     {"name":"open-world-editor","tool":"workbench_open_editor","arguments":{"editorId":"$scenario.worldEditorId"},"expect":{"pointers":{"/result/structuredContent/opened":true}}},

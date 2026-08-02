@@ -1,12 +1,11 @@
-use reforger_language_server::ast::{AstSourceFile, Expression};
+use reforger_language_server::ast::Expression;
 use reforger_language_server::expression_type::ExpressionTypeEnvironment;
 use reforger_language_server::index::SymbolIndex;
 use reforger_language_server::index_build::{build_index, IndexBuildConfig, IndexSourceRoot};
-use reforger_language_server::model::{
-    SourceFileMetadata, SourceKind, SymbolCatalog, SOURCE_PRIORITY_GAME_DATA,
-};
+use reforger_language_server::model::{SourceFileMetadata, SourceKind, SOURCE_PRIORITY_GAME_DATA};
 use reforger_language_server::parser::parse_source;
 use reforger_language_server::scope::LexicalScopeModel;
+use reforger_language_server::semantic_file::SemanticFile;
 use reforger_language_server::syntax::{SyntaxElement, SyntaxKind, SyntaxNode};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -214,10 +213,9 @@ fn render_report(
         let source = source.into_owned();
         let parse = parse_source(&source);
         totals.parse_diagnostics += parse.diagnostics.len();
-        let ast = AstSourceFile::new(&source, &parse);
-        let catalog =
-            SymbolCatalog::from_ast_with_metadata(&source, &ast, SourceFileMetadata::unknown());
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let semantic_file = SemanticFile::build(&source, &parse);
+        let index =
+            SymbolIndex::from_semantic_files([(&semantic_file, SourceFileMetadata::unknown())]);
         let scope = LexicalScopeModel::from_parse_and_index(&parse, &index);
         let environment =
             ExpressionTypeEnvironment::new(&source, &index, &parse, &scope, external_index);

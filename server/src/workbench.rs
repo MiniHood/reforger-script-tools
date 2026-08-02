@@ -351,21 +351,6 @@ pub struct WorkbenchResourceInspection {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkbenchResourceListPage {
-    pub bridge_version: String,
-    pub protocol_version: u32,
-    pub project_revision: String,
-    pub limit: usize,
-    pub resources: Vec<String>,
-    #[serde(skip_serializing, skip_deserializing)]
-    #[schemars(skip)]
-    pub(crate) resource_details: Vec<String>,
-    pub truncated: bool,
-    pub next_cursor: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
 pub struct WorkbenchResourceSearchHit {
     pub resource_name: String,
     pub addon_guid: String,
@@ -2065,7 +2050,7 @@ impl WorkbenchController {
         Ok(result)
     }
 
-    pub fn list_resources(
+    pub fn search_resources(
         &self,
         kinds: &[&str],
         query: Option<&str>,
@@ -2073,7 +2058,7 @@ impl WorkbenchController {
         addon_guid: Option<&str>,
         cursor: Option<&str>,
         limit: usize,
-    ) -> Result<WorkbenchResourceListPage, WorkbenchFailure> {
+    ) -> Result<WorkbenchResourceSearchPage, WorkbenchFailure> {
         let limit = limit.clamp(1, 200);
         let query = query.unwrap_or("").trim();
         let root_path = root_path.unwrap_or("").trim();
@@ -2103,11 +2088,11 @@ impl WorkbenchController {
             json!({"APIFunc": "RST_WorkbenchListResources", "extensions": kinds, "query": query, "rootPath": root_path, "addonGuid": addon_guid, "offset": offset, "limit": limit}),
             self.options.gateway.status_deadline,
         ).map_err(|failure| self.correlate_failure_details(
-            "list_resources", failure_code(failure.code), failure, json!({"handler": "RST_WorkbenchListResources"}),
+            "search_resources", failure_code(failure.code), failure, json!({"handler": "RST_WorkbenchListResources"}),
         ))?;
         let raw: RawBridgeResourceList = serde_json::from_value(value).map_err(|_| {
             self.correlate_failure_details(
-                "list_resources",
+                "search_resources",
                 "workbench_protocol_error",
                 failure(WorkbenchFailureCode::Protocol),
                 json!({"handler": "RST_WorkbenchListResources"}),
@@ -2117,10 +2102,10 @@ impl WorkbenchController {
         let resource_details = split_bounded_list(&raw.resource_details, limit, 256 * 1024).0;
         if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
             || resources.len() > limit
-            || (!resource_details.is_empty() && resource_details.len() != resources.len())
+            || resource_details.len() != resources.len()
         {
             return Err(self.correlate_failure_details(
-                "list_resources",
+                "search_resources",
                 "workbench_protocol_error",
                 failure(WorkbenchFailureCode::Protocol),
                 json!({"handler": "RST_WorkbenchListResources"}),
@@ -2130,57 +2115,26 @@ impl WorkbenchController {
         let has_more = workbench_bool(&raw.has_more);
         let next_cursor =
             has_more.then(|| format!("wrl1:{signature}:{}", offset + resources.len()));
-        let result = WorkbenchResourceListPage {
+        let results = resource_details
+            .iter()
+            .map(|resource_name| parse_resource_search_hit(resource_name))
+            .collect::<Result<Vec<_>, _>>()?;
+        let result = WorkbenchResourceSearchPage {
             bridge_version: raw.bridge_version,
             protocol_version: raw.protocol_version,
             project_revision,
             limit,
-            resources,
-            resource_details,
+            results,
             truncated: has_more,
             next_cursor,
         };
         self.log_event_timed(
-            "list-resources",
+            "search-resources",
             "success",
             started,
-            json!({"returned": result.resources.len(), "hasMore": result.next_cursor.is_some()}),
+            json!({"returned": result.results.len(), "hasMore": result.next_cursor.is_some()}),
         );
         Ok(result)
-    }
-
-    pub fn search_resources(
-        &self,
-        kinds: &[&str],
-        query: Option<&str>,
-        root_path: Option<&str>,
-        addon_guid: Option<&str>,
-        cursor: Option<&str>,
-        limit: usize,
-    ) -> Result<WorkbenchResourceSearchPage, WorkbenchFailure> {
-        let page = self.list_resources(kinds, query, root_path, addon_guid, cursor, limit)?;
-        if page.resource_details.len() != page.resources.len() {
-            return Err(self.correlate_failure_details(
-                "search_resources",
-                "workbench_protocol_error",
-                failure(WorkbenchFailureCode::Protocol),
-                json!({"handler": "RST_WorkbenchListResources"}),
-            ));
-        }
-        let results = page
-            .resource_details
-            .iter()
-            .map(|resource_name| parse_resource_search_hit(resource_name))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(WorkbenchResourceSearchPage {
-            bridge_version: page.bridge_version,
-            protocol_version: page.protocol_version,
-            project_revision: page.project_revision,
-            limit: page.limit,
-            results,
-            truncated: page.truncated,
-            next_cursor: page.next_cursor,
-        })
     }
 
     pub fn world_selection_summary(
@@ -8882,184 +8836,6 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
     ]
 }
 
-/* Retired UI prototypes. Kept out of the compiled bridge pending deletion in
-the next focused Workbench-UI branch. */
-/*
-// UI-only prototype: validate the unified World Editor entry point before
-// implementing source resolution or launching VS Code.
-const BRIDGE_OPEN_DEFINITION_PROTOTYPE_SOURCE: &str = r#"#ifdef WORKBENCH
-class RST_OpenDefinitionPrototypeDialog
-{
-    protected static ref ParamEnumArray s_Targets = new ParamEnumArray();
-
-    [Attribute("", UIWidgets.ComboBox, "Open definition", "Choose the entity class, a component class, or one of the selected entity's component properties.", enums: GetTargets())]
-    protected string m_sTarget;
-
-    [ButtonAttribute("Preview target", true)]
-    protected int ButtonPreviewTarget()
-    {
-        return 1;
-    }
-
-    [ButtonAttribute("Cancel")]
-    protected int ButtonCancel()
-    {
-        return 0;
-    }
-
-    static ParamEnumArray GetTargets()
-    {
-        return s_Targets;
-    }
-
-    static void PopulateTargets(IEntitySource entity)
-    {
-        s_Targets.Clear();
-        s_Targets.Insert(new ParamEnum(string.Format("[Entity] %1", entity.GetClassName()), string.Format("entity:%1", entity.GetClassName())));
-
-        for (int componentIndex, componentCount = entity.GetComponentCount(); componentIndex < componentCount; componentIndex++)
-        {
-            IEntityComponentSource component = entity.GetComponent(componentIndex);
-            if (!component)
-                continue;
-
-            string componentClass = component.GetClassName();
-            string componentTarget = string.Format("component:%1:%2", componentIndex, componentClass);
-            s_Targets.Insert(new ParamEnum(string.Format("  [Component] %1", componentClass), componentTarget));
-
-            for (int propertyIndex, propertyCount = component.GetNumVars(); propertyIndex < propertyCount; propertyIndex++)
-            {
-                string propertyName = component.GetVarName(propertyIndex);
-                if (propertyName.IsEmpty())
-                    continue;
-
-                s_Targets.Insert(new ParamEnum(string.Format("    [Property] %1.%2", componentClass, propertyName), string.Format("property:%1:%2:%3", componentIndex, componentClass, propertyName)));
-            }
-        }
-    }
-
-    string TargetLabel()
-    {
-        foreach (ParamEnum target : s_Targets)
-        {
-            if (target.m_Value == m_sTarget)
-                return target.m_Key;
-        }
-
-        return m_sTarget;
-    }
-}
-
-[WorkbenchPluginAttribute(name: "[Prototype] Open Definition…", description: "UI-only prototype for a unified entity, component, and property definition picker.", category: "Reforger Script Tools", wbModules: { "WorldEditor" }, shortcut: "Ctrl+Alt+O")]
-class RST_OpenDefinitionPrototypePlugin : WorkbenchPlugin
-{
-    override void Run()
-    {
-        WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
-        if (!worldEditor || !worldEditor.GetApi())
-        {
-            Workbench.Dialog("Open Definition (prototype)", "The World Editor API is not available.");
-            return;
-        }
-
-        WorldEditorAPI api = worldEditor.GetApi();
-        if (api.GetSelectedEntitiesCount() < 1)
-        {
-            Workbench.Dialog("Open Definition (prototype)", "Select an entity first, then press Ctrl+Alt+O.");
-            return;
-        }
-
-        IEntitySource selected = api.GetSelectedEntity(0);
-        if (!selected)
-        {
-            Workbench.Dialog("Open Definition (prototype)", "The selected entity is no longer available.");
-            return;
-        }
-
-        RST_OpenDefinitionPrototypeDialog dialog = new RST_OpenDefinitionPrototypeDialog();
-        RST_OpenDefinitionPrototypeDialog.PopulateTargets(selected);
-        string message = string.Format("Selected entity: %1\n\nPick a concrete definition from the list. Components and their properties are included directly under the entity. This prototype intentionally does not open VS Code or Workbench's script editor.", selected.GetClassName());
-        if (!Workbench.ScriptDialog("Open Definition in VS Code (prototype)", message, dialog))
-            return;
-
-        string target = dialog.TargetLabel();
-        PrintFormat("RST open-definition prototype: selected=%1 target=%2", selected.GetClassName(), target);
-        Workbench.Dialog("Open Definition (prototype)", string.Format("Would open the %1 for %2 in VS Code.\n\nNo editor was launched: this is the UX-only prototype.", target, selected.GetClassName()));
-    }
-}
-#endif
-"#;
-
-// UI-only prototype: test the native Custom section before adding VS Code
-// launching or generalized context-menu coverage.
-const BRIDGE_OPEN_DEFINITION_CONTEXT_PROTOTYPE_SOURCE: &str = r#"#ifdef WORKBENCH
-// Workbench only permits an addon to mod classes supplied by that addon. This
-// prototype deliberately targets the Test Bullshit entity to prove the native
-// Custom-menu callback before we introduce project-owned registration.
-modded class GRAY_ENT
-{
-    protected static const int RST_OPEN_DEFINITION_CONTEXT_ID = 17201;
-
-    override array<ref WB_UIMenuItem> _WB_GetContextMenuItems()
-    {
-        return { new WB_UIMenuItem("Open entity definition in VS Code (prototype)", RST_OPEN_DEFINITION_CONTEXT_ID) };
-    }
-
-    override void _WB_OnContextMenu(int id)
-    {
-        if (id != RST_OPEN_DEFINITION_CONTEXT_ID)
-            return;
-
-        WorldEditorAPI api = _WB_GetEditorAPI();
-        if (!api)
-        {
-            Workbench.Dialog("Open Definition (prototype)", "The World Editor API is not available.");
-            return;
-        }
-
-        IEntitySource source = api.EntityToSource(this);
-        if (!source)
-        {
-            Workbench.Dialog("Open Definition (prototype)", "The selected entity source is not available.");
-            return;
-        }
-
-        string className = source.GetClassName();
-        PrintFormat("RST open-definition context prototype: entity=%1", className);
-        Workbench.Dialog("Open Definition (prototype)", string.Format("Would open the entity definition %1 in VS Code.\n\nNo editor was launched: this is the native-context-menu prototype.", className));
-    }
-}
-
-// The component callback appears in the component's own Custom menu.
-modded class GRAY_TEST
-{
-    protected static const int RST_OPEN_COMPONENT_DEFINITION_CONTEXT_ID = 17202;
-
-    override array<ref WB_UIMenuItem> _WB_GetContextMenuItems(IEntity owner)
-    {
-        return { new WB_UIMenuItem("Open component definition in VS Code (prototype)", RST_OPEN_COMPONENT_DEFINITION_CONTEXT_ID) };
-    }
-
-    override void _WB_OnContextMenu(IEntity owner, int id)
-    {
-        if (id != RST_OPEN_COMPONENT_DEFINITION_CONTEXT_ID)
-            return;
-
-        WorldEditorAPI api = GenericEntity.Cast(owner)._WB_GetEditorAPI();
-        IEntitySource source = api.EntityToSource(owner);
-        string ownerClass = "unknown";
-        if (source)
-            ownerClass = source.GetClassName();
-
-        PrintFormat("RST open-definition context prototype: component=GRAY_TEST owner=%1", ownerClass);
-        Workbench.Dialog("Open Definition (prototype)", string.Format("Would open the component definition GRAY_TEST on %1 in VS Code.\n\nNo editor was launched: this is the native-context-menu prototype.", ownerClass));
-    }
-}
-#endif
-"#;
-
-*/
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -9565,7 +9341,7 @@ mod tests {
     }
 
     #[test]
-    fn resource_listing_binds_opaque_cursors_to_the_same_filter() {
+    fn resource_search_binds_opaque_cursors_to_the_same_filter() {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request["APIFunc"], "RST_WorkbenchListResources");
             assert_eq!(request["extensions"], "ent");
@@ -9579,6 +9355,7 @@ mod tests {
                 "protocolVersion": 1,
                 "loadedAddons": "ArmaReforger;TestBullshit",
                 "resources": "{DD49A6CE18710A05}worlds/test/empty_test.ent",
+                "resourceDetails": "{DD49A6CE18710A05}worlds/test/empty_test.ent|DD49A6CE18710A05|TestBullshit|worlds/test/empty_test.ent|ent",
                 "hasMore": true
             })
         });
@@ -9594,10 +9371,10 @@ mod tests {
         });
 
         let page = controller
-            .list_resources(&["ent"], Some("test"), None, None, None, 2)
+            .search_resources(&["ent"], Some("test"), None, None, None, 2)
             .unwrap();
 
-        assert_eq!(page.resources.len(), 1);
+        assert_eq!(page.results.len(), 1);
         assert_eq!(page.limit, 2);
         assert!(page.truncated);
         assert!(page.next_cursor.is_some());

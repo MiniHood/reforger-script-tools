@@ -62,7 +62,6 @@ import {
 import {
   completionPresentationObservationForDocument,
   completionUiMiddlewareCallbacks,
-  completionLifecycleTraceForDocument,
   registerCompletionUiBridge,
 } from "./completionUiBridge";
 import { openSymbolLocation } from "./symbolLocationBridge";
@@ -211,7 +210,6 @@ export function registerLanguageClientFeatures(
       () => client,
       debugOutputChannel,
       completionDebugOutputChannel,
-      completionLifecycleTraceForDocument,
       completionPresentationObservationForDocument,
     ),
   );

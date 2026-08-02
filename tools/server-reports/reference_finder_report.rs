@@ -1,9 +1,10 @@
 use reforger_language_server::index::{GlobalSymbolId, SymbolIndex};
 use reforger_language_server::lexer::TextSpan;
-use reforger_language_server::model::{SourceFileMetadata, SymbolCatalog, SymbolKind};
+use reforger_language_server::model::{SourceFileMetadata, SymbolKind};
 use reforger_language_server::parser::parse_source;
 use reforger_language_server::reference_finder::find_file_local_references;
 use reforger_language_server::scope::LexicalScopeModel;
+use reforger_language_server::semantic_file::SemanticFile;
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
@@ -22,10 +23,8 @@ fn run() -> Result<(), String> {
     let args = Args::parse()?;
     let source = fixture_source();
     let parse = parse_source(source);
-    let ast = reforger_language_server::ast::AstSourceFile::new(source, &parse);
-    let catalog =
-        SymbolCatalog::from_ast_with_metadata(source, &ast, SourceFileMetadata::unknown());
-    let index = SymbolIndex::from_catalogs([&catalog]);
+    let semantic_file = SemanticFile::build(source, &parse);
+    let index = SymbolIndex::from_semantic_files([(&semantic_file, SourceFileMetadata::unknown())]);
     let scope = LexicalScopeModel::from_parse_and_index(&parse, &index);
 
     let cases = [

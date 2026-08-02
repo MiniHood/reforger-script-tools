@@ -7,7 +7,6 @@
     {"name":"state","tool":"workbench_state","arguments":{},"expect":{"pointers":{"/result/structuredContent/mode":"world-editor","/result/structuredContent/activeWorldPath":"$fixture.worldResource"}}},
     {"name":"project-context","tool":"workbench_project_context","arguments":{},"expect":{"contains":{"/result/structuredContent/loadedAddons":["ArmaReforger","TestBullshit"]}}},
     {"name":"inspect-world-resource","tool":"workbench_inspect_resource","arguments":{"resourceName":"{DD49A6CE18710A05}worlds/test/empty_test.ent"},"expect":{"isError":true,"error":{"code":"workbench_protocol_error","phase":"inspect_resource"}}},
-    {"name":"list-world-resources","tool":"workbench_list_resources","arguments":{"kinds":["world"],"query":"empty_test","limit":20}},
     {"name":"search-world-resources","tool":"workbench_search_resources","arguments":{"kinds":["world"],"query":"empty_test","limit":20},"expect":{"pointers":{"/result/structuredContent/results/0/logicalPath":"worlds/test/empty_test.ent"}}},
     {"name":"selection-summary","tool":"workbench_world_selection_summary","arguments":{}},
     {"name":"list-entities","tool":"workbench_list_entities","arguments":{"limit":20}},

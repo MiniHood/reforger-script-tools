@@ -22,6 +22,7 @@ export interface McpLaunchInputs {
 	addonSourceInventory: string;
 	addonIndexStorage: string;
 	externalIndexMode: ExternalIndexMode;
+	officialWikiRoot?: string;
 	workspaceScripts?: string[];
 	dependencyProjectFiles?: string[];
 }
@@ -40,6 +41,7 @@ export function buildMcpLaunchConfiguration(inputs: McpLaunchInputs): McpLaunch 
 		inputs.addonIndexStorage,
 		'--external-index-mode',
 		inputs.externalIndexMode,
+		...(inputs.officialWikiRoot ? ['--official-wiki-root', inputs.officialWikiRoot] : []),
 		...(inputs.workspaceScripts ?? []).flatMap(root => ['--workspace-scripts', root]),
 		...(inputs.dependencyProjectFiles ?? []).flatMap(projectFile => ['--dependency-project', projectFile]),
 	];
@@ -113,7 +115,7 @@ export function registerMcpConfigurationCommand(
 	));
 }
 
-function readExternalIndexMode(): ExternalIndexMode {
+export function readExternalIndexMode(): ExternalIndexMode {
 	const value = vscode.workspace.getConfiguration(workbenchConfig.section).get(
 		workbenchConfig.settings.externalIndexMode,
 		workbenchDefaults.externalIndexMode,

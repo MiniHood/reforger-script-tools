@@ -54,7 +54,6 @@ export const languageClientLogs = {
 
 export const languageClientIndexCache = {
 	rootFolder: 'addon-indexes',
-	baseGameIndexFile: '58D0FB3206B6F859/symbols.bin',
 } as const;
 
 export const languageClientLanguage = {

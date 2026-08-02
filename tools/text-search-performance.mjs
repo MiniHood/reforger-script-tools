@@ -8,7 +8,6 @@ async function main() {
 	const serverPath = resolve(options.server);
 	const serverArguments = ['mcp'];
 	if (options.source === 'game-data') {
-		if (options.indexCache) serverArguments.push('--index-cache', resolve(options.indexCache));
 		if (options.addonIndexStorage) serverArguments.push('--addon-index-storage', resolve(options.addonIndexStorage));
 		if (options.addonSourceInventory) serverArguments.push('--addon-source-inventory', resolve(options.addonSourceInventory));
 		serverArguments.push('--external-index-mode', options.externalIndexMode);
@@ -248,7 +247,6 @@ function parseArguments(args) {
 		switch (argument) {
 			case '--server': parsed.server = value(); break;
 			case '--source': parsed.source = value(); break;
-			case '--index-cache': parsed.indexCache = value(); break;
 			case '--addon-index-storage': parsed.addonIndexStorage = value(); break;
 			case '--addon-source-inventory': parsed.addonSourceInventory = value(); break;
 			case '--dependency-project': parsed.dependencyProjects.push(value()); break;
@@ -277,8 +275,8 @@ function parseArguments(args) {
 	if (!['all', 'loaded', 'none'].includes(parsed.externalIndexMode)) {
 		usage('--external-index-mode must be all, loaded, or none.');
 	}
-	if (parsed.source === 'game-data' && !parsed.indexCache && !parsed.addonIndexStorage) {
-		usage('--index-cache or --addon-index-storage is required for game-data searches.');
+	if (parsed.source === 'game-data' && !parsed.addonIndexStorage) {
+		usage('--addon-index-storage is required for game-data searches.');
 	}
 	if (parsed.source === 'workspace' && parsed.workspaceScripts.length === 0) {
 		usage('At least one --workspace-scripts root is required for workspace searches.');
@@ -297,7 +295,7 @@ function usage(error) {
 	process.stderr.write(
 		'Usage: node tools/text-search-performance.mjs --server <exe> --source <workspace|game-data> --query <query> [options]\n' +
 		'  Workspace: --workspace-scripts <root> (repeatable)\n' +
-		'  Game Data: --index-cache <symbols.bin>, or --addon-index-storage <directory> with current scope inputs\n' +
+		'  Game Data: --addon-index-storage <directory> with current scope inputs\n' +
 		'  Current scope: --addon-source-inventory <json> --dependency-project <gproj> (repeatable) --external-index-mode <all|loaded|none>\n' +
 		'  Options: --mode <text|semantic> --limit <1-100> --budget-ms <ms> --timeout-ms <ms> --match-case --match-whole-word --regex\n',
 	);
