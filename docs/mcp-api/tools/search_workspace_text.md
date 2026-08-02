@@ -3,7 +3,7 @@
 
 [Back to the MCP API router](../../mcp-api.md)
 
-Explicit bounded full-text search over readable user add-on workspace script files. This is a case-sensitive literal substring scan: comments, strings, expressions, and local-variable uses are included; it is not regex, fuzzy, semantic, or Wiki search. Results are deterministic, revision-bound, paged with an opaque cursor, and carry exact source ranges, a line excerpt, and a ready-to-copy read_source_input. This scan is intentionally on demand and may take seconds across the configured workspace; use semantic search for declarations.
+Explicit bounded full-text search over readable user add-on workspace script files. This is a case-sensitive literal substring scan: comments, strings, expressions, and local-variable uses are included; it is not regex, fuzzy, semantic, or Wiki search. Results are deterministic, revision-bound, paged with an opaque cursor, and carry exact source ranges, a line excerpt, and a ready-to-copy readSourceInput. This scan is intentionally on demand and may take seconds across the configured workspace; use semantic search for declarations.
 
 ### Annotations
 

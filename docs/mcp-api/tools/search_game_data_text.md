@@ -3,7 +3,7 @@
 
 [Back to the MCP API router](../../mcp-api.md)
 
-Explicit bounded full-text search over readable Reforger Game Data source files. This is a case-sensitive literal substring scan: comments, strings, expressions, and local-variable uses are included; it is not regex, fuzzy, semantic, or Wiki search. Results are deterministic, revision-bound, paged with an opaque cursor, and carry exact source ranges, a line excerpt, and a ready-to-copy read_source_input. This scan is intentionally on demand and may take seconds across the corpus; use semantic search for declarations. Do not use this tool to infer live Workbench state.
+Explicit bounded full-text search over readable Reforger Game Data source files. This is a case-sensitive literal substring scan: comments, strings, expressions, and local-variable uses are included; it is not regex, fuzzy, semantic, or Wiki search. Results are deterministic, revision-bound, paged with an opaque cursor, and carry exact source ranges, a line excerpt, and a ready-to-copy readSourceInput. This scan is intentionally on demand and may take seconds across the corpus; use semantic search for declarations. Do not use this tool to infer live Workbench state.
 
 ### Annotations
 
