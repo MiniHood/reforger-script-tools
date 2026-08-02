@@ -19,6 +19,7 @@ import { readExternalIndexMode } from '../mcp/mcpConfiguration';
 import { semanticPreviewForLine, semanticPreviewForLines, type SemanticPreview } from './semanticPreview';
 import {
 	McpSearchClient,
+	McpToolError,
 	type SearchMode,
 	type TextSearchOptions,
 	searchKindFilters,
@@ -132,7 +133,7 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 		disposed: false,
 	};
 	activePanel = panel;
-	panel.webview.html = renderSearchUi(panel.webview);
+	panel.webview.html = renderSearchUi();
 	const indexModeSubscription = vscode.workspace.onDidChangeConfiguration(event => {
 		if (event.affectsConfiguration(`${workbenchConfig.section}.${workbenchConfig.settings.externalIndexMode}`)) {
 			void refreshSearchScope(context, active);
@@ -447,6 +448,11 @@ async function runSearch(
 		void startPreviewHydration(active, client, requestId, result.results, normalizedQuery);
 	} catch (error) {
 		if (!active.disposed && requestId === active.requestSequence) {
+			const clearRelationshipAnchor = Boolean(relationship && error instanceof McpToolError && [
+				'invalid_relationship_anchor',
+				'stale_relationship_anchor',
+				'source_relationships_unavailable',
+			].includes(error.code ?? ''));
 			diagnostic('searchUi.searchFailed', {
 				requestId,
 				elapsedMs: Date.now() - startedAt,
@@ -456,6 +462,8 @@ async function runSearch(
 				type: 'error',
 				requestId,
 				message: error instanceof Error ? error.message : String(error),
+				recovery: error instanceof McpToolError ? error.recovery : undefined,
+				clearRelationshipAnchor,
 			});
 		}
 	} finally {
@@ -1074,7 +1082,7 @@ function selectionRange(
 	);
 }
 
-function renderSearchUi(webview: vscode.Webview): string {
+function renderSearchUi(): string {
 	const nonce = createNonce();
 	return `<!DOCTYPE html>
 <html lang="en">
@@ -1573,6 +1581,13 @@ const chooseRelationAnchor = id => {
 };
 const relationAnchorInScope = () => !state.relationAnchor || (state.relationAnchor.source === 'workspace' ? state.selectedScopeIds.includes('workspace') : Boolean(state.relationAnchor.addonGuid && state.selectedScopeIds.includes(state.relationAnchor.addonGuid)));
 const clearOutOfScopeRelationAnchor = () => { if (relationAnchorInScope()) return; state.relationAnchor = null; state.relationIncludes = ['direct']; state.relationOpen = false; };
+const setSearchMode = value => { state.mode = value === 'text' ? 'text' : value === 'resource' ? 'resource' : 'semantic'; state.type = 'all'; state.relationOpen = false; state.relationAnchor = null; state.relationIncludes = ['direct']; state.page = 1; render(false); search(true); };
+const setRelationChoice = (value, checked) => { const selected = checked ? [...new Set([...state.relationIncludes, value])] : state.relationIncludes.filter(candidate => candidate !== value); if (!selected.length) return; state.relationIncludes = selected; render(false); search(true); };
+const setRelationDepth = value => { state.relationDepth = value === 'all' ? 'all' : 'direct'; render(false); search(true); };
+const clearRelationAnchor = () => { state.relationAnchor = null; state.relationIncludes = ['direct']; state.relationOpen = false; render(true); search(true); };
+const setScopeChoice = (value, checked) => { state.selectionTouched = true; state.selectedScopeIds = checked ? [...new Set([...state.selectedScopeIds, value])] : state.selectedScopeIds.filter(candidate => candidate !== value); clearOutOfScopeRelationAnchor(); render(false); search(true); };
+const setPreviewContext = value => { const nextContextLines = Math.max(0, Math.min(249, value)); previewContextLines = nextContextLines; render(false); vscode.postMessage({ type: 'previewContext', contextLines: nextContextLines }); };
+const toggleResultLayout = () => { state.resultColumns = state.resultColumns === 2 ? 1 : 2; render(false); };
 const resultBody = content => state.error
   ? '<div class="error">' + esc(state.error) + '</div>'
   : state.mode !== 'resource' && selectedEligibleScopeIds().length === 0
@@ -1599,25 +1614,24 @@ function render(focusQuery = false) {
     query.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); search(true); } });
   }
   document.querySelectorAll('[data-text-option]').forEach(element => element.addEventListener('click', () => { state[element.dataset.textOption] = !state[element.dataset.textOption]; render(false); search(true); }));
-  document.querySelectorAll('[data-mode]').forEach(element => element.addEventListener('click', () => { state.mode = element.dataset.mode === 'text' ? 'text' : element.dataset.mode === 'resource' ? 'resource' : 'semantic'; state.type = 'all'; state.relationOpen = false; state.relationAnchor = null; state.relationIncludes = ['direct']; state.page = 1; render(false); search(true); }));
+  document.querySelectorAll('[data-mode]').forEach(element => element.addEventListener('click', () => setSearchMode(element.dataset.mode)));
   document.querySelectorAll('[data-type]').forEach(element => element.addEventListener('click', () => { state.type = element.dataset.type; state.page = 1; render(false); search(true); }));
   document.querySelectorAll('[data-relation-open]').forEach(element => element.addEventListener('click', () => { state.relationOpen = !state.relationOpen; state.scopeOpen = false; render(false); }));
-  document.querySelectorAll('[data-relation-choice]').forEach(element => element.addEventListener('change', () => { state.relationIncludes = element.checked ? [...new Set([...state.relationIncludes, element.dataset.relationChoice])] : state.relationIncludes.filter(value => value !== element.dataset.relationChoice); render(false); search(true); }));
-  document.querySelectorAll('[data-relation-depth]').forEach(element => element.addEventListener('click', () => { state.relationDepth = element.dataset.relationDepth === 'all' ? 'all' : 'direct'; render(false); search(true); }));
+  document.querySelectorAll('[data-relation-choice]').forEach(element => element.addEventListener('change', () => setRelationChoice(element.dataset.relationChoice, element.checked)));
+  document.querySelectorAll('[data-relation-depth]').forEach(element => element.addEventListener('click', () => setRelationDepth(element.dataset.relationDepth)));
   document.querySelectorAll('[data-relation-anchor]').forEach(element => element.addEventListener('click', event => { event.stopPropagation(); chooseRelationAnchor(element.dataset.relationAnchor); }));
-  document.querySelectorAll('[data-clear-relation-anchor]').forEach(element => element.addEventListener('click', event => { event.stopPropagation(); state.relationAnchor = null; state.relationIncludes = ['direct']; state.relationOpen = false; render(true); search(true); }));
+  document.querySelectorAll('[data-clear-relation-anchor]').forEach(element => element.addEventListener('click', event => { event.stopPropagation(); clearRelationAnchor(); }));
   document.querySelectorAll('[data-scope-open]').forEach(element => element.addEventListener('click', () => { state.scopeOpen = !state.scopeOpen; state.relationOpen = false; render(false); if (state.scopeOpen) focusScopeFilter(state.scopeFilter.length); }));
-  document.querySelectorAll('[data-scope-choice]').forEach(element => element.addEventListener('change', () => { state.selectionTouched = true; state.selectedScopeIds = element.checked ? [...new Set([...state.selectedScopeIds, element.dataset.scopeChoice])] : state.selectedScopeIds.filter(value => value !== element.dataset.scopeChoice); clearOutOfScopeRelationAnchor(); render(false); search(true); }));
+  document.querySelectorAll('[data-scope-choice]').forEach(element => element.addEventListener('change', () => setScopeChoice(element.dataset.scopeChoice, element.checked)));
   document.querySelectorAll('[data-scope-all]').forEach(element => element.addEventListener('click', () => { const eligible = eligibleScopeSources(); const allSelected = allEligibleScopesSelected(); const eligibleIds = new Set(eligible.map(source => source.id)); state.selectionTouched = true; state.selectedScopeIds = allSelected ? state.selectedScopeIds.filter(id => !eligibleIds.has(id)) : [...new Set([...state.selectedScopeIds, ...eligibleIds])]; clearOutOfScopeRelationAnchor(); render(false); search(true); }));
   document.querySelectorAll('[data-scope-filter]').forEach(element => element.addEventListener('input', () => { const selectionStart = element.selectionStart ?? element.value.length; const selectionEnd = element.selectionEnd ?? selectionStart; state.scopeFilter = element.value; render(false); focusScopeFilter(selectionStart, selectionEnd); }));
   document.querySelectorAll('[data-page-prev]').forEach(element => element.addEventListener('click', () => requestPage(state.page - 1)));
   document.querySelectorAll('[data-page-next]').forEach(element => element.addEventListener('click', () => requestPage(state.page + 1)));
   document.querySelectorAll('[data-page-size]').forEach(element => element.addEventListener('change', event => { state.pageSize = Number(event.target.value); search(true); }));
-  const setPreviewContext = value => { const nextContextLines = Math.max(0, Math.min(249, value)); previewContextLines = nextContextLines; render(false); vscode.postMessage({ type: 'previewContext', contextLines: nextContextLines }); };
   document.querySelectorAll('[data-preview-context-down]').forEach(element => element.addEventListener('click', () => setPreviewContext(previewContextLines - 1)));
   document.querySelectorAll('[data-preview-context-auto]').forEach(element => element.addEventListener('click', () => setPreviewContext(0)));
   document.querySelectorAll('[data-preview-context-up]').forEach(element => element.addEventListener('click', () => setPreviewContext(previewContextLines + 1)));
-  document.querySelectorAll('[data-result-layout]').forEach(element => element.addEventListener('click', () => { state.resultColumns = state.resultColumns === 2 ? 1 : 2; render(false); }));
+  document.querySelectorAll('[data-result-layout]').forEach(element => element.addEventListener('click', toggleResultLayout));
   document.querySelectorAll('[data-page-input]').forEach(element => {
     element.addEventListener('change', event => requestPage(event.target.value));
     element.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); requestPage(event.target.value); } });
@@ -1660,7 +1674,7 @@ document.addEventListener('click', event => {
 });
 function requestPage(value) { if (state.status === 'loading') return; const requested = Number.parseInt(value, 10); if (!Number.isFinite(requested)) return; state.page = Math.min(totalPages(), Math.max(1, requested)); search(false); }
 function search(resetPagination) { if (resetPagination) { state.page = 1; } const scopeIds = selectedEligibleScopeIds(); const searchKey = [state.mode, state.query, state.matchCase, state.matchWholeWord, state.useRegex, scopeIds.slice().sort().join(','), state.type, state.relationAnchor?.symbolRef ?? '', state.relationIncludes.slice().sort().join(','), state.relationDepth, state.page, state.pageSize].join('\\u0000'); if (state.status === 'loading' && state.lastSearchKey === searchKey) return; state.lastSearchKey = searchKey; state.error = ''; state.warnings = []; state.status = state.query.trim() || state.relationAnchor ? 'loading' : 'idle'; state.selected = ''; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.uiPerformance.searchStartedAt = performance.now(); state.uiPerformance.lastSearchResponseMs = 0; state.uiPerformance.lastPreviewMessageMs = 0; state.uiPerformance.lastSemanticMessageMs = 0; vscode.postMessage({ type: 'search', query: state.query, searchMode: state.mode, matchCase: state.matchCase, matchWholeWord: state.matchWholeWord, useRegex: state.useRegex, scopeIds, resultType: state.type, relationshipAnchor: state.relationAnchor ? { source: state.relationAnchor.source, symbolRef: state.relationAnchor.symbolRef } : undefined, relationIncludes: state.relationIncludes, relationDepth: state.relationDepth, page: state.page, pageSize: state.pageSize }); }
-window.addEventListener('message', event => { const message = event.data; if (!message) return; if (message.type === 'focusQuery') { document.getElementById('query')?.focus(); return; } if (message.type === 'scope') { const nextSources = Array.isArray(message.scope?.sources) ? message.scope.sources : []; const available = new Set(nextSources.map(source => source.id)); const previous = state.selectedScopeIds.slice(); const previousScopeRevision = state.scopeRevision; state.scopeSources = nextSources; state.scopeRevision = message.scope?.scopeRevision ?? ''; state.scopeAuthority = message.scope?.scopeAuthority ?? ''; state.scopeDiscoveryMs = message.scope?.discoveryMs ?? 0; state.unavailableScopeIds = Array.isArray(message.scope?.unavailableScopeIds) ? message.scope.unavailableScopeIds : []; state.removedScopeIds = previous.filter(id => !available.has(id)); state.selectedScopeIds = state.selectionTouched ? previous.filter(id => available.has(id)) : nextSources.filter(source => source.defaultSelected).map(source => source.id); clearOutOfScopeRelationAnchor(); const scopeSelectionChanged = !sameScopeIds(previous, state.selectedScopeIds); const scopeRevisionChanged = Boolean(previousScopeRevision && state.scopeRevision && previousScopeRevision !== state.scopeRevision); const scopeSearchChanged = scopeSelectionChanged || scopeRevisionChanged; render(false); if (message.refreshSearch === true && scopeSearchChanged && (state.query.trim() || state.relationAnchor)) search(true); return; } if (message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.uiPerformance.lastSearchResponseMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = message.performance ?? {}; state.previewPerformance = {}; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.truncated = message.truncated === true; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'previews') { state.uiPerformance.lastPreviewMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? {}; state.sourcePreviews = { ...state.sourcePreviews, ...(message.previews ?? {}) }; state.matchRanges = { ...state.matchRanges, ...(message.matches ?? {}) }; updateResultPreviews(Object.keys(message.previews ?? {})); } if (message.type === 'semanticPreviews') { state.uiPerformance.lastSemanticMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? state.previewPerformance; state.semanticPreviews = { ...state.semanticPreviews, ...(message.previews ?? {}) }; updateResultPreviews(Object.keys(message.previews ?? {})); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.total = 0; state.truncated = false; state.totalBySource = {}; render(); } });
+window.addEventListener('message', event => { const message = event.data; if (!message) return; if (message.type === 'focusQuery') { document.getElementById('query')?.focus(); return; } if (message.type === 'scope') { const nextSources = Array.isArray(message.scope?.sources) ? message.scope.sources : []; const available = new Set(nextSources.map(source => source.id)); const previous = state.selectedScopeIds.slice(); const previousScopeRevision = state.scopeRevision; state.scopeSources = nextSources; state.scopeRevision = message.scope?.scopeRevision ?? ''; state.scopeAuthority = message.scope?.scopeAuthority ?? ''; state.scopeDiscoveryMs = message.scope?.discoveryMs ?? 0; state.unavailableScopeIds = Array.isArray(message.scope?.unavailableScopeIds) ? message.scope.unavailableScopeIds : []; state.removedScopeIds = previous.filter(id => !available.has(id)); state.selectedScopeIds = state.selectionTouched ? previous.filter(id => available.has(id)) : nextSources.filter(source => source.defaultSelected).map(source => source.id); clearOutOfScopeRelationAnchor(); const scopeSelectionChanged = !sameScopeIds(previous, state.selectedScopeIds); const scopeRevisionChanged = Boolean(previousScopeRevision && state.scopeRevision && previousScopeRevision !== state.scopeRevision); const scopeSearchChanged = scopeSelectionChanged || scopeRevisionChanged; render(false); if (message.refreshSearch === true && scopeSearchChanged && (state.query.trim() || state.relationAnchor)) search(true); return; } if (message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.uiPerformance.lastSearchResponseMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = message.performance ?? {}; state.previewPerformance = {}; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.truncated = message.truncated === true; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'previews') { state.uiPerformance.lastPreviewMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? {}; state.sourcePreviews = { ...state.sourcePreviews, ...(message.previews ?? {}) }; state.matchRanges = { ...state.matchRanges, ...(message.matches ?? {}) }; updateResultPreviews(Object.keys(message.previews ?? {})); } if (message.type === 'semanticPreviews') { state.uiPerformance.lastSemanticMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? state.previewPerformance; state.semanticPreviews = { ...state.semanticPreviews, ...(message.previews ?? {}) }; updateResultPreviews(Object.keys(message.previews ?? {})); } if (message.type === 'error') { if (message.clearRelationshipAnchor) { state.relationAnchor = null; state.relationIncludes = ['direct']; state.relationOpen = false; if (state.query.trim()) { search(true); return; } } state.status = 'error'; state.error = [message.message ?? 'Search failed.', message.recovery].filter(Boolean).join(' '); state.results = []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.total = 0; state.truncated = false; state.totalBySource = {}; render(); } });
 window.addEventListener('message', event => {
   if (event.data?.type !== 'focusQuery') return;
   const query = document.getElementById('query');
@@ -1670,6 +1684,10 @@ render(true);
 </script>
 </body>
 </html>`;
+}
+
+export function renderSearchUiForTest(): string {
+	return renderSearchUi();
 }
 
 function createNonce(): string {

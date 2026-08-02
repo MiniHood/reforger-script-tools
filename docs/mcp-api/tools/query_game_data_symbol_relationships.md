@@ -41,10 +41,7 @@ Query parser-published bounded semantic relationships for one revision-bound Gam
         "type": "string"
       },
       "minItems": 1,
-      "type": [
-        "array",
-        "null"
-      ]
+      "type": "array"
     },
     "symbolRef": {
       "maxLength": 2048,
@@ -53,7 +50,8 @@ Query parser-published bounded semantic relationships for one revision-bound Gam
     }
   },
   "required": [
-    "symbolRef"
+    "symbolRef",
+    "relationshipKinds"
   ],
   "type": "object"
 }

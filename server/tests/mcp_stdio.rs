@@ -65,6 +65,28 @@ fn assert_tool_error_code(response: &Value, code: &str) {
     );
 }
 
+fn with_stale_catalogue_revision(symbol_ref: &Value) -> Value {
+    let symbol_ref = symbol_ref.as_str().expect("symbol reference string");
+    let encoded = symbol_ref
+        .strip_prefix("sr2:")
+        .expect("sr2 symbol reference");
+    let bytes = encoded
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            u8::from_str_radix(std::str::from_utf8(pair).expect("hex pair"), 16).expect("hex byte")
+        })
+        .collect::<Vec<_>>();
+    let mut decoded = serde_json::from_slice::<Value>(&bytes).expect("symbol reference JSON");
+    decoded["catalogueRevision"] = json!("stale-catalogue-revision");
+    let encoded = serde_json::to_vec(&decoded)
+        .expect("serialize stale symbol reference")
+        .into_iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    json!(format!("sr2:{encoded}"))
+}
+
 #[test]
 fn executable_rejects_unknown_modes_without_writing_protocol_output() {
     let output = Command::new(env!("CARGO_BIN_EXE_reforger_language_server"))
@@ -1270,6 +1292,15 @@ fn composed_relationship_tool_discovers_and_pages_cross_source_semantic_edges() 
     client.send(json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"query_source_symbol_relationships","arguments":{"anchorSource":"gameData","symbolRef":anchor,"includeWorkspace":false,"addonGuids":[BASE_GAME_ADDON_GUID],"relationshipKinds":["derivedType","moddedExtension"],"depth":"all","limit":1,"cursor":cursor}}}));
     assert_tool_error_code(&client.response(8), "stale_relationship_cursor");
 
+    let stale_anchor = with_stale_catalogue_revision(&anchor);
+    client.send(json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"query_source_symbol_relationships","arguments":{"anchorSource":"gameData","symbolRef":stale_anchor,"includeWorkspace":true,"addonGuids":[BASE_GAME_ADDON_GUID],"relationshipKinds":["direct"],"depth":"one","limit":20}}}));
+    let stale = client.response(9);
+    assert_tool_error_code(&stale, "stale_relationship_anchor");
+    assert!(stale
+        .pointer("/result/structuredContent/recovery")
+        .and_then(Value::as_str)
+        .is_some_and(|recovery| recovery.contains("rerun semantic discovery")));
+
     client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Move","kinds":["method"]}}}));
     let method_anchor = client
         .response(5)
@@ -1283,6 +1314,78 @@ fn composed_relationship_tool_discovers_and_pages_cross_source_semantic_edges() 
         Some(&json!(2)),
         "{overrides}"
     );
+}
+
+#[test]
+fn composed_relationship_tool_resolves_through_hidden_sources_and_rejects_requested_unavailable_scope(
+) {
+    let fixture = TempFixture::new("mcp_source_relationship_scope");
+    let game_scripts = fixture.path().join("game").join("scripts");
+    let workspace_scripts = fixture.path().join("workspace").join("Scripts");
+    fs::create_dir_all(&game_scripts).unwrap();
+    fs::create_dir_all(&workspace_scripts).unwrap();
+    fs::write(
+        game_scripts.join("Hierarchy.c"),
+        "class Vehicle {}\nclass Leaf : Middle {}\n",
+    )
+    .unwrap();
+    fs::write(
+        workspace_scripts.join("Middle.c"),
+        "class Middle : Vehicle {}\n",
+    )
+    .unwrap();
+    let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    let game_data = build_game_data_cache(&game_scripts, &cache_path);
+
+    let mut unavailable = McpClient::spawn_owned(&game_data.arguments);
+    unavailable.initialize(1);
+    unavailable.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Vehicle","kinds":["class"]}}}));
+    let unavailable_anchor = unavailable
+        .response(2)
+        .pointer("/result/structuredContent/results/0/symbolRef")
+        .cloned()
+        .expect("exact Game Data anchor");
+    unavailable.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query_source_symbol_relationships","arguments":{"anchorSource":"gameData","symbolRef":unavailable_anchor,"includeWorkspace":true,"addonGuids":[BASE_GAME_ADDON_GUID],"relationshipKinds":["derivedType"],"depth":"all","limit":20}}}));
+    assert_tool_error_code(&unavailable.response(3), "source_relationships_unavailable");
+    unavailable.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"query_source_symbol_relationships","arguments":{"anchorSource":"gameData","symbolRef":unavailable_anchor,"includeWorkspace":false,"addonGuids":[BASE_GAME_ADDON_GUID,"DEADBEEFDEADBEEF"],"relationshipKinds":["derivedType"],"depth":"all","limit":20}}}));
+    let unavailable_addon = unavailable.response(4);
+    assert_tool_error_code(&unavailable_addon, "source_relationships_unavailable");
+    assert!(unavailable_addon
+        .pointer("/result/structuredContent/message")
+        .and_then(Value::as_str)
+        .is_some_and(|message| message.contains("DEADBEEFDEADBEEF")));
+    unavailable.close_stdin();
+    assert!(unavailable.wait_for_exit(Duration::from_secs(3)));
+
+    let mut arguments = game_data.arguments;
+    arguments.push("--workspace-scripts".to_string());
+    arguments.push(workspace_scripts.to_string_lossy().into_owned());
+    let mut hidden = McpClient::spawn_owned(&arguments);
+    hidden.initialize(4);
+    hidden.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Vehicle","kinds":["class"]}}}));
+    let anchor = hidden
+        .response(5)
+        .pointer("/result/structuredContent/results/0/symbolRef")
+        .cloned()
+        .expect("exact Game Data anchor");
+    hidden.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"query_source_symbol_relationships","arguments":{"anchorSource":"gameData","symbolRef":anchor,"includeWorkspace":false,"addonGuids":[BASE_GAME_ADDON_GUID],"relationshipKinds":["derivedType"],"depth":"all","limit":20}}}));
+    let response = hidden.response(6);
+    assert_eq!(
+        response.pointer("/result/structuredContent/results/0/qualifiedName"),
+        Some(&json!("Leaf")),
+        "{response}"
+    );
+    assert_eq!(
+        response.pointer("/result/structuredContent/results/0/distance"),
+        Some(&json!(2)),
+        "{response}"
+    );
+    assert!(response
+        .pointer("/result/structuredContent/warnings")
+        .and_then(Value::as_array)
+        .is_some_and(|warnings| warnings.iter().any(|warning| warning
+            .as_str()
+            .is_some_and(|warning| warning.contains("hidden by the selected output scope")))));
 }
 
 #[test]
@@ -2107,6 +2210,60 @@ fn ready_game_data_operations_use_their_own_five_second_deadline() {
         "a ready Game Data operation must not inherit the cold initialization deadline",
     );
     assert_tool_error_code(&response, "deadline_exceeded");
+}
+
+#[test]
+fn source_relationship_cancellation_and_deadline_leave_the_runtime_responsive() {
+    let fixture = TempFixture::new("mcp_source_relationship_bounds");
+    let scripts_root = fixture.path().join("scripts");
+    fs::create_dir_all(&scripts_root).expect("create scripts fixture");
+    let mut source = "class Deadline {}\n".to_string();
+    for index in 0..5_000 {
+        source.push_str(&format!("class DeadlineFanout{index} : Deadline {{}}\n"));
+    }
+    fs::write(scripts_root.join("Deadline.c"), source).expect("write game-data fixture");
+    let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
+
+    let mut discovery = McpClient::spawn_owned(&game_data.arguments);
+    discovery.initialize(1);
+    discovery.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Deadline","kinds":["class"]}}}));
+    let anchor = discovery
+        .response(2)
+        .pointer("/result/structuredContent/results/0/symbolRef")
+        .cloned()
+        .expect("exact relationship anchor");
+    discovery.close_stdin();
+    assert!(discovery.wait_for_exit(Duration::from_secs(3)));
+
+    let environment = &[
+        ("REFORGER_MCP_TEST_GAME_DATA_OPERATION_DELAY_MS", "5000"),
+        ("REFORGER_MCP_TEST_GAME_DATA_OPERATION_DEADLINE_MS", "1"),
+        ("REFORGER_MCP_TEST_INITIALIZATION_DEADLINE_MS", "1"),
+    ];
+    let mut cancelled = McpClient::spawn_owned_with_env(&game_data.arguments, environment);
+    cancelled.initialize(1);
+    cancelled.send(status_call(2));
+    let _ = cancelled.response(2);
+    cancelled.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query_source_symbol_relationships","arguments":{"anchorSource":"gameData","symbolRef":anchor,"includeWorkspace":false,"addonGuids":[BASE_GAME_ADDON_GUID],"relationshipKinds":["derivedType"],"depth":"all","limit":100}}}));
+    cancelled.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":3,"reason":"cancel broad source relationship query"}}));
+    cancelled.send(json!({"jsonrpc":"2.0","id":4,"method":"ping","params":{}}));
+    assert!(cancelled
+        .responses_until(4)
+        .iter()
+        .all(|response| response.get("id") != Some(&json!(3))));
+    cancelled.close_stdin();
+    assert!(cancelled.wait_for_exit(Duration::from_secs(3)));
+
+    let mut deadline = McpClient::spawn_owned_with_env(&game_data.arguments, environment);
+    deadline.initialize(1);
+    let started = std::time::Instant::now();
+    deadline.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query_source_symbol_relationships","arguments":{"anchorSource":"gameData","symbolRef":anchor,"includeWorkspace":false,"addonGuids":[BASE_GAME_ADDON_GUID],"relationshipKinds":["derivedType"],"depth":"all","limit":100}}}));
+    let response = deadline.response(3);
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert_tool_error_code(&response, "deadline_exceeded");
+    deadline.send(json!({"jsonrpc":"2.0","id":4,"method":"ping","params":{}}));
+    assert_eq!(deadline.response(4).get("result"), Some(&json!({})));
 }
 
 #[test]

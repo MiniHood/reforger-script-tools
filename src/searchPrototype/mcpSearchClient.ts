@@ -369,6 +369,17 @@ interface JsonRpcResult {
 	};
 }
 
+export class McpToolError extends Error {
+	public constructor(
+		message: string,
+		public readonly code: string | undefined,
+		public readonly recovery: string | undefined,
+	) {
+		super(message);
+		this.name = 'McpToolError';
+	}
+}
+
 interface PendingRequest {
 	resolve: (value: JsonRpcResult) => void;
 	reject: (error: Error) => void;
@@ -481,6 +492,7 @@ export class McpSearchClient {
 	private initialized: Promise<void> | undefined;
 	private readonly searchPageCaches = new Map<string, Map<number, CachedSearchPage>>();
 	private lastScopeRevision: string | undefined;
+	private lastCatalogueRevision: string | undefined;
 
 	public constructor(private readonly options: McpSearchClientOptions) {}
 
@@ -592,10 +604,13 @@ export class McpSearchClient {
 		await this.start();
 		const status = asRecord(await this.callTool('game_data_status', {}));
 		const scopeRevision = asOptionalString(status.scopeRevision);
-		if (this.lastScopeRevision && scopeRevision && this.lastScopeRevision !== scopeRevision) {
+		const catalogueRevision = asOptionalString(status.catalogueRevision);
+		if ((this.lastScopeRevision && scopeRevision && this.lastScopeRevision !== scopeRevision)
+			|| (this.lastCatalogueRevision && catalogueRevision && this.lastCatalogueRevision !== catalogueRevision)) {
 			this.searchPageCaches.clear();
 		}
 		this.lastScopeRevision = scopeRevision;
+		this.lastCatalogueRevision = catalogueRevision;
 		const addons = Array.isArray(status.addons) ? status.addons : [];
 		const unavailableScopeIds = addons.flatMap(value => {
 			const addon = asRecord(value);
@@ -663,17 +678,18 @@ export class McpSearchClient {
 		}
 		const sourceTrace = sourcePerformanceFor(trace, request.anchor.source);
 		const initialStartedAt = performance.now();
-		for (let pageNumber = 1; pageNumber <= requestedPage; pageNumber += 1) {
-			if (pages.has(pageNumber)) {
-				sourceTrace.cacheHits += 1;
-				continue;
-			}
-			const previous = pageNumber > 1 ? pages.get(pageNumber - 1) : undefined;
-			if (pageNumber > 1 && !previous?.nextCursor) {
-				break;
-			}
-			const remoteStartedAt = performance.now();
-			const value = asRecord(await this.callTool('query_source_symbol_relationships', {
+		try {
+			for (let pageNumber = 1; pageNumber <= requestedPage; pageNumber += 1) {
+				if (pageNumber > 1 && pages.has(pageNumber)) {
+					sourceTrace.cacheHits += 1;
+					continue;
+				}
+				const previous = pageNumber > 1 ? pages.get(pageNumber - 1) : undefined;
+				if (pageNumber > 1 && !previous?.nextCursor) {
+					break;
+				}
+				const remoteStartedAt = performance.now();
+				const value = asRecord(await this.callTool('query_source_symbol_relationships', {
 				anchorSource: request.anchor.source,
 				symbolRef: request.anchor.symbolRef,
 				includeWorkspace,
@@ -683,21 +699,35 @@ export class McpSearchClient {
 				limit: pageSize,
 				...(request.symbolKinds?.length ? { kinds: request.symbolKinds } : {}),
 				...(previous?.nextCursor ? { cursor: previous.nextCursor } : {}),
-			}));
-			const results = normalizeSourceRelationshipPage(value);
-			pages.set(pageNumber, {
+				}));
+				const results = normalizeSourceRelationshipPage(value);
+				const previousRevision = pageNumber === 1 && pages.get(1)?.stats
+					? asOptionalString(pages.get(1)?.stats?.relationshipRevision)
+					: undefined;
+				const relationshipRevision = asOptionalString(value.relationshipRevision);
+				if (pageNumber === 1 && previousRevision && relationshipRevision && previousRevision !== relationshipRevision) {
+					pages.clear();
+				}
+				pages.set(pageNumber, {
 				results,
 				total: asNumber(value.total, results.length),
 				truncated: value.truncated === true,
 				...(asOptionalString(value.nextCursor) ? { nextCursor: asOptionalString(value.nextCursor) } : {}),
 				stats: {
-					relationshipRevision: value.relationshipRevision,
+					relationshipRevision,
 					warnings: Array.isArray(value.warnings) ? value.warnings : [],
 				},
-			});
-			sourceTrace.remoteRequests += 1;
-			sourceTrace.remoteMs += performance.now() - remoteStartedAt;
-			recordVisitedPage(sourceTrace, pageNumber);
+				});
+				sourceTrace.remoteRequests += 1;
+				sourceTrace.remoteMs += performance.now() - remoteStartedAt;
+				recordVisitedPage(sourceTrace, pageNumber);
+			}
+		} catch (error) {
+			if (error instanceof McpToolError && error.code === 'stale_relationship_cursor' && requestedPage > 1) {
+				this.searchPageCaches.delete(cacheKey);
+				return this.searchRelationships({ ...request, page: 1 });
+			}
+			throw error;
 		}
 		trace.initialSearchMs = performance.now() - initialStartedAt;
 		const normalizedPage = pages.has(requestedPage) ? requestedPage : 1;
@@ -788,6 +818,7 @@ export class McpSearchClient {
 		this.initialized = undefined;
 		this.searchPageCaches.clear();
 		this.lastScopeRevision = undefined;
+		this.lastCatalogueRevision = undefined;
 		const error = new Error('The Reforger search session was closed.');
 		for (const request of this.pending.values()) {
 			request.reject(error);
@@ -881,6 +912,7 @@ export class McpSearchClient {
 			this.initialized = undefined;
 			this.searchPageCaches.clear();
 			this.lastScopeRevision = undefined;
+			this.lastCatalogueRevision = undefined;
 			this.failPending(new Error('The Reforger search server stopped.'));
 		});
 		child.stdin.on('error', error => this.failPending(error));
@@ -901,7 +933,11 @@ export class McpSearchClient {
 		});
 		if (response.result?.isError) {
 			const structured = asRecord(response.result.structuredContent);
-			throw new Error(asString(structured.message, `MCP tool ${tool} failed.`));
+			throw new McpToolError(
+				asString(structured.message, `MCP tool ${tool} failed.`),
+				typeof structured.code === 'string' ? structured.code : undefined,
+				typeof structured.recovery === 'string' ? structured.recovery : undefined,
+			);
 		}
 		return response.result?.structuredContent ?? {};
 	}

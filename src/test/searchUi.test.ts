@@ -1,9 +1,11 @@
 import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as vm from 'node:vm';
 import { searchLimits } from '../extensionConfig/search';
-import { addonScopeLabel, formatSearchKind, maxSearchPages, normalizeResourceSearchPage, normalizeSearchPage, normalizeSourceRelationshipPage, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceContextPreview, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
+import { addonScopeLabel, formatSearchKind, maxSearchPages, McpToolError, normalizeResourceSearchPage, normalizeSearchPage, normalizeSourceRelationshipPage, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceContextPreview, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
 import { semanticPreviewForLine, semanticPreviewForLines, semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
+import { renderSearchUiForTest } from '../searchPrototype/searchUiPrototype';
 
 const searchUiSource = fs.readFileSync(
 	path.join(__dirname, '../../src/searchPrototype/searchUiPrototype.ts'),
@@ -349,7 +351,7 @@ suite('Reforger search UI MCP mapping', () => {
 	});
 
 	test('uses one concise Source Search heading over the shared grouped match surface', () => {
-		assert.match(searchUiSource, /function renderSearchUi\(webview: vscode\.Webview\): string/);
+		assert.match(searchUiSource, /function renderSearchUi\(\): string/);
 		assert.doesNotMatch(searchUiSource, /prototypeSwitcher|pageRenderers|prototypeVariant/);
 		assert.match(searchUiSource, /class="search-masthead"/);
 		assert.match(searchUiSource, /<section class="search-masthead"><h1>Source Search<\/h1><\/section>/);
@@ -402,6 +404,87 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchClientSource, /query_source_symbol_relationships/);
 	});
 
+	test('executes relationship webview state transitions through the shipped runtime script', () => {
+		const harness = createSearchWebviewHarness();
+		harness.message({
+			type: 'scope',
+			scope: {
+				scopeRevision: 'scope-1',
+				sources: [
+					{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', defaultSelected: true },
+					{ id: 'game-guid', label: 'Game', detail: 'Loaded', kind: 'addon', defaultSelected: true },
+					{ id: 'wiki', label: 'Wiki', detail: 'Docs', kind: 'wiki', defaultSelected: true },
+				],
+			},
+		});
+		harness.evaluate("state.query = 'Vehicle'");
+		harness.message({
+			type: 'results',
+			requestId: 1,
+			page: 1,
+			pageSize: 25,
+			total: 60,
+			results: [{
+				id: 'vehicle', source: 'gameData', addonGuid: 'game-guid', addonLabel: 'Game',
+				kind: 'symbol', symbolKind: 'class', symbolRef: 'sr2:vehicle', title: 'Vehicle',
+				qualifiedName: 'Vehicle', signature: 'class Vehicle', detail: 'class', path: 'Vehicle.c', excerpt: 'class Vehicle',
+			}],
+		});
+
+		harness.evaluate("chooseRelationAnchor('vehicle')");
+		assert.deepStrictEqual(harness.evaluate('state.relationIncludes'), ['direct']);
+		assert.strictEqual(harness.evaluate('state.relationAnchor.symbolRef'), 'sr2:vehicle');
+		assert.deepStrictEqual(
+			harness.evaluate('relationOptionsForAnchor().map(option => option.value)'),
+			['direct', 'parents', 'children', 'modded'],
+		);
+		harness.evaluate("setRelationChoice('parents', true)");
+		harness.evaluate("setRelationChoice('direct', false)");
+		harness.evaluate("setRelationChoice('parents', false)");
+		assert.deepStrictEqual(harness.evaluate('state.relationIncludes'), ['parents'], 'the last relationship choice remains selected');
+		harness.evaluate("setRelationDepth('all')");
+		assert.strictEqual(harness.evaluate('state.relationDepth'), 'all');
+		assert.strictEqual(lastPosted(harness.posted, 'search').relationDepth, 'all');
+
+		harness.evaluate("state.status = 'ready'; requestPage(2)");
+		assert.strictEqual(lastPosted(harness.posted, 'search').page, 2);
+		harness.evaluate("state.relationAnchor.symbolKind = 'method'");
+		assert.deepStrictEqual(
+			harness.evaluate('relationOptionsForAnchor().map(option => option.value)'),
+			['direct', 'baseMembers', 'overrides'],
+		);
+
+		harness.evaluate("setScopeChoice('game-guid', false)");
+		assert.strictEqual(harness.evaluate('state.relationAnchor'), null, 'removing the anchor source clears relationship mode');
+		assert.strictEqual(lastPosted(harness.posted, 'search').query, 'Vehicle');
+		harness.evaluate("setScopeChoice('game-guid', true); state.status = 'ready'; chooseRelationAnchor('vehicle')");
+		harness.message({
+			type: 'error', requestId: 20, clearRelationshipAnchor: true,
+			message: 'Stale anchor', recovery: 'Rerun semantic discovery.',
+		});
+		assert.strictEqual(harness.evaluate('state.relationAnchor'), null);
+		assert.strictEqual(lastPosted(harness.posted, 'search').relationshipAnchor, undefined);
+
+		harness.evaluate("state.status = 'ready'; chooseRelationAnchor('vehicle'); setSearchMode('text')");
+		assert.strictEqual(harness.evaluate('state.mode'), 'text');
+		assert.strictEqual(harness.evaluate('state.relationAnchor'), null);
+
+		harness.evaluate(`state.results = [
+			{ id: 'vehicle', source: 'gameData', addonLabel: 'Game', kind: 'symbol', symbolKind: 'class', title: 'Vehicle', detail: 'class', path: 'Vehicle.c', excerpt: 'class Vehicle', relationshipKind: 'direct' },
+			{ id: 'child', source: 'workspace', kind: 'symbol', symbolKind: 'class', title: 'Car', detail: 'class', path: 'Car.c', excerpt: 'class Car', relationshipKind: 'derivedType', relationshipDistance: 2 }
+		]`);
+		const grouped = harness.evaluate<string>('resultGroups()');
+		assert.match(grouped, /<h2>Game<\/h2>/);
+		assert.match(grouped, /<h2>Workspace<\/h2>/);
+		assert.match(grouped, /Child/);
+		harness.evaluate('toggleResultLayout()');
+		assert.match(harness.evaluate<string>('resultGroups()'), /atlas-results two-column/);
+		harness.evaluate('setPreviewContext(3); setPreviewContext(0)');
+		assert.strictEqual(lastPosted(harness.posted, 'previewContext').contextLines, 0);
+		harness.evaluate("openResult({ dataset: { open: 'child' } })");
+		assert.strictEqual(lastPosted(harness.posted, 'open').id, 'child');
+	});
+
 	test('normalizes cross-source relationship declarations into the existing result-card contract', () => {
 		const results = normalizeSourceRelationshipPage({
 			results: [{
@@ -429,6 +512,21 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.strictEqual(results[0].relationshipKind, 'derivedType');
 		assert.strictEqual(results[0].relationshipDistance, 2);
 		assert.strictEqual(results[0].readInput.addonGuid, '58D0FB3206B6F859');
+	});
+
+	test('preserves structured stale-anchor recovery and returns to broad discovery', () => {
+		const error = new McpToolError(
+			'The relationship anchor is stale.',
+			'stale_relationship_anchor',
+			'Rerun semantic discovery.',
+		);
+		assert.strictEqual(error.code, 'stale_relationship_anchor');
+		assert.strictEqual(error.recovery, 'Rerun semantic discovery.');
+		assert.match(searchUiSource, /clearRelationshipAnchor = Boolean\(relationship && error instanceof McpToolError/);
+		assert.match(searchUiSource, /if \(message\.clearRelationshipAnchor\) \{ state\.relationAnchor = null; state\.relationIncludes = \['direct'\]; state\.relationOpen = false; if \(state\.query\.trim\(\)\) \{ search\(true\); return; \} \}/);
+		assert.match(searchClientSource, /const catalogueRevision = asOptionalString\(status\.catalogueRevision\)/);
+		assert.match(searchClientSource, /if \(pageNumber > 1 && pages\.has\(pageNumber\)\)/);
+		assert.match(searchClientSource, /error\.code === 'stale_relationship_cursor'[\s\S]*?return this\.searchRelationships\(\{ \.\.\.request, page: 1 \}\)/);
 	});
 
 	test('keeps opening and closing Search Scope presentation-only', () => {
@@ -738,3 +836,77 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchClientSource, /search_workspace_text/);
 	});
 });
+
+interface SearchWebviewHarness {
+	posted: Array<Record<string, unknown>>;
+	evaluate<T = unknown>(source: string): T;
+	message(data: Record<string, unknown>): void;
+}
+
+function createSearchWebviewHarness(): SearchWebviewHarness {
+	const html = renderSearchUiForTest();
+	const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map(match => match[1]);
+	assert.ok(scripts.length >= 2, 'expected the shipped webview runtime script');
+	const posted: Array<Record<string, unknown>> = [];
+	const listeners = new Map<string, Array<(event: { data: Record<string, unknown> }) => void>>();
+	const app = { innerHTML: '' };
+	const body = {};
+	const documentObject = {
+		body,
+		activeElement: body,
+		getElementById: (id: string) => id === 'app' ? app : undefined,
+		querySelectorAll: () => [],
+		querySelector: () => undefined,
+		addEventListener: () => undefined,
+	};
+	const windowObject = {
+		__reforgerSearchVscode: {
+			postMessage: (message: Record<string, unknown>) => {
+				posted.push(JSON.parse(JSON.stringify(message)) as Record<string, unknown>);
+			},
+		},
+		innerWidth: 1280,
+		innerHeight: 720,
+		devicePixelRatio: 1,
+		getSelection: () => ({ toString: () => '' }),
+		addEventListener: (type: string, listener: (event: { data: Record<string, unknown> }) => void) => {
+			listeners.set(type, [...(listeners.get(type) ?? []), listener]);
+		},
+	};
+	const context = vm.createContext({
+		window: windowObject,
+		document: documentObject,
+		performance: { now: () => Date.now() },
+		setTimeout,
+		clearTimeout,
+		console,
+	});
+	vm.runInContext(scripts.at(-1) ?? '', context);
+	return {
+		posted,
+		evaluate<T>(source: string): T {
+			const value = vm.runInContext(source, context) as T;
+			if (value === undefined) {
+				return value;
+			}
+			return JSON.parse(JSON.stringify(value)) as T;
+		},
+		message(data: Record<string, unknown>): void {
+			for (const listener of listeners.get('message') ?? []) {
+				listener({ data });
+			}
+		},
+	};
+}
+
+function lastPosted(
+	posted: Array<Record<string, unknown>>,
+	type: string,
+): Record<string, unknown> {
+	for (let index = posted.length - 1; index >= 0; index -= 1) {
+		if (posted[index].type === type) {
+			return posted[index];
+		}
+	}
+	assert.fail(`expected a ${type} webview message`);
+}

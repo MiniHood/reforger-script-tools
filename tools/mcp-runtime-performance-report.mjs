@@ -71,8 +71,8 @@ async function runReport(configuration) {
 	}
 
 	const coldProcess = await measureColdProcesses(configuration);
-	const exercised = operations.filter(operation => !['skipped', 'missing'].includes(operation.status)).length;
-	const skipped = operations.filter(operation => ['skipped', 'missing'].includes(operation.status)).length;
+	const exercised = operations.filter(operation => !operation.synthetic && !['skipped', 'missing'].includes(operation.status)).length;
+	const skipped = operations.filter(operation => !operation.synthetic && ['skipped', 'missing'].includes(operation.status)).length;
 	const correctnessFailures = operations.filter(operation => ['tool-error', 'runner-error', 'unstable-result'].includes(operation.status)).length;
 	const overBudget = operations.reduce(
 		(total, operation) => total
@@ -92,6 +92,8 @@ async function runReport(configuration) {
 		server: resolve(configuration.server),
 		configuration: {
 			commit: configuration.commit,
+			buildProfile: configuration.buildProfile,
+			acceptProjectionMemory: configuration.acceptProjectionMemory,
 			samples: configuration.samples,
 			concurrencyLevels: configuration.concurrencyLevels,
 			timeoutMs: configuration.timeoutMs,
@@ -100,8 +102,29 @@ async function runReport(configuration) {
 			coldSamples: configuration.coldSamples,
 			workspaceRootCount: configuration.workspaceScripts.length,
 			workspaceRoots: configuration.workspaceScripts.map(root => resolve(root)),
+			workspaceIndexInventory: configuration.workspaceIndexInventory
+				? {
+					path: resolve(configuration.workspaceIndexInventory.path),
+					sha256: configuration.workspaceIndexInventory.sha256,
+					indexedSymbols: configuration.workspaceIndexInventory.indexedSymbols,
+				}
+				: undefined,
 			dependencyProjectCount: configuration.dependencyProjects.length,
+			dependencyProjects: configuration.dependencyProjects.map(project => resolve(project)),
+			addonSourceInventory: configuration.addonSourceInventory ? resolve(configuration.addonSourceInventory) : undefined,
+			addonIndexStorage: configuration.addonIndexStorage ? resolve(configuration.addonIndexStorage) : undefined,
+			officialWikiRoot: configuration.officialWikiRoot ? resolve(configuration.officialWikiRoot) : undefined,
 			externalIndexMode: configuration.externalIndexMode,
+			queries: {
+				gameSymbol: configuration.gameSymbolQuery,
+				workspaceSymbol: configuration.workspaceSymbolQuery,
+				text: configuration.textQuery,
+				broadText: configuration.broadTextQuery,
+				regex: configuration.regexQuery,
+				wiki: configuration.wikiQuery,
+				exampleTopic: configuration.exampleTopic,
+				relationshipMethod: configuration.relationshipMethodQuery,
+			},
 		},
 		host: {
 			hostname: hostname(),
@@ -131,7 +154,11 @@ async function runReport(configuration) {
 
 async function measurePairedRuns(configuration) {
 	if (!configuration.pairedBaselineServer) return undefined;
-	const cold = { baselineInitialize: [], candidateInitialize: [], baselineStatus: [], candidateStatus: [] };
+	const cold = {
+		baselineInitialize: [], candidateInitialize: [],
+		baselineToolsList: [], candidateToolsList: [],
+		baselineStatus: [], candidateStatus: [],
+	};
 	for (let pair = 0; pair < configuration.coldSamples; pair += 1) {
 		const order = pair % 2 === 0 ? ['baseline', 'candidate'] : ['candidate', 'baseline'];
 		for (const label of order) {
@@ -140,6 +167,8 @@ async function measurePairedRuns(configuration) {
 			try {
 				await client.initialize();
 				cold[`${label}Initialize`].push(client.processElapsedMs());
+				const toolsList = await measure(() => client.listTools());
+				cold[`${label}ToolsList`].push(toolsList.elapsedMs);
 				const status = await measure(() => client.callTool('game_data_status', {}));
 				cold[`${label}Status`].push(status.elapsedMs);
 			} finally {
@@ -151,44 +180,86 @@ async function measurePairedRuns(configuration) {
 		baseline: new McpClient(resolve(configuration.pairedBaselineServer), serverArguments(configuration), configuration.timeoutMs),
 		candidate: new McpClient(resolve(configuration.server), serverArguments(configuration), configuration.timeoutMs),
 	};
+	const contexts = {};
 	const scenarios = [
+		{ name: 'game_data_status', argumentsValue: {} },
 		{ name: 'search_game_data_symbols', argumentsValue: { query: configuration.gameSymbolQuery, limit: 20 } },
 		{ name: 'search_workspace_symbols', argumentsValue: { query: configuration.workspaceSymbolQuery, limit: 20 } },
+		{
+			name: 'current_mixed_source_client_search',
+			invoke: async client => {
+				const [gameData, workspace] = await Promise.all([
+					client.callTool('search_game_data_symbols', { query: configuration.gameSymbolQuery, limit: 20 }),
+					client.callTool('search_workspace_symbols', { query: configuration.workspaceSymbolQuery, limit: 20 }),
+				]);
+				return mergeSemanticSearchResponses(gameData, workspace);
+			},
+		},
+		{ name: 'search_game_data_text', argumentsValue: { query: configuration.textQuery, limit: 20 } },
+		{ name: 'search_workspace_text', argumentsValue: { query: configuration.textQuery, limit: 20 } },
+		{ name: 'inspect_game_data_symbol', argumentsValue: label => ({ symbolRef: contexts[label].gameResult.symbolRef }) },
+		{ name: 'list_game_data_symbol_members', argumentsValue: label => ({ symbolRef: contexts[label].gameResult.symbolRef, limit: 20 }) },
+		{ name: 'read_game_data_source', argumentsValue: label => contexts[label].gameResult.readSourceInput },
+		{ name: 'inspect_workspace_symbol', argumentsValue: label => ({ symbolRef: contexts[label].workspaceResult.symbolRef }) },
+		{ name: 'list_workspace_symbol_members', argumentsValue: label => ({ symbolRef: contexts[label].workspaceResult.symbolRef, limit: 20 }) },
+		{ name: 'query_workspace_symbol_relationships', argumentsValue: label => ({ symbolRef: contexts[label].workspaceResult.symbolRef, relationshipKinds: ['reference'], limit: 20 }) },
+		{ name: 'read_workspace_source', argumentsValue: label => contexts[label].workspaceResult.readSourceInput },
+		{ name: 'official_wiki_status', argumentsValue: {} },
 	];
-	const records = new Map(scenarios.map(scenario => [scenario.name, { baseline: [], candidate: [], fingerprints: { baseline: [], candidate: [] } }]));
+	const invokeScenario = (client, scenario, label) => scenario.invoke
+		? scenario.invoke(client, label)
+		: client.callTool(
+			scenario.name,
+			typeof scenario.argumentsValue === 'function' ? scenario.argumentsValue(label) : scenario.argumentsValue,
+		);
 	try {
-		for (const client of Object.values(clients)) {
+		for (const [label, client] of Object.entries(clients)) {
 			await client.initialize();
 			await client.callTool('game_data_status', {});
-			for (const scenario of scenarios) await client.callTool(scenario.name, scenario.argumentsValue);
+			const gameSearch = summarizeResult(await client.callTool('search_game_data_symbols', { query: configuration.gameSymbolQuery, limit: 20 })).structured;
+			const workspaceSearch = summarizeResult(await client.callTool('search_workspace_symbols', { query: configuration.workspaceSymbolQuery, limit: 20 })).structured;
+			contexts[label] = {
+				gameResult: firstResult(gameSearch),
+				workspaceResult: firstResult(workspaceSearch),
+			};
 		}
+		if (Object.values(contexts).every(context => context.gameResult?.symbolRef && context.gameResult?.readSourceInput
+			&& context.workspaceResult?.symbolRef && context.workspaceResult?.readSourceInput)) {
+			const records = new Map(scenarios.map(scenario => [scenario.name, { baseline: [], candidate: [], fingerprints: { baseline: [], candidate: [] } }]));
+			for (const [label, client] of Object.entries(clients)) {
+				for (const scenario of scenarios) await invokeScenario(client, scenario, label);
+			}
 		for (let sample = 0; sample < configuration.samples; sample += 1) {
 			const order = sample % 2 === 0 ? ['baseline', 'candidate'] : ['candidate', 'baseline'];
 			for (const scenario of scenarios) {
 				for (const label of order) {
-					const measured = await measure(() => clients[label].callTool(scenario.name, scenario.argumentsValue));
+					const measured = await measure(() => invokeScenario(clients[label], scenario, label));
 					const record = records.get(scenario.name);
 					record[label].push(measured.elapsedMs);
 					record.fingerprints[label].push(resultFingerprint(measured.value));
 				}
 			}
 		}
+			contexts.records = records;
+		}
 	} finally {
 		await Promise.all(Object.values(clients).map(client => client.close()));
 	}
 	const coldDistributions = Object.fromEntries(Object.entries(cold).map(([name, values]) => [name, distribution(values)]));
-	const coldMedianBudgetMs = Math.max(coldDistributions.baselineInitialize.medianMs + 5, coldDistributions.baselineInitialize.medianMs * 1.1);
-	const coldP95BudgetMs = Math.max(coldDistributions.baselineInitialize.p95Ms + 10, coldDistributions.baselineInitialize.p95Ms * 1.2);
+	const coldPhases = {
+		processToInitialize: pairedRegressionGate(coldDistributions.baselineInitialize, coldDistributions.candidateInitialize),
+		toolsList: pairedRegressionGate(coldDistributions.baselineToolsList, coldDistributions.candidateToolsList),
+		gameDataReadiness: pairedRegressionGate(coldDistributions.baselineStatus, coldDistributions.candidateStatus),
+	};
+	const records = contexts.records ?? new Map();
 	return {
 		method: 'Alternating baseline/candidate order per cold pair and warm sample; one uncounted warm-up per operation.',
 		cold: coldDistributions,
 		coldGate: {
-			medianBudgetMs: round(coldMedianBudgetMs),
-			p95BudgetMs: round(coldP95BudgetMs),
-			status: coldDistributions.candidateInitialize.medianMs <= coldMedianBudgetMs
-				&& coldDistributions.candidateInitialize.p95Ms <= coldP95BudgetMs ? 'pass' : 'fail',
+			status: Object.values(coldPhases).every(gate => gate.status === 'pass') ? 'pass' : 'fail',
+			phases: coldPhases,
 		},
-		operations: scenarios.map(scenario => {
+		operations: scenarios.filter(scenario => records.has(scenario.name)).map(scenario => {
 			const record = records.get(scenario.name);
 			const baseline = distribution(record.baseline);
 			const candidate = distribution(record.candidate);
@@ -206,6 +277,33 @@ async function measurePairedRuns(configuration) {
 				status: fingerprintsMatch && candidate.medianMs <= medianBudgetMs && candidate.p95Ms <= p95BudgetMs ? 'pass' : 'fail',
 			};
 		}),
+	};
+}
+
+function pairedRegressionGate(baseline, candidate) {
+	const medianBudgetMs = Math.max(baseline.medianMs + 5, baseline.medianMs * 1.1);
+	const p95BudgetMs = Math.max(baseline.p95Ms + 10, baseline.p95Ms * 1.2);
+	return {
+		medianBudgetMs: round(medianBudgetMs),
+		p95BudgetMs: round(p95BudgetMs),
+		status: candidate.medianMs <= medianBudgetMs && candidate.p95Ms <= p95BudgetMs ? 'pass' : 'fail',
+	};
+}
+
+function mergeSemanticSearchResponses(gameData, workspace) {
+	const gameSummary = summarizeResult(gameData);
+	const workspaceSummary = summarizeResult(workspace);
+	const results = [
+		...(gameSummary.structured?.results ?? []).map(result => ({ ...result, source: 'gameData' })),
+		...(workspaceSummary.structured?.results ?? []).map(result => ({ ...result, source: 'workspace' })),
+	];
+	return {
+		isError: gameSummary.isError || workspaceSummary.isError,
+		structuredContent: {
+			returned: results.length,
+			total: (gameSummary.public.total ?? 0) + (workspaceSummary.public.total ?? 0),
+			results,
+		},
 	};
 }
 
@@ -263,6 +361,7 @@ class ScenarioRunner {
 				: 'pass';
 		const operation = {
 			name,
+			scenario: settings.scenario,
 			family: toolFamily(name),
 			status,
 			firstMs: round(first.elapsedMs),
@@ -276,7 +375,8 @@ class ScenarioRunner {
 			...summary.public,
 		};
 		this.operations.push(operation);
-		if (!summary.isError && isConcurrencyCandidate(name)) {
+		if (!summary.isError && (name === 'query_source_symbol_relationships'
+			|| (!this.concurrencyCandidate && isConcurrencyCandidate(name)))) {
 			this.concurrencyCandidate = { name, argumentsValue };
 		}
 		return firstSummary.structured;
@@ -322,6 +422,44 @@ class ScenarioRunner {
 			warm: distribution([sample.elapsedMs]),
 			responseBytes: 0,
 			cancellationOutcome: sample.value,
+		});
+	}
+
+	async mixedSemanticSearch(gameArguments, workspaceArguments) {
+		const name = 'current_mixed_source_client_search';
+		const invoke = async () => {
+			const [gameData, workspace] = await Promise.all([
+				this.client.callTool('search_game_data_symbols', gameArguments),
+				this.client.callTool('search_workspace_symbols', workspaceArguments),
+			]);
+			return mergeSemanticSearchResponses(gameData, workspace);
+		};
+		const first = await measure(invoke);
+		await invoke();
+		const warmSamples = [];
+		const fingerprints = [resultFingerprint(first.value)];
+		let last = first.value;
+		for (let iteration = 0; iteration < this.configuration.samples; iteration += 1) {
+			const sample = await measure(invoke);
+			warmSamples.push(sample.elapsedMs);
+			fingerprints.push(resultFingerprint(sample.value));
+			last = sample.value;
+		}
+		const summary = summarizeResult(last);
+		const stable = fingerprints.every(fingerprint => fingerprint === fingerprints[0]);
+		this.operations.push({
+			name,
+			synthetic: true,
+			family: 'semantic-search',
+			status: summary.isError ? 'tool-error' : stable ? 'pass' : 'unstable-result',
+			firstMs: round(first.elapsedMs),
+			warm: distribution(warmSamples),
+			budgetMs: operationBudget('search_game_data_symbols'),
+			responseBytes: responseBytes(last),
+			fingerprint: fingerprints.at(-1),
+			stableFingerprint: stable,
+			variants: [],
+			...summary.public,
 		});
 	}
 
@@ -446,11 +584,22 @@ async function runScenarios(runner) {
 	runner.corpus.workspace = workspaceSearch ? {
 		catalogueRevision: workspaceSearch.catalogueRevision,
 		rootCount: runner.configuration.workspaceScripts.length,
+		indexedSymbols: runner.configuration.workspaceIndexInventory?.indexedSymbols,
 	} : undefined;
+	if (gameAvailable && workspaceAvailable) {
+		await runner.mixedSemanticSearch(
+			{ query: runner.configuration.gameSymbolQuery, limit: 20 },
+			{ query: runner.configuration.workspaceSymbolQuery, limit: 20 },
+		);
+	}
 	if (workspaceResult?.symbolRef) {
 		await runner.exercise('inspect_workspace_symbol', { symbolRef: workspaceResult.symbolRef });
 		await runner.exercise('list_workspace_symbol_members', { symbolRef: workspaceResult.symbolRef, limit: 20 });
-		await runner.exercise('query_workspace_symbol_relationships', { symbolRef: workspaceResult.symbolRef, limit: 20 });
+		await runner.exercise('query_workspace_symbol_relationships', {
+			symbolRef: workspaceResult.symbolRef,
+			relationshipKinds: ['reference'],
+			limit: 20,
+		});
 	} else {
 		runner.skipMany([
 			'inspect_workspace_symbol',
@@ -485,15 +634,16 @@ async function runScenarios(runner) {
 		};
 		await runner.exercise('query_source_symbol_relationships', {
 			...relationshipBase,
-			relationshipKinds: ['direct'],
+			relationshipKinds: ['directBase', 'derivedType'],
 		}, {
+			scenario: 'one-level-hierarchy',
 			memoryAfterFirst: 'after-first-relationship-projection',
 			memoryAfterWarm: 'after-repeated-relationship-query',
 		});
 		await runner.variant('query_source_symbol_relationships', {
 			...relationshipBase,
-			relationshipKinds: ['directBase', 'derivedType'],
-		}, 'one-level-hierarchy');
+			relationshipKinds: ['direct'],
+		}, 'direct');
 		await runner.variant('query_source_symbol_relationships', {
 			...relationshipBase,
 			depth: 'all',
@@ -543,14 +693,17 @@ async function runScenarios(runner) {
 					symbolRef: method.symbolRef,
 					depth: 'all',
 				};
-				await runner.variant('query_source_symbol_relationships', {
-					...methodBase,
-					relationshipKinds: ['overriddenDeclaration'],
-				}, 'base-implementations');
-				await runner.variant('query_source_symbol_relationships', {
+				const overrides = await runner.variant('query_source_symbol_relationships', {
 					...methodBase,
 					relationshipKinds: ['override'],
 				}, 'overrides');
+				const downstream = firstResult(overrides);
+				await runner.variant('query_source_symbol_relationships', {
+					...methodBase,
+					anchorSource: downstream?.source ?? methodBase.anchorSource,
+					symbolRef: downstream?.symbolRef ?? methodBase.symbolRef,
+					relationshipKinds: ['overriddenDeclaration'],
+				}, 'base-implementations');
 			}
 		}
 	} else {
@@ -769,6 +922,7 @@ function parseArguments(args) {
 		workspaceScripts: [],
 		dependencyProjects: [],
 		externalIndexMode: 'loaded',
+		buildProfile: 'release',
 		samples: 7,
 		coldSamples: 3,
 		concurrencyLevels: [1, 4, 8],
@@ -786,6 +940,7 @@ function parseArguments(args) {
 		commit: currentCommit(),
 		requireAll: false,
 		enforceBudgets: false,
+		acceptProjectionMemory: false,
 	};
 	for (let index = 0; index < args.length; index += 1) {
 		const argument = args[index];
@@ -800,7 +955,9 @@ function parseArguments(args) {
 			case '--addon-index-storage': parsed.addonIndexStorage = value(); break;
 			case '--addon-source-inventory': parsed.addonSourceInventory = value(); break;
 			case '--external-index-mode': parsed.externalIndexMode = value(); break;
+			case '--build-profile': parsed.buildProfile = value(); break;
 			case '--workspace-scripts': parsed.workspaceScripts.push(value()); break;
+			case '--workspace-index-inventory': parsed.workspaceIndexInventoryPath = value(); break;
 			case '--dependency-project': parsed.dependencyProjects.push(value()); break;
 			case '--official-wiki-root': parsed.officialWikiRoot = value(); break;
 			case '--samples': parsed.samples = nonNegativeInteger(value(), argument); break;
@@ -825,6 +982,7 @@ function parseArguments(args) {
 			case '--comparison-markdown-out': parsed.comparisonMarkdownOut = value(); break;
 			case '--require-all': parsed.requireAll = true; break;
 			case '--enforce-budgets': parsed.enforceBudgets = true; break;
+			case '--accept-projection-memory': parsed.acceptProjectionMemory = true; break;
 			case '--help': usage(); break;
 			default: usage(`Unknown argument: ${argument}`);
 		}
@@ -833,7 +991,32 @@ function parseArguments(args) {
 	if (!['all', 'loaded', 'none'].includes(parsed.externalIndexMode)) {
 		usage('--external-index-mode must be all, loaded, or none.');
 	}
+	if (!['release', 'debug'].includes(parsed.buildProfile)) {
+		usage('--build-profile must be release or debug.');
+	}
+	if (parsed.workspaceIndexInventoryPath) {
+		parsed.workspaceIndexInventory = parseWorkspaceIndexInventory(parsed.workspaceIndexInventoryPath);
+	}
 	return parsed;
+}
+
+function parseWorkspaceIndexInventory(path) {
+	const absolutePath = resolve(path);
+	let markdown;
+	try {
+		markdown = readFileSync(absolutePath, 'utf8');
+	} catch (error) {
+		usage(`Unable to read --workspace-index-inventory ${absolutePath}: ${error.message}`);
+	}
+	const match = markdown.match(/^\| `workspace` \| \d+ \| \d+ \| (\d+) \| \d+ \|\s*$/im);
+	if (!match) {
+		usage('--workspace-index-inventory must be an index_build_baseline Markdown report containing a workspace Source Roots row.');
+	}
+	return {
+		path: absolutePath,
+		sha256: createHash('sha256').update(markdown).digest('hex'),
+		indexedSymbols: Number.parseInt(match[1], 10),
+	};
 }
 
 function serverArguments(configuration) {
@@ -900,9 +1083,9 @@ function evaluateRelationshipGates(operations) {
 	if (!operation || ['missing', 'skipped'].includes(operation.status)) return [];
 	const gates = [
 		thresholdGate('first-lazy', operation.firstMs, RELATIONSHIP_FIRST_BUDGET_MS, 'max'),
-		thresholdGate('cached-direct', operation.warm.medianMs, RELATIONSHIP_ONE_LEVEL_MEDIAN_BUDGET_MS, 'median'),
+		thresholdGate('cached-one-level', operation.warm.medianMs, RELATIONSHIP_ONE_LEVEL_MEDIAN_BUDGET_MS, 'median'),
 	];
-	for (const scenario of ['one-level-hierarchy', 'all-level-hierarchy', 'broad-descendant-fanout']) {
+	for (const scenario of ['all-level-hierarchy', 'broad-descendant-fanout']) {
 		const variant = operation.variants?.find(candidate => candidate.scenario === scenario);
 		if (variant) gates.push(thresholdGate(scenario, variant.warm.p95Ms, RELATIONSHIP_BROAD_P95_BUDGET_MS, 'p95'));
 	}
@@ -1016,11 +1199,16 @@ function renderMarkdown(report) {
 		'## Controlled Inputs',
 		'',
 		`- Host: ${report.host.hostname}; ${report.host.platform} ${report.host.release}; ${report.host.architecture}; ${report.host.logicalCpuCount} logical CPUs; ${report.host.totalMemoryBytes} bytes RAM`,
+		`- Build profile: ${report.configuration.buildProfile}`,
+		`- Samples: ${report.configuration.samples} warm; ${report.configuration.coldSamples} cold; concurrency ${report.configuration.concurrencyLevels.join('/')}; timeout ${report.configuration.timeoutMs} ms`,
 		`- Workspace roots: ${report.configuration.workspaceRoots.join(', ') || 'None'}`,
 		`- Game Data revision: ${report.corpus.gameData?.catalogueRevision ?? 'Unavailable'}`,
 		`- Game Data scope revision / authority: ${report.corpus.gameData?.scopeRevision ?? 'Unavailable'} / ${report.corpus.gameData?.scopeAuthority ?? 'Unavailable'}`,
+		`- Game Data indexed symbols: ${report.corpus.gameData?.coverage?.indexedSymbols ?? 'Unavailable'}`,
 		`- Workspace revision: ${report.corpus.workspace?.catalogueRevision ?? 'Unavailable'}`,
+		`- Workspace indexed symbols: ${report.corpus.workspace?.indexedSymbols ?? 'Unavailable in this binary'}`,
 		`- Selected add-ons: ${(report.corpus.gameData?.addons ?? []).map(addon => addon.addonGuid).join(', ') || 'None'}`,
+		`- Queries: ${Object.entries(report.configuration.queries ?? {}).map(([name, value]) => `${name}=${JSON.stringify(value)}`).join('; ')}`,
 		'',
 		'## API Scorecard',
 		'',
@@ -1148,6 +1336,47 @@ function boundedConcurrencyLevels(value, argument) {
 	return [...new Set(levels)].sort((left, right) => left - right);
 }
 
+function controlledInputs(report) {
+	const configuration = report.configuration ?? {};
+	const gameData = report.corpus?.gameData ?? {};
+	const workspace = report.corpus?.workspace ?? {};
+	return {
+		host: report.host,
+		buildProfile: configuration.buildProfile,
+		sampling: {
+			samples: configuration.samples,
+			coldSamples: configuration.coldSamples,
+			concurrencyLevels: configuration.concurrencyLevels,
+			timeoutMs: configuration.timeoutMs,
+		},
+		sources: {
+			externalIndexMode: configuration.externalIndexMode,
+			workspaceRoots: configuration.workspaceRoots,
+			dependencyProjects: configuration.dependencyProjects,
+			addonSourceInventory: configuration.addonSourceInventory,
+			addonIndexStorage: configuration.addonIndexStorage,
+			officialWikiRoot: configuration.officialWikiRoot,
+		},
+		queries: configuration.queries,
+		corpus: {
+			gameDataCatalogueRevision: gameData.catalogueRevision,
+			gameDataScopeRevision: gameData.scopeRevision,
+			gameDataScopeAuthority: gameData.scopeAuthority,
+			gameDataIndexedSymbols: gameData.coverage?.indexedSymbols,
+			addons: (gameData.addons ?? [])
+				.map(addon => ({
+					addonGuid: addon.addonGuid,
+					available: addon.available,
+					scriptCount: addon.scriptCount,
+				}))
+				.sort((left, right) => String(left.addonGuid).localeCompare(String(right.addonGuid))),
+			workspaceCatalogueRevision: workspace.catalogueRevision,
+			workspaceRootCount: workspace.rootCount,
+			workspaceIndexedSymbols: workspace.indexedSymbols,
+		},
+	};
+}
+
 function compareReports(baseline, candidate) {
 	const operations = [];
 	const baselineByName = new Map((baseline.operations ?? []).map(operation => [operation.name, operation]));
@@ -1178,30 +1407,63 @@ function compareReports(baseline, candidate) {
 	}
 	const baselinePreUse = workingSetAt(baseline, 'after-ordinary-semantic-search');
 	const candidatePreUse = workingSetAt(candidate, 'after-ordinary-semantic-search');
+	const candidateAfterInitialize = workingSetAt(candidate, 'after-initialize');
 	const preUseBudgetBytes = baselinePreUse === undefined
 		? undefined
 		: Math.max(baselinePreUse + 32 * 1024 * 1024, baselinePreUse * 1.1);
+	const repeatedRelationshipBytes = workingSetAt(candidate, 'after-repeated-relationship-query');
+	const loadedIndexFootprintBytes = candidatePreUse === undefined || candidateAfterInitialize === undefined
+		? undefined
+		: Math.max(0, candidatePreUse - candidateAfterInitialize);
+	const retainedProjectionDeltaBytes = repeatedRelationshipBytes === undefined || candidatePreUse === undefined
+		? undefined
+		: Math.max(0, repeatedRelationshipBytes - candidatePreUse);
+	const retainedProjectionRatio = loadedIndexFootprintBytes > 0 && retainedProjectionDeltaBytes !== undefined
+		? retainedProjectionDeltaBytes / loadedIndexFootprintBytes
+		: undefined;
+	const projectionMemoryAccepted = candidate.configuration?.acceptProjectionMemory === true;
 	const memory = {
+		candidateAfterInitializeBytes: candidateAfterInitialize,
 		baselinePreUseBytes: baselinePreUse,
 		candidatePreUseBytes: candidatePreUse,
 		preUseBudgetBytes: preUseBudgetBytes === undefined ? undefined : Math.round(preUseBudgetBytes),
 		firstProjectionBytes: workingSetAt(candidate, 'after-first-relationship-projection'),
-		repeatedRelationshipBytes: workingSetAt(candidate, 'after-repeated-relationship-query'),
+		repeatedRelationshipBytes,
+		loadedIndexFootprintBytes,
+		retainedProjectionDeltaBytes,
+		retainedProjectionRatio: Number.isFinite(retainedProjectionRatio) ? round(retainedProjectionRatio) : undefined,
+		compactnessStatus: !Number.isFinite(retainedProjectionRatio)
+			? 'unavailable'
+			: retainedProjectionRatio <= 0.25
+				? 'pass'
+				: projectionMemoryAccepted ? 'accepted' : 'human-acceptance-required',
+		projectionMemoryAccepted,
 		status: baselinePreUse === undefined || candidatePreUse === undefined
 			? 'unavailable'
 			: candidatePreUse <= preUseBudgetBytes ? 'pass' : 'fail',
 	};
-	const corpusMatch = JSON.stringify(baseline.configuration?.workspaceRoots ?? []) === JSON.stringify(candidate.configuration?.workspaceRoots ?? [])
-		&& JSON.stringify((baseline.corpus?.gameData?.addons ?? []).map(addon => addon.addonGuid))
-			=== JSON.stringify((candidate.corpus?.gameData?.addons ?? []).map(addon => addon.addonGuid));
+	const baselineControlledInputs = controlledInputs(baseline);
+	const candidateControlledInputs = controlledInputs(candidate);
+	const controlledInputMismatches = Object.keys(candidateControlledInputs)
+		.filter(key => JSON.stringify(baselineControlledInputs[key]) !== JSON.stringify(candidateControlledInputs[key]));
+	const workspaceCorpusExpected = (candidate.configuration?.workspaceRootCount ?? 0) > 0
+		|| (baseline.configuration?.workspaceRootCount ?? 0) > 0;
+	if (workspaceCorpusExpected
+		&& (!Number.isFinite(baseline.corpus?.workspace?.indexedSymbols)
+			|| !Number.isFinite(candidate.corpus?.workspace?.indexedSymbols))) {
+		controlledInputMismatches.push('corpus.workspaceIndexedSymbols:missing');
+	}
+	const controlledInputsMatch = controlledInputMismatches.length === 0;
+	const corpusMatch = !controlledInputMismatches.some(key => key === 'sources' || key.startsWith('corpus'));
 	const failed = operations.filter(operation => operation.status === 'fail').length
 		+ candidate.relationshipGates.filter(gate => gate.status === 'fail').length
 		+ (candidate.paired?.operations ?? []).filter(operation => operation.status === 'fail').length
 		+ (candidate.paired?.coldGate?.status === 'fail' ? 1 : 0)
 		+ (memory.status === 'fail' ? 1 : 0)
-		+ (corpusMatch ? 0 : 1);
+		+ (memory.compactnessStatus === 'human-acceptance-required' ? 1 : 0)
+		+ (controlledInputsMatch ? 0 : 1);
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		generatedAt: new Date().toISOString(),
 		baseline: { commit: baseline.configuration?.commit ?? 'unknown', reportGeneratedAt: baseline.generatedAt },
 		candidate: { commit: candidate.configuration?.commit ?? 'unknown', reportGeneratedAt: candidate.generatedAt },
@@ -1212,6 +1474,13 @@ function compareReports(baseline, candidate) {
 			p95Gate: 'max(baseline + 10 ms, baseline * 1.20)',
 		},
 		corpusMatch,
+		controlledInputsMatch,
+		controlledInputMismatches,
+		controlledInputs: candidateControlledInputs,
+		symbolCounts: {
+			gameData: candidate.corpus?.gameData?.coverage?.indexedSymbols,
+			workspace: candidate.corpus?.workspace?.indexedSymbols,
+		},
 		operations,
 		newRelationshipGates: candidate.relationshipGates,
 		paired: candidate.paired,
@@ -1232,6 +1501,8 @@ function renderComparisonMarkdown(comparison) {
 		`- Baseline commit: ${comparison.baseline.commit}`,
 		`- Candidate commit: ${comparison.candidate.commit}`,
 		`- Controlled corpus match: ${comparison.corpusMatch ? 'yes' : 'no'}`,
+		`- All controlled inputs match: ${comparison.controlledInputsMatch ? 'yes' : `no (${comparison.controlledInputMismatches.join(', ')})`}`,
+		`- Indexed symbols: Game Data ${comparison.symbolCounts.gameData ?? 'unavailable'}; Workspace ${comparison.symbolCounts.workspace ?? 'unavailable'}`,
 		`- Verdict: **${comparison.verdict}**`,
 		'',
 		'## Existing Operations',
@@ -1260,7 +1531,11 @@ function renderComparisonMarkdown(comparison) {
 			`- Alternating cold pairs: ${comparison.paired.cold.baselineInitialize.count}`,
 			`- Baseline process-to-initialize median / P95: ${formatMs(comparison.paired.cold.baselineInitialize.medianMs)} / ${formatMs(comparison.paired.cold.baselineInitialize.p95Ms)}`,
 			`- Candidate process-to-initialize median / P95: ${formatMs(comparison.paired.cold.candidateInitialize.medianMs)} / ${formatMs(comparison.paired.cold.candidateInitialize.p95Ms)}`,
-			`- Cold process gate: ${comparison.paired.coldGate.status} (median ceiling ${formatMs(comparison.paired.coldGate.medianBudgetMs)}, P95 ceiling ${formatMs(comparison.paired.coldGate.p95BudgetMs)})`,
+			`- Baseline tools/list median / P95: ${formatMs(comparison.paired.cold.baselineToolsList.medianMs)} / ${formatMs(comparison.paired.cold.baselineToolsList.p95Ms)}`,
+			`- Candidate tools/list median / P95: ${formatMs(comparison.paired.cold.candidateToolsList.medianMs)} / ${formatMs(comparison.paired.cold.candidateToolsList.p95Ms)}`,
+			`- Baseline Game Data readiness median / P95: ${formatMs(comparison.paired.cold.baselineStatus.medianMs)} / ${formatMs(comparison.paired.cold.baselineStatus.p95Ms)}`,
+			`- Candidate Game Data readiness median / P95: ${formatMs(comparison.paired.cold.candidateStatus.medianMs)} / ${formatMs(comparison.paired.cold.candidateStatus.p95Ms)}`,
+			`- Cold phase gates: process-to-initialize ${comparison.paired.coldGate.phases.processToInitialize.status}; tools/list ${comparison.paired.coldGate.phases.toolsList.status}; Game Data readiness ${comparison.paired.coldGate.phases.gameDataReadiness.status}; overall ${comparison.paired.coldGate.status}.`,
 		);
 	}
 	lines.push(
@@ -1282,6 +1557,9 @@ function renderComparisonMarkdown(comparison) {
 		`- Pre-use gate: ${formatMiB(comparison.memory.preUseBudgetBytes)} (${comparison.memory.status})`,
 		`- Candidate after first projection: ${formatMiB(comparison.memory.firstProjectionBytes)}`,
 		`- Candidate after repeated query: ${formatMiB(comparison.memory.repeatedRelationshipBytes)}`,
+		`- Loaded semantic-index footprint: ${formatMiB(comparison.memory.loadedIndexFootprintBytes)}`,
+		`- Retained relationship delta: ${formatMiB(comparison.memory.retainedProjectionDeltaBytes)}`,
+		`- Projection / loaded-index ratio: ${formatPercent(comparison.memory.retainedProjectionRatio)} (${comparison.memory.compactnessStatus})`,
 		'',
 		'Local wall-clock and working-set observations are comparative evidence for this host, not portable guarantees.',
 		'',
@@ -1293,14 +1571,20 @@ function formatMiB(value) {
 	return Number.isFinite(value) ? `${round(value / 1024 / 1024)} MiB` : 'Unavailable';
 }
 
+function formatPercent(value) {
+	return Number.isFinite(value) ? `${round(value * 100)}%` : 'Unavailable';
+}
+
 function usage(error) {
 	if (error) process.stderr.write(`${error}\n\n`);
 	process.stderr.write(
 		'Usage: node tools/mcp-runtime-performance-report.mjs --server <executable> [options]\n' +
 		'  Sources: --addon-index-storage <dir> --addon-source-inventory <json> --external-index-mode <all|loaded|none>\n' +
-		'           --workspace-scripts <dir> (repeatable) --dependency-project <gproj> (repeatable) --official-wiki-root <dir>\n' +
+		'           --workspace-scripts <dir> (repeatable) --workspace-index-inventory <index-build-report.md>\n' +
+		'           --dependency-project <gproj> (repeatable) --official-wiki-root <dir>\n' +
+		'  Build: --build-profile <release|debug>\n' +
 		'  Sampling: --samples <n> --cold-samples <n> --concurrency-levels <1,4,8> --timeout-ms <ms>\n' +
-		'  Gates: --require-all --enforce-budgets\n' +
+		'  Gates: --require-all --enforce-budgets --accept-projection-memory\n' +
 		'  Queries: --game-symbol-query <text> --workspace-symbol-query <text> --text-query <text> --broad-text-query <text>\n' +
 		'           --regex-query <pattern> --wiki-query <text> --example-topic <text> --relationship-method-query <text>\n' +
 		'  Identity: --commit <sha>\n' +

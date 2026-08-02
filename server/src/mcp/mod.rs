@@ -1119,7 +1119,7 @@ struct McpGameDataRelationshipInput {
     #[schemars(length(min = 1, max = 2048))]
     symbol_ref: String,
     #[schemars(length(min = 1))]
-    relationship_kinds: Option<Vec<String>>,
+    relationship_kinds: Vec<String>,
     limit: Option<usize>,
     #[schemars(length(max = 2048))]
     cursor: Option<String>,
@@ -1588,42 +1588,56 @@ impl ReforgerMcpServer {
         let worker_control = control.clone();
         let mut worker = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let workspace_snapshot = if request.include_workspace
-                || request.anchor_source == SourceAuthority::Workspace
-            {
-                match workspace.relationship_snapshot(&worker_control) {
-                    Ok(snapshot) => Some(snapshot),
-                    Err(WorkspaceCatalogueError::Unavailable) => None,
-                    Err(WorkspaceCatalogueError::Initialization(error)) => {
-                        return Err(SourceRelationshipOperationError::Initialization(error));
-                    }
-                    Err(error) => {
-                        return Err(SourceRelationshipOperationError::Initialization(format!(
-                            "workspace relationship snapshot failed: {error:?}"
-                        )));
-                    }
+            let workspace_snapshot = match workspace.relationship_snapshot(&worker_control) {
+                Ok(snapshot) => Some(snapshot),
+                Err(WorkspaceCatalogueError::Unavailable) => None,
+                Err(WorkspaceCatalogueError::Initialization(error)) => {
+                    return Err(SourceRelationshipOperationError::Initialization(error));
                 }
-            } else {
-                None
-            };
-            let game_data_snapshot = if request.anchor_source == SourceAuthority::GameData
-                || !request.addon_guids.is_empty()
-            {
-                match game_data.relationship_snapshot(&worker_control) {
-                    Ok(snapshot) => Some(snapshot),
-                    Err(GameDataCatalogueResearchError::Unavailable) => None,
-                    Err(GameDataCatalogueResearchError::Initialization(error)) => {
-                        return Err(SourceRelationshipOperationError::Initialization(error));
-                    }
-                    Err(error) => {
-                        return Err(SourceRelationshipOperationError::Initialization(format!(
-                            "Game Data relationship snapshot failed: {error:?}"
-                        )));
-                    }
+                Err(error) => {
+                    return Err(SourceRelationshipOperationError::Initialization(format!(
+                        "workspace relationship snapshot failed: {error:?}"
+                    )));
                 }
-            } else {
-                None
             };
+            if workspace_snapshot.is_none()
+                && (request.include_workspace
+                    || request.anchor_source == SourceAuthority::Workspace)
+            {
+                let error = if request.anchor_source == SourceAuthority::Workspace {
+                    SourceRelationshipError::SourceUnavailable(SourceAuthority::Workspace)
+                } else {
+                    SourceRelationshipError::RequestedSourcesUnavailable(vec![
+                        "workspace".to_string()
+                    ])
+                };
+                return Err(SourceRelationshipOperationError::Query(error));
+            }
+            let game_data_snapshot = match game_data.relationship_snapshot(&worker_control) {
+                Ok(snapshot) => Some(snapshot),
+                Err(GameDataCatalogueResearchError::Unavailable) => None,
+                Err(GameDataCatalogueResearchError::Initialization(error)) => {
+                    return Err(SourceRelationshipOperationError::Initialization(error));
+                }
+                Err(error) => {
+                    return Err(SourceRelationshipOperationError::Initialization(format!(
+                        "Game Data relationship snapshot failed: {error:?}"
+                    )));
+                }
+            };
+            if game_data_snapshot.is_none()
+                && (request.anchor_source == SourceAuthority::GameData
+                    || !request.addon_guids.is_empty())
+            {
+                let error = if request.anchor_source == SourceAuthority::GameData {
+                    SourceRelationshipError::SourceUnavailable(SourceAuthority::GameData)
+                } else {
+                    SourceRelationshipError::RequestedSourcesUnavailable(
+                        request.addon_guids.clone(),
+                    )
+                };
+                return Err(SourceRelationshipOperationError::Query(error));
+            }
             relationships
                 .query(
                     &worker_control,
@@ -1988,8 +2002,16 @@ fn source_relationship_error(error: SourceRelationshipError) -> CallToolResult {
         ),
         SourceRelationshipError::SourceUnavailable(source) => tool_error(
             "source_relationships_unavailable",
-            &format!("The {source:?} source selected by the exact anchor is unavailable."),
+            &format!("The exact relationship anchor's {source:?} source is unavailable."),
             "Return to semantic discovery, restore that source in Search Scope, and select a current anchor.",
+        ),
+        SourceRelationshipError::RequestedSourcesUnavailable(sources) => tool_error(
+            "source_relationships_unavailable",
+            &format!(
+                "The relationship output scope requested unavailable sources: {}.",
+                sources.join(", ")
+            ),
+            "Refresh Search Scope, remove unavailable sources, and retry with the current catalogue.",
         ),
         SourceRelationshipError::Cancelled => tool_error(
             "request_cancelled",
@@ -2573,7 +2595,7 @@ impl ReforgerMcpServer {
                 .workspace_relationships(
                     GameDataRelationshipRequest {
                         symbol_ref: input.symbol_ref,
-                        relationship_kinds: input.relationship_kinds,
+                        relationship_kinds: Some(input.relationship_kinds),
                         limit: input.limit,
                         cursor: input.cursor,
                     },
@@ -4068,7 +4090,7 @@ impl ReforgerMcpServer {
                 .query_game_data_symbol_relationships(
                     GameDataRelationshipRequest {
                         symbol_ref: input.symbol_ref,
-                        relationship_kinds: input.relationship_kinds,
+                        relationship_kinds: Some(input.relationship_kinds),
                         limit: input.limit,
                         cursor: input.cursor,
                     },
@@ -5269,7 +5291,7 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
     )
     .expect("source relationship annotations serialize");
     reference.push_str(&format!(
-        "\n## `{}`\n\n{}\n\n### Annotations\n\n```json\n{}\n```\n\n### Input schema\n\n```json\n{}\n```\n\n### Output schema\n\n```json\n{}\n```\n\n### Limits and semantics\n\n- Copy `anchorSource` and `symbolRef` from one exact Workspace or Game Data semantic-search result. The opaque reference is never decoded by the caller.\n- `relationshipKinds` accepts `direct`, `directBase`, `derivedType`, `moddedExtension`, `overriddenDeclaration`, and `override`; `depth` is `one` or `all`. `kinds` filters emitted symbol kinds without changing relationship resolution.\n- `includeWorkspace` and `addonGuids` control emitted declarations. Resolution still uses the complete captured semantic graph, so an excluded intermediate does not break a proven edge.\n- Results are deterministic, capped at 5,000 traversed declarations and 100 records per page, cancellable, and subject to the ready-operation five-second deadline. Cycles and ambiguous omitted edges are reported as warnings.\n- The opaque cursor is bound to both source revisions, exact anchor, output scope, relationship kinds, result kinds, and depth.\n\n### Stable failures\n\n- `invalid_source_relationship_request`: correct the relationship kinds, depth, or filters.\n- `invalid_relationship_anchor` or `stale_relationship_anchor`: return to broad semantic discovery and select a current exact declaration.\n- `invalid_relationship_cursor` or `stale_relationship_cursor`: restart paging from page one.\n- `source_relationships_unavailable`: restore the anchor source and select a current anchor.\n- `request_cancelled` or `deadline_exceeded`: retry or narrow the selected relationships.\n\n### Result handoff\n\nPreserve each result's source authority and add-on GUID. Copy `readSourceInput` unchanged to `read_workspace_source` or `read_game_data_source` according to `source`.\n",
+        "\n## `{}`\n\n{}\n\n### Annotations\n\n```json\n{}\n```\n\n### Input schema\n\n```json\n{}\n```\n\n### Output schema\n\n```json\n{}\n```\n\n### Limits and semantics\n\n- Copy `anchorSource` and `symbolRef` from one exact Workspace or Game Data semantic-search result. The opaque reference is never decoded by the caller.\n- `relationshipKinds` accepts `direct`, `directBase`, `derivedType`, `moddedExtension`, `overriddenDeclaration`, and `override`; `depth` is `one` or `all`. `kinds` filters emitted symbol kinds without changing relationship resolution.\n- `includeWorkspace` and `addonGuids` control emitted declarations. Resolution still uses the complete captured semantic graph, so an excluded intermediate does not break a proven edge.\n- Results are deterministic, capped at 5,000 traversed declarations and 100 records per page, cancellable, and subject to the ready-operation five-second deadline. Cycles, hidden intermediates, unavailable requested sources, and ambiguous omitted edges are reported explicitly.\n- The opaque cursor is bound to both source revisions, exact anchor, output scope, relationship kinds, result kinds, and depth.\n\n### Stable failures\n\n- `invalid_source_relationship_request`: correct the relationship kinds, depth, or filters.\n- `invalid_relationship_anchor` or `stale_relationship_anchor`: return to broad semantic discovery and select a current exact declaration.\n- `invalid_relationship_cursor` or `stale_relationship_cursor`: restart paging from page one.\n- `source_relationships_unavailable`: restore the anchor source and select a current anchor.\n- MCP cancellation stops the request without a stale tool response. `deadline_exceeded`: retry or narrow the selected relationships.\n\n### Result handoff\n\nPreserve each result's source authority and add-on GUID. Copy `readSourceInput` unchanged to `read_workspace_source` or `read_game_data_source` according to `source`.\n",
         source_relationship_tool.name,
         source_relationship_tool.description.as_deref().unwrap_or_default(),
         source_relationship_annotations,

@@ -41,10 +41,7 @@ Query bounded definitions, inheritance, references, and callers for one revision
         "type": "string"
       },
       "minItems": 1,
-      "type": [
-        "array",
-        "null"
-      ]
+      "type": "array"
     },
     "symbolRef": {
       "maxLength": 2048,
@@ -53,7 +50,8 @@ Query bounded definitions, inheritance, references, and callers for one revision
     }
   },
   "required": [
-    "symbolRef"
+    "symbolRef",
+    "relationshipKinds"
   ],
   "type": "object"
 }

@@ -297,7 +297,7 @@ Query exact inheritance, modded-class, and method-override relationships across 
 - Copy `anchorSource` and `symbolRef` from one exact Workspace or Game Data semantic-search result. The opaque reference is never decoded by the caller.
 - `relationshipKinds` accepts `direct`, `directBase`, `derivedType`, `moddedExtension`, `overriddenDeclaration`, and `override`; `depth` is `one` or `all`. `kinds` filters emitted symbol kinds without changing relationship resolution.
 - `includeWorkspace` and `addonGuids` control emitted declarations. Resolution still uses the complete captured semantic graph, so an excluded intermediate does not break a proven edge.
-- Results are deterministic, capped at 5,000 traversed declarations and 100 records per page, cancellable, and subject to the ready-operation five-second deadline. Cycles and ambiguous omitted edges are reported as warnings.
+- Results are deterministic, capped at 5,000 traversed declarations and 100 records per page, cancellable, and subject to the ready-operation five-second deadline. Cycles, hidden intermediates, unavailable requested sources, and ambiguous omitted edges are reported explicitly.
 - The opaque cursor is bound to both source revisions, exact anchor, output scope, relationship kinds, result kinds, and depth.
 
 ### Stable failures
@@ -306,7 +306,7 @@ Query exact inheritance, modded-class, and method-override relationships across 
 - `invalid_relationship_anchor` or `stale_relationship_anchor`: return to broad semantic discovery and select a current exact declaration.
 - `invalid_relationship_cursor` or `stale_relationship_cursor`: restart paging from page one.
 - `source_relationships_unavailable`: restore the anchor source and select a current anchor.
-- `request_cancelled` or `deadline_exceeded`: retry or narrow the selected relationships.
+- MCP cancellation stops the request without a stale tool response. `deadline_exceeded`: retry or narrow the selected relationships.
 
 ### Result handoff
 

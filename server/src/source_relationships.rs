@@ -9,7 +9,7 @@ use crate::game_data_search::{
 };
 use crate::index::{GlobalSymbolId, SourceFileId, SymbolIndex};
 use crate::index_build::IndexBuildControl;
-use crate::model::SymbolKind;
+use crate::model::{CallableForm, SymbolKind};
 use crate::resolver::callable_override_key;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -110,6 +110,7 @@ pub enum SourceRelationshipError {
     InvalidCursor,
     StaleCursor,
     SourceUnavailable(SourceAuthority),
+    RequestedSourcesUnavailable(Vec<String>),
     Cancelled,
 }
 
@@ -137,6 +138,7 @@ struct ProjectionNode {
     modded: bool,
     is_override: bool,
     load_order: usize,
+    load_order_authoritative: bool,
 }
 
 #[derive(Debug, Default)]
@@ -155,10 +157,11 @@ struct RelationshipProjection {
 #[derive(Debug)]
 struct CachedProjection {
     revision_key: String,
+    shape: ProjectionShape,
     projection: Arc<RelationshipProjection>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProjectionShape {
     Class,
     Method,
@@ -183,6 +186,7 @@ struct RelatedNode {
     node: usize,
     kind: &'static str,
     distance: usize,
+    hidden_intermediate: bool,
 }
 
 #[derive(Debug, Default)]
@@ -200,73 +204,166 @@ impl SourceRelationshipQuery {
         request: GameDataRelationshipRequest,
     ) -> Result<Option<GameDataRelationshipPage>, GameDataResearchError> {
         let Some(relationship_kinds) = request.relationship_kinds.clone() else {
-            return Ok(None);
+            return Err(GameDataResearchError::InvalidRequest(
+                "relationshipKinds is required for restricted legacy relationship queries"
+                    .to_string(),
+            ));
         };
-        if relationship_kinds.is_empty()
-            || relationship_kinds.iter().any(|kind| {
-                !matches!(
-                    kind.as_str(),
-                    "directBase" | "derivedType" | "override" | "overriddenDeclaration"
-                )
-            })
-        {
+        let is_structural = |kind: &str| {
+            matches!(
+                kind,
+                "directBase"
+                    | "derivedType"
+                    | "implementation"
+                    | "override"
+                    | "overriddenDeclaration"
+            )
+        };
+        let has_structural = relationship_kinds.iter().any(|kind| is_structural(kind));
+        let has_other = relationship_kinds.iter().any(|kind| !is_structural(kind));
+        if has_structural && has_other {
+            return Err(GameDataResearchError::InvalidRequest(
+                "structural relationship kinds must be queried separately from caller and reference kinds"
+                    .to_string(),
+            ));
+        }
+        if relationship_kinds.is_empty() || !has_structural {
             return Ok(None);
         }
         let authority = snapshot.authority;
         let revision = snapshot.revision.clone();
-        let addon_guids = snapshot
+        let addon_guids: Vec<String> = snapshot
             .addon_map
             .values()
             .map(|addon| addon.guid.clone())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
+        let source_snapshot = snapshot.clone();
         let (workspace, game_data) = match authority {
             SourceAuthority::Workspace => (Some(snapshot), None),
             SourceAuthority::GameData => (None, Some(snapshot)),
         };
-        let page = self
-            .query(
-                control,
-                workspace,
-                game_data,
-                SourceRelationshipRequest {
-                    anchor_source: authority,
-                    symbol_ref: request.symbol_ref.clone(),
-                    include_workspace: authority == SourceAuthority::Workspace,
-                    addon_guids,
-                    relationship_kinds: relationship_kinds.clone(),
-                    result_kinds: Vec::new(),
-                    depth: "one".to_string(),
-                    limit: request.limit,
-                    cursor: request.cursor,
-                },
+        let mut immediate_kinds = relationship_kinds
+            .iter()
+            .filter(|kind| !matches!(kind.as_str(), "implementation" | "override"))
+            .cloned()
+            .collect::<Vec<_>>();
+        immediate_kinds.sort();
+        immediate_kinds.dedup();
+        let wants_downstream = relationship_kinds
+            .iter()
+            .any(|kind| matches!(kind.as_str(), "implementation" | "override"));
+        let mut query_groups = Vec::new();
+        if !immediate_kinds.is_empty() {
+            query_groups.push((immediate_kinds, "one"));
+        }
+        if wants_downstream {
+            query_groups.push((vec!["override".to_string()], "all"));
+        }
+        let mut source_hits = Vec::new();
+        for (source_relationship_kinds, depth) in query_groups {
+            let mut source_cursor = None;
+            loop {
+                let page = self
+                    .query(
+                        control,
+                        workspace.clone(),
+                        game_data.clone(),
+                        SourceRelationshipRequest {
+                            anchor_source: authority,
+                            symbol_ref: request.symbol_ref.clone(),
+                            include_workspace: authority == SourceAuthority::Workspace,
+                            addon_guids: addon_guids.clone(),
+                            relationship_kinds: source_relationship_kinds.clone(),
+                            result_kinds: Vec::new(),
+                            depth: depth.to_string(),
+                            limit: Some(MAX_LIMIT),
+                            cursor: source_cursor,
+                        },
+                    )
+                    .map_err(legacy_error)?;
+                source_hits.extend(page.results);
+                let Some(next_cursor) = page.next_cursor else {
+                    break;
+                };
+                source_cursor = Some(next_cursor);
+            }
+        }
+        let wants_override = relationship_kinds.iter().any(|kind| kind == "override");
+        let wants_implementation = relationship_kinds
+            .iter()
+            .any(|kind| kind == "implementation");
+        let mut results = Vec::new();
+        for hit in source_hits {
+            if hit.relationship_kind == "override" {
+                if wants_override {
+                    results.push(legacy_hit(hit.clone(), "override"));
+                }
+                if wants_implementation && hit_is_implementation(control, &source_snapshot, &hit)? {
+                    results.push(legacy_hit(hit, "implementation"));
+                }
+            } else {
+                let relationship_kind = hit.relationship_kind.clone();
+                results.push(legacy_hit(hit, &relationship_kind));
+            }
+        }
+        results.sort_by(|left, right| {
+            (
+                &left.relationship_kind,
+                &left.relative_path,
+                left.range.start_line,
+                &left.qualified_name,
             )
-            .map_err(legacy_error)?;
+                .cmp(&(
+                    &right.relationship_kind,
+                    &right.relative_path,
+                    right.range.start_line,
+                    &right.qualified_name,
+                ))
+        });
+        let cursor_revision =
+            legacy_relationship_revision(&revision, &request.symbol_ref, &relationship_kinds);
+        let offset = request
+            .cursor
+            .as_deref()
+            .map(decode_cursor)
+            .transpose()
+            .map_err(legacy_error)?
+            .map(|cursor| {
+                (cursor.relationship_revision == cursor_revision)
+                    .then_some(cursor.offset)
+                    .ok_or(GameDataResearchError::StaleCursor)
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let total = results.len();
+        if offset > total {
+            return Err(GameDataResearchError::StaleCursor);
+        }
+        let limit = request.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+        let results = results
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
+        let returned = results.len();
+        let next_cursor = (offset + returned < total).then(|| {
+            encode_cursor(&RelationshipCursor {
+                version: 1,
+                relationship_revision: cursor_revision,
+                offset: offset + returned,
+            })
+        });
         Ok(Some(GameDataRelationshipPage {
             source: "language-engine".to_string(),
             catalogue_revision: revision,
             target_symbol_ref: request.symbol_ref,
             relationship_kinds,
-            returned: page.returned,
-            total: page.total,
-            next_cursor: page.next_cursor,
-            results: page
-                .results
-                .into_iter()
-                .map(|hit| GameDataRelationshipHit {
-                    relationship_kind: hit.relationship_kind,
-                    symbol_ref: Some(hit.symbol_ref),
-                    name: Some(hit.name),
-                    kind: Some(hit.kind),
-                    qualified_name: Some(hit.qualified_name),
-                    signature: Some(hit.signature),
-                    relative_path: hit.relative_path,
-                    range: hit.selection_range,
-                    evidence: hit.evidence,
-                    read_source_input: hit.read_source_input,
-                })
-                .collect(),
+            returned,
+            total,
+            next_cursor,
+            results,
         }))
     }
 
@@ -279,6 +376,27 @@ impl SourceRelationshipQuery {
     ) -> Result<SourceRelationshipPage, SourceRelationshipError> {
         check(control)?;
         canonicalize_request(&mut request)?;
+        let available_addons = game_data
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .addon_order
+                    .iter()
+                    .map(|guid| guid.to_ascii_lowercase())
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        let unavailable_addons = request
+            .addon_guids
+            .iter()
+            .filter(|guid| !available_addons.contains(&guid.to_ascii_lowercase()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !unavailable_addons.is_empty() {
+            return Err(SourceRelationshipError::RequestedSourcesUnavailable(
+                unavailable_addons,
+            ));
+        }
         let anchor_snapshot = match request.anchor_source {
             SourceAuthority::Workspace => workspace.as_ref(),
             SourceAuthority::GameData => game_data.as_ref(),
@@ -317,10 +435,7 @@ impl SourceRelationshipQuery {
                 symbol: anchor,
             }),
         };
-        let revision_key = format!(
-            "{};shape={shape:?}",
-            projection_revision_key(workspace.as_ref(), game_data.as_ref())
-        );
+        let revision_key = projection_revision_key(workspace.as_ref(), game_data.as_ref());
         let projection = self.projection(
             control,
             &revision_key,
@@ -349,11 +464,15 @@ impl SourceRelationshipQuery {
             })
             .transpose()?
             .unwrap_or(0);
+        let scope_visible = |node_id: usize| {
+            node_is_in_output_scope(&projection.nodes[node_id], &request, game_data.as_ref())
+        };
         let mut traversal = collect_related(
             &projection,
             anchor_node,
             &request.relationship_kinds,
             &request.depth,
+            &scope_visible,
             control,
         )?;
         traversal.related.retain(|related| {
@@ -363,28 +482,14 @@ impl SourceRelationshipQuery {
                     .result_kinds
                     .binary_search(&kind_name(node.kind).to_string())
                     .is_ok();
-            kind_matches
-                && match node.key.source {
-                    SourceAuthority::Workspace => request.include_workspace,
-                    SourceAuthority::GameData => game_data
-                        .as_ref()
-                        .and_then(|snapshot| snapshot.addon_map.get(&node.key.symbol.file_id))
-                        .is_some_and(|addon| {
-                            request
-                                .addon_guids
-                                .binary_search_by(|guid| {
-                                    guid.to_ascii_lowercase()
-                                        .cmp(&addon.guid.to_ascii_lowercase())
-                                })
-                                .is_ok()
-                        }),
-                }
+            kind_matches && node_is_in_output_scope(node, &request, game_data.as_ref())
         });
         traversal.related.sort_by_key(|related| {
             let node = &projection.nodes[related.node];
             (
                 relationship_kind_order(related.kind),
                 related.distance,
+                related.hidden_intermediate,
                 node.name.clone(),
                 node.key,
             )
@@ -396,6 +501,11 @@ impl SourceRelationshipQuery {
             traversal.truncated = true;
             traversal.related.truncate(MAX_TRAVERSAL_RESULTS);
         }
+        let hidden_intermediate_count = traversal
+            .related
+            .iter()
+            .filter(|related| related.hidden_intermediate)
+            .count();
         let total = traversal.related.len();
         if offset > total {
             return Err(SourceRelationshipError::StaleCursor);
@@ -438,6 +548,11 @@ impl SourceRelationshipQuery {
                     .to_string(),
             );
         }
+        if hidden_intermediate_count > 0 {
+            warnings.push(format!(
+                "{hidden_intermediate_count} emitted relationships cross declarations hidden by the selected output scope. Distances include those hidden intermediates."
+            ));
+        }
         Ok(SourceRelationshipPage {
             relationship_revision,
             anchor_source: request.anchor_source,
@@ -461,20 +576,76 @@ impl SourceRelationshipQuery {
         workspace: Option<&SourceRelationshipSnapshot>,
         game_data: Option<&SourceRelationshipSnapshot>,
     ) -> Result<Arc<RelationshipProjection>, SourceRelationshipError> {
+        if matches!(shape, ProjectionShape::Direct(_)) {
+            return Ok(Arc::new(build_projection(
+                control, shape, workspace, game_data,
+            )?));
+        }
         let mut cache = self.cache.lock().unwrap();
-        if let Some(cached) = cache
-            .as_ref()
-            .filter(|cached| cached.revision_key == revision_key)
-        {
+        if let Some(cached) = cache.as_ref().filter(|cached| {
+            cached.revision_key == revision_key
+                && (cached.shape == shape || cached.shape == ProjectionShape::Method)
+        }) {
             return Ok(cached.projection.clone());
         }
         let projection = Arc::new(build_projection(control, shape, workspace, game_data)?);
         *cache = Some(CachedProjection {
             revision_key: revision_key.to_string(),
+            shape,
             projection: projection.clone(),
         });
         Ok(projection)
     }
+}
+
+fn legacy_hit(hit: SourceRelationshipHit, relationship_kind: &str) -> GameDataRelationshipHit {
+    GameDataRelationshipHit {
+        relationship_kind: relationship_kind.to_string(),
+        symbol_ref: Some(hit.symbol_ref),
+        name: Some(hit.name),
+        kind: Some(hit.kind),
+        qualified_name: Some(hit.qualified_name),
+        signature: Some(hit.signature),
+        relative_path: hit.relative_path,
+        range: hit.selection_range,
+        evidence: hit.evidence,
+        read_source_input: hit.read_source_input,
+    }
+}
+
+fn hit_is_implementation(
+    control: &IndexBuildControl,
+    snapshot: &SourceRelationshipSnapshot,
+    hit: &SourceRelationshipHit,
+) -> Result<bool, GameDataResearchError> {
+    let symbol = resolve_symbol_ref(
+        &snapshot.index,
+        &snapshot.addon_map,
+        control,
+        &snapshot.revision,
+        &hit.symbol_ref,
+    )
+    .map_err(GameDataResearchError::Inspection)?;
+    Ok(snapshot
+        .index
+        .symbol(symbol)
+        .is_some_and(|symbol| symbol.callable_form == Some(CallableForm::Implementation)))
+}
+
+fn legacy_relationship_revision(
+    revision: &str,
+    symbol_ref: &str,
+    relationship_kinds: &[String],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(revision.as_bytes());
+    hasher.update([0]);
+    hasher.update(symbol_ref.as_bytes());
+    for kind in relationship_kinds {
+        hasher.update([0]);
+        hasher.update(kind.as_bytes());
+    }
+    format!("legacy-rel1:{:x}", hasher.finalize())
 }
 
 fn legacy_error(error: SourceRelationshipError) -> GameDataResearchError {
@@ -494,6 +665,12 @@ fn legacy_error(error: SourceRelationshipError) -> GameDataResearchError {
         SourceRelationshipError::SourceUnavailable(_) => GameDataResearchError::InvalidRequest(
             "selected relationship source is unavailable".to_string(),
         ),
+        SourceRelationshipError::RequestedSourcesUnavailable(sources) => {
+            GameDataResearchError::InvalidRequest(format!(
+                "requested relationship sources are unavailable: {}",
+                sources.join(", ")
+            ))
+        }
     }
 }
 
@@ -642,6 +819,8 @@ fn build_projection(
                 .expect("indexed symbol file");
             let node_id = projection.nodes.len();
             projection.node_ids.insert(key, node_id);
+            let (load_order, load_order_authoritative) =
+                source_load_order(snapshot, symbol_id.file_id);
             projection.nodes.push(ProjectionNode {
                 key,
                 name: intern_value(&mut strings, name),
@@ -659,7 +838,8 @@ fn build_projection(
                     .modifiers
                     .iter()
                     .any(|modifier| modifier == "override"),
-                load_order: source_load_order(snapshot, symbol_id.file_id),
+                load_order,
+                load_order_authoritative,
             });
         }
     }
@@ -720,6 +900,13 @@ fn build_projection(
                 right.key,
             ))
     });
+    let mut classes_by_name = BTreeMap::<Arc<str>, Vec<usize>>::new();
+    for class in &class_ids {
+        classes_by_name
+            .entry(projection.nodes[*class].name.clone())
+            .or_default()
+            .push(*class);
+    }
     let mut ambiguous_modded_edges = 0_usize;
     let mut ambiguous_base_edges = 0_usize;
     for node_id in 0..projection.nodes.len() {
@@ -730,7 +917,7 @@ fn build_projection(
         }
         let family = class_family(&projection, &class_ids, &node.module, &node.name);
         if node.modded {
-            if let Some(original) = nearest_preceding_class(&projection, family, node_id, false) {
+            if let Some(original) = unique_ordinary_class(&projection, family) {
                 projection
                     .modded_extensions
                     .entry(original)
@@ -744,7 +931,10 @@ fn build_projection(
         let Some(base_name) = node.base_type.as_ref() else {
             continue;
         };
-        let candidates = class_family(&projection, &class_ids, &node.module, base_name);
+        let candidates = classes_by_name
+            .get(base_name)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
         if let Some(base) = effective_class(&projection, candidates) {
             projection.class_bases.insert(node_id, base);
             projection
@@ -832,19 +1022,43 @@ fn snapshot_for<'a>(
     }
 }
 
-fn source_load_order(snapshot: &SourceRelationshipSnapshot, file: SourceFileId) -> usize {
+fn node_is_in_output_scope(
+    node: &ProjectionNode,
+    request: &SourceRelationshipRequest,
+    game_data: Option<&SourceRelationshipSnapshot>,
+) -> bool {
+    match node.key.source {
+        SourceAuthority::Workspace => request.include_workspace,
+        SourceAuthority::GameData => game_data
+            .and_then(|snapshot| snapshot.addon_map.get(&node.key.symbol.file_id))
+            .is_some_and(|addon| {
+                request
+                    .addon_guids
+                    .binary_search_by(|guid| {
+                        guid.to_ascii_lowercase()
+                            .cmp(&addon.guid.to_ascii_lowercase())
+                    })
+                    .is_ok()
+            }),
+    }
+}
+
+fn source_load_order(snapshot: &SourceRelationshipSnapshot, file: SourceFileId) -> (usize, bool) {
     match snapshot.authority {
-        SourceAuthority::Workspace => usize::MAX - 1,
-        SourceAuthority::GameData => snapshot
-            .addon_map
-            .get(&file)
-            .and_then(|addon| {
-                snapshot
-                    .addon_order
-                    .iter()
-                    .position(|guid| guid.eq_ignore_ascii_case(&addon.guid))
-            })
-            .unwrap_or(0),
+        SourceAuthority::Workspace => (usize::MAX - 1, true),
+        SourceAuthority::GameData => (
+            snapshot
+                .addon_map
+                .get(&file)
+                .and_then(|addon| {
+                    snapshot
+                        .addon_order
+                        .iter()
+                        .position(|guid| guid.eq_ignore_ascii_case(&addon.guid))
+                })
+                .unwrap_or(0),
+            snapshot.addon_order_authoritative,
+        ),
     }
 }
 
@@ -864,6 +1078,13 @@ fn intern_value(values: &mut BTreeSet<Arc<str>>, value: &str) -> Arc<str> {
 }
 
 fn effective_class(projection: &RelationshipProjection, candidates: &[usize]) -> Option<usize> {
+    unique_ordinary_class(projection, candidates)
+}
+
+fn unique_ordinary_class(
+    projection: &RelationshipProjection,
+    candidates: &[usize],
+) -> Option<usize> {
     let ordinary = candidates
         .iter()
         .copied()
@@ -880,16 +1101,18 @@ fn nearest_preceding_class(
     projection: &RelationshipProjection,
     family: &[usize],
     node: usize,
-    include_modded: bool,
 ) -> Option<usize> {
+    if !projection.nodes[node].load_order_authoritative {
+        return None;
+    }
     let order = projection.nodes[node].load_order;
     let candidates = family
         .iter()
         .copied()
         .filter(|candidate| {
             *candidate != node
+                && projection.nodes[*candidate].load_order_authoritative
                 && projection.nodes[*candidate].load_order < order
-                && (include_modded || !projection.nodes[*candidate].modded)
         })
         .collect::<Vec<_>>();
     let nearest_order = candidates
@@ -977,7 +1200,7 @@ fn nearest_overridden_method(
             &projection.nodes[owner].module,
             &projection.nodes[owner].name,
         );
-        let mut previous = nearest_preceding_class(projection, family, owner, true);
+        let mut previous = nearest_preceding_class(projection, family, owner);
         while let Some(class) = previous {
             for candidate in method_in_class(projection, class, method) {
                 ensure_callable_key(projection, candidate, workspace, game_data, callable_keys)?;
@@ -986,11 +1209,12 @@ fn nearest_overridden_method(
                     return Ok(Some(candidate));
                 }
             }
-            previous = nearest_preceding_class(projection, family, class, true);
+            previous = nearest_preceding_class(projection, family, class);
         }
     }
     let mut class = projection.class_bases.get(&owner).copied();
-    while let Some(base_class) = class {
+    let mut visited = BTreeSet::new();
+    while let Some(base_class) = class.filter(|candidate| visited.insert(*candidate)) {
         for candidate in method_in_class(projection, base_class, method) {
             ensure_callable_key(projection, candidate, workspace, game_data, callable_keys)?;
             if projection.nodes[candidate].callable_key == projection.nodes[method].callable_key {
@@ -1007,6 +1231,7 @@ fn collect_related(
     anchor: usize,
     kinds: &[String],
     depth: &str,
+    scope_visible: &impl Fn(usize) -> bool,
     control: &IndexBuildControl,
 ) -> Result<TraversalOutcome, SourceRelationshipError> {
     let mut outcome = TraversalOutcome::default();
@@ -1017,6 +1242,7 @@ fn collect_related(
                 node: anchor,
                 kind: "direct",
                 distance: 0,
+                hidden_intermediate: false,
             }),
             "directBase" => traverse_single(
                 projection,
@@ -1031,6 +1257,7 @@ fn collect_related(
                         .into_iter()
                         .collect()
                 },
+                scope_visible,
                 control,
                 &mut outcome,
             )?,
@@ -1046,6 +1273,7 @@ fn collect_related(
                         .cloned()
                         .unwrap_or_default()
                 },
+                scope_visible,
                 control,
                 &mut outcome,
             )?,
@@ -1069,6 +1297,7 @@ fn collect_related(
                         node: *node,
                         kind: "moddedExtension",
                         distance: 1,
+                        hidden_intermediate: false,
                     });
                 }
             }
@@ -1085,6 +1314,7 @@ fn collect_related(
                         .into_iter()
                         .collect()
                 },
+                scope_visible,
                 control,
                 &mut outcome,
             )?,
@@ -1100,6 +1330,7 @@ fn collect_related(
                         .cloned()
                         .unwrap_or_default()
                 },
+                scope_visible,
                 control,
                 &mut outcome,
             )?,
@@ -1115,12 +1346,13 @@ fn traverse_single(
     kind: &'static str,
     depth: &str,
     neighbors: impl Fn(&RelationshipProjection, usize) -> Vec<usize>,
+    scope_visible: &impl Fn(usize) -> bool,
     control: &IndexBuildControl,
     outcome: &mut TraversalOutcome,
 ) -> Result<(), SourceRelationshipError> {
-    let mut queue = VecDeque::from([(anchor, 0_usize)]);
-    let mut visited = BTreeSet::from([anchor]);
-    while let Some((node, distance)) = queue.pop_front() {
+    let mut queue = VecDeque::from([(anchor, 0_usize, false)]);
+    let mut visited = BTreeSet::from([(anchor, false)]);
+    while let Some((node, distance, hidden_intermediate)) = queue.pop_front() {
         check(control)?;
         if outcome.related.len() >= MAX_TRAVERSAL_RESULTS {
             outcome.truncated = true;
@@ -1131,14 +1363,16 @@ fn traverse_single(
                 node,
                 kind,
                 distance,
+                hidden_intermediate,
             });
         }
         if depth == "one" && distance >= 1 {
             continue;
         }
         for next in neighbors(projection, node) {
-            if visited.insert(next) {
-                queue.push_back((next, distance + 1));
+            let next_hidden = hidden_intermediate || (node != anchor && !scope_visible(node));
+            if visited.insert((next, next_hidden)) {
+                queue.push_back((next, distance + 1, next_hidden));
             } else if next != anchor || distance > 0 {
                 outcome.cycle_detected = true;
             }
@@ -1215,7 +1449,7 @@ fn project_hit(
 fn relationship_evidence(kind: &str) -> &'static str {
     match kind {
         "direct" => "exact revision-bound symbol reference",
-        "directBase" | "derivedType" => "indexed class base type and exact script module",
+        "directBase" | "derivedType" => "indexed class base type and canonical class identity",
         "moddedExtension" => "modded modifier, same class name, and exact script module",
         "overriddenDeclaration" | "override" => {
             "override modifier, exact callable shape, and proven owner relationship"
@@ -1398,12 +1632,17 @@ mod tests {
             test_file(
                 "class Car : Vehicle { override void Move(int speed) {} override void Move(string mode) {} }",
                 SourceKind::Workspace,
-                "Game/Vehicles/Car.c",
+                "Workbench/Vehicles/Car.c",
             ),
             test_file(
                 "modded class Vehicle { override void Move(int speed) {} }",
                 SourceKind::Workspace,
                 "Game/Vehicles/VehicleMod.c",
+            ),
+            test_file(
+                "modded class Vehicle {}",
+                SourceKind::Workspace,
+                "Workbench/Vehicles/IncompatibleVehicleMod.c",
             ),
         ]);
         let class_anchor = symbol_ref(&game, SymbolKind::Class, "Vehicle", None);
@@ -1468,6 +1707,298 @@ mod tests {
     }
 
     #[test]
+    fn accepts_an_available_addon_that_has_no_indexed_script_files() {
+        let mut game = snapshot(
+            SourceAuthority::GameData,
+            "game-r1",
+            &[test_file(
+                "class Vehicle {}",
+                SourceKind::GameData,
+                "Game/Vehicles/Vehicle.c",
+            )],
+        );
+        game.addon_order = Arc::new(vec!["game-guid".to_string(), "empty-guid".to_string()]);
+        let workspace = snapshot(
+            SourceAuthority::Workspace,
+            "ws-r1",
+            &[test_file(
+                "class Car : Vehicle {}",
+                SourceKind::Workspace,
+                "Workbench/Vehicles/Car.c",
+            )],
+        );
+
+        let page = SourceRelationshipQuery::default()
+            .query(
+                &IndexBuildControl::default(),
+                Some(workspace),
+                Some(game.clone()),
+                SourceRelationshipRequest {
+                    anchor_source: SourceAuthority::GameData,
+                    symbol_ref: symbol_ref(&game, SymbolKind::Class, "Vehicle", None),
+                    include_workspace: true,
+                    addon_guids: vec!["empty-guid".to_string()],
+                    relationship_kinds: vec!["derivedType".to_string()],
+                    result_kinds: Vec::new(),
+                    depth: "one".to_string(),
+                    limit: Some(20),
+                    cursor: None,
+                },
+            )
+            .expect("configured add-ons remain available even without indexed scripts");
+
+        assert_eq!(page.total, 1);
+        assert_eq!(page.results[0].qualified_name, "Car");
+    }
+
+    #[test]
+    fn offline_scope_returns_modded_classes_without_guessing_method_predecessors() {
+        let mut game = snapshot(
+            SourceAuthority::GameData,
+            "game-r1",
+            &[test_file(
+                "class Vehicle { void Move(int speed); }",
+                SourceKind::GameData,
+                "Game/Vehicles/Vehicle.c",
+            )],
+        );
+        game.addon_order_authoritative = false;
+        let workspace = snapshot(
+            SourceAuthority::Workspace,
+            "ws-r1",
+            &[test_file(
+                "modded class Vehicle { override void Move(int speed) {} }",
+                SourceKind::Workspace,
+                "Game/Vehicles/VehicleMod.c",
+            )],
+        );
+        let query = SourceRelationshipQuery::default();
+        let class_page = query
+            .query(
+                &IndexBuildControl::default(),
+                Some(workspace.clone()),
+                Some(game.clone()),
+                SourceRelationshipRequest {
+                    anchor_source: SourceAuthority::GameData,
+                    symbol_ref: symbol_ref(&game, SymbolKind::Class, "Vehicle", None),
+                    include_workspace: true,
+                    addon_guids: vec!["game-guid".to_string()],
+                    relationship_kinds: vec!["moddedExtension".to_string()],
+                    result_kinds: Vec::new(),
+                    depth: "one".to_string(),
+                    limit: Some(20),
+                    cursor: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(class_page.total, 1);
+        assert!(class_page
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("does not claim exact Workbench overlay order")));
+
+        let method_page = query
+            .query(
+                &IndexBuildControl::default(),
+                Some(workspace),
+                Some(game.clone()),
+                SourceRelationshipRequest {
+                    anchor_source: SourceAuthority::GameData,
+                    symbol_ref: symbol_ref(&game, SymbolKind::Method, "Move", Some("Vehicle")),
+                    include_workspace: true,
+                    addon_guids: vec!["game-guid".to_string()],
+                    relationship_kinds: vec!["override".to_string()],
+                    result_kinds: Vec::new(),
+                    depth: "all".to_string(),
+                    limit: Some(20),
+                    cursor: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(method_page.total, 0);
+        assert!(method_page
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("without one exact proven base behavior")));
+    }
+
+    #[test]
+    fn omits_ambiguous_base_declarations_and_reports_cycles() {
+        let game = snapshot(
+            SourceAuthority::GameData,
+            "game-r1",
+            &[
+                test_file("class Base {}", SourceKind::GameData, "Game/Base.c"),
+                test_file("class Base {}", SourceKind::GameData, "Workbench/Base.c"),
+                test_file(
+                    "class Child : Base {}",
+                    SourceKind::GameData,
+                    "Game/Child.c",
+                ),
+                test_file(
+                    "class CycleA : CycleB { override void Run() {} } class CycleB : CycleA { override void Run() {} }",
+                    SourceKind::GameData,
+                    "Game/Cycle.c",
+                ),
+            ],
+        );
+        let query = SourceRelationshipQuery::default();
+        let ambiguous = query
+            .query(
+                &IndexBuildControl::default(),
+                None,
+                Some(game.clone()),
+                SourceRelationshipRequest {
+                    anchor_source: SourceAuthority::GameData,
+                    symbol_ref: symbol_ref(&game, SymbolKind::Class, "Child", None),
+                    include_workspace: false,
+                    addon_guids: vec!["game-guid".to_string()],
+                    relationship_kinds: vec!["directBase".to_string()],
+                    result_kinds: Vec::new(),
+                    depth: "one".to_string(),
+                    limit: Some(20),
+                    cursor: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(ambiguous.total, 0);
+        assert!(ambiguous
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("ambiguous class inheritance")));
+
+        let cycle = query
+            .query(
+                &IndexBuildControl::default(),
+                None,
+                Some(game.clone()),
+                SourceRelationshipRequest {
+                    anchor_source: SourceAuthority::GameData,
+                    symbol_ref: symbol_ref(&game, SymbolKind::Class, "CycleA", None),
+                    include_workspace: false,
+                    addon_guids: vec!["game-guid".to_string()],
+                    relationship_kinds: vec!["derivedType".to_string()],
+                    result_kinds: Vec::new(),
+                    depth: "all".to_string(),
+                    limit: Some(20),
+                    cursor: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(cycle.total, 1);
+        assert_eq!(cycle.results[0].qualified_name, "CycleB");
+        assert!(cycle
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("cycle was detected")));
+
+        let method_cycle = query
+            .query(
+                &IndexBuildControl::default(),
+                None,
+                Some(game.clone()),
+                SourceRelationshipRequest {
+                    anchor_source: SourceAuthority::GameData,
+                    symbol_ref: symbol_ref(&game, SymbolKind::Method, "Run", Some("CycleA")),
+                    include_workspace: false,
+                    addon_guids: vec!["game-guid".to_string()],
+                    relationship_kinds: vec!["overriddenDeclaration".to_string()],
+                    result_kinds: Vec::new(),
+                    depth: "all".to_string(),
+                    limit: Some(20),
+                    cursor: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(method_cycle.total, 1);
+        assert!(method_cycle
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("cycle was detected")));
+    }
+
+    #[test]
+    fn rejects_mixed_legacy_structural_and_usage_requests() {
+        let workspace = snapshot(
+            SourceAuthority::Workspace,
+            "ws-r1",
+            &[test_file(
+                "class Vehicle {}",
+                SourceKind::Workspace,
+                "Game/Vehicle.c",
+            )],
+        );
+        let error = SourceRelationshipQuery::default()
+            .query_restricted_legacy(
+                &IndexBuildControl::default(),
+                workspace,
+                GameDataRelationshipRequest {
+                    symbol_ref: "unused".to_string(),
+                    relationship_kinds: Some(vec![
+                        "derivedType".to_string(),
+                        "reference".to_string(),
+                    ]),
+                    limit: Some(20),
+                    cursor: None,
+                },
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            GameDataResearchError::InvalidRequest(message)
+                if message.contains("must be queried separately")
+        ));
+    }
+
+    #[test]
+    fn legacy_override_queries_keep_deep_descendant_behavior() {
+        let workspace = snapshot(
+            SourceAuthority::Workspace,
+            "ws-r1",
+            &[
+                test_file(
+                    "class Base { void Run(int value); }",
+                    SourceKind::Workspace,
+                    "Game/Base.c",
+                ),
+                test_file(
+                    "class Middle : Base { override void Run(int value) {} }",
+                    SourceKind::Workspace,
+                    "Game/Middle.c",
+                ),
+                test_file(
+                    "class Leaf : Middle { override void Run(int value) {} }",
+                    SourceKind::Workspace,
+                    "Game/Leaf.c",
+                ),
+            ],
+        );
+        let page = SourceRelationshipQuery::default()
+            .query_restricted_legacy(
+                &IndexBuildControl::default(),
+                workspace.clone(),
+                GameDataRelationshipRequest {
+                    symbol_ref: symbol_ref(&workspace, SymbolKind::Method, "Run", Some("Base")),
+                    relationship_kinds: Some(vec!["override".to_string()]),
+                    limit: Some(20),
+                    cursor: None,
+                },
+            )
+            .unwrap()
+            .expect("structural legacy page");
+
+        assert_eq!(page.total, 2);
+        assert_eq!(
+            page.results
+                .iter()
+                .map(|hit| hit.qualified_name.as_deref().unwrap())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["Leaf.Run", "Middle.Run"]),
+        );
+    }
+
+    #[test]
     fn resolves_all_levels_before_filtering_hidden_workspace_intermediates() {
         let game = snapshot(
             SourceAuthority::GameData,
@@ -1517,6 +2048,10 @@ mod tests {
         assert_eq!(page.results.len(), 1);
         assert_eq!(page.results[0].qualified_name, "Leaf");
         assert_eq!(page.results[0].distance, 2);
+        assert!(page
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("hidden by the selected output scope")));
     }
 
     #[test]

@@ -3,8 +3,9 @@ use crate::game_data_inspection::{
     GameDataSourceReadRequest,
 };
 use crate::game_data_research::{
-    list_members, query_relationships, GameDataMemberPage, GameDataMemberRequest,
-    GameDataRelationshipPage, GameDataRelationshipRequest, GameDataResearchError,
+    list_members, query_relationships, query_relationships_with_seed, GameDataMemberPage,
+    GameDataMemberRequest, GameDataRelationshipPage, GameDataRelationshipRequest,
+    GameDataResearchError,
 };
 use crate::game_data_search::{
     search_workspace, GameDataAddonMap, GameDataSearchError, GameDataSearchPage,
@@ -213,6 +214,61 @@ impl WorkspaceCatalogue {
         control: &IndexBuildControl,
         request: GameDataRelationshipRequest,
     ) -> Result<GameDataRelationshipPage, WorkspaceCatalogueError> {
+        let requested_kinds = request.relationship_kinds.clone().unwrap_or_default();
+        let is_structural = |kind: &str| {
+            matches!(
+                kind,
+                "directBase"
+                    | "derivedType"
+                    | "implementation"
+                    | "override"
+                    | "overriddenDeclaration"
+            )
+        };
+        let structural_kinds = requested_kinds
+            .iter()
+            .filter(|kind| is_structural(kind))
+            .cloned()
+            .collect::<Vec<_>>();
+        let has_usage = requested_kinds.iter().any(|kind| !is_structural(kind));
+        if !structural_kinds.is_empty() && has_usage {
+            let relationship_snapshot = self.relationship_snapshot(control)?;
+            let mut structural_results = Vec::new();
+            let mut cursor = None;
+            loop {
+                let page = self
+                    .relationships
+                    .query_restricted_legacy(
+                        control,
+                        relationship_snapshot.clone(),
+                        GameDataRelationshipRequest {
+                            symbol_ref: request.symbol_ref.clone(),
+                            relationship_kinds: Some(structural_kinds.clone()),
+                            limit: Some(100),
+                            cursor,
+                        },
+                    )
+                    .map_err(WorkspaceCatalogueError::Research)?
+                    .expect("structural relationship kinds delegate to the shared owner");
+                structural_results.extend(page.results);
+                let Some(next_cursor) = page.next_cursor else {
+                    break;
+                };
+                cursor = Some(next_cursor);
+            }
+            let snapshot = self.snapshot(control)?;
+            return query_relationships_with_seed(
+                &snapshot.index,
+                &snapshot.sources,
+                &snapshot.starts,
+                control,
+                &snapshot.revision,
+                request,
+                structural_results,
+                false,
+            )
+            .map_err(WorkspaceCatalogueError::Research);
+        }
         let relationship_snapshot = self.relationship_snapshot(control)?;
         if let Some(page) = self
             .relationships
@@ -379,5 +435,57 @@ mod tests {
             GameDataSearchRequest::new("Example"),
         );
         assert!(matches!(result, Err(WorkspaceCatalogueError::Unavailable)));
+    }
+
+    #[test]
+    fn combines_shared_structural_edges_with_legacy_usage_results() {
+        let root = std::env::temp_dir().join(format!(
+            "reforger-workspace-mixed-relationships-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("Relationships.c"),
+            "class Base {}\nclass Child : Base {}\nclass Holder { Base m_Value; }\n",
+        )
+        .unwrap();
+        let catalogue = WorkspaceCatalogue::new(WorkspaceCatalogueConfig {
+            roots: vec![root.clone()],
+        });
+        let control = IndexBuildControl::default();
+        let anchor = catalogue
+            .search(&control, GameDataSearchRequest::new("Base"))
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|hit| hit.kind == "class" && hit.name == "Base")
+            .expect("exact Base class");
+        let page = catalogue
+            .query_relationships(
+                &control,
+                GameDataRelationshipRequest {
+                    symbol_ref: anchor.symbol_ref,
+                    relationship_kinds: Some(vec![
+                        "derivedType".to_string(),
+                        "reference".to_string(),
+                    ]),
+                    limit: Some(20),
+                    cursor: None,
+                },
+            )
+            .unwrap();
+
+        assert!(page
+            .results
+            .iter()
+            .any(|hit| hit.relationship_kind == "derivedType"));
+        assert!(page
+            .results
+            .iter()
+            .any(|hit| hit.relationship_kind == "reference"));
+        fs::remove_dir_all(root).unwrap();
     }
 }

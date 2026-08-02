@@ -645,6 +645,28 @@ pub fn query_relationships(
     revision: &str,
     request: GameDataRelationshipRequest,
 ) -> Result<GameDataRelationshipPage, GameDataResearchError> {
+    query_relationships_with_seed(
+        index,
+        sources,
+        starts,
+        control,
+        revision,
+        request,
+        Vec::new(),
+        true,
+    )
+}
+
+pub(crate) fn query_relationships_with_seed(
+    index: &SymbolIndex,
+    sources: &BTreeMap<SourceFileId, Arc<str>>,
+    starts: &BTreeMap<SourceFileId, SourceLineStarts>,
+    control: &IndexBuildControl,
+    revision: &str,
+    request: GameDataRelationshipRequest,
+    mut results: Vec<GameDataRelationshipHit>,
+    include_legacy_structural: bool,
+) -> Result<GameDataRelationshipPage, GameDataResearchError> {
     let target = resolve_symbol_ref(
         index,
         &GameDataAddonMap::new(),
@@ -662,16 +684,17 @@ pub fn query_relationships(
         &request.symbol_ref,
         &kinds,
     )?;
-    let mut results = Vec::new();
-    collect_structural_relationships(
-        index,
-        starts,
-        control,
-        revision,
-        target,
-        &kinds,
-        &mut results,
-    )?;
+    if include_legacy_structural {
+        collect_structural_relationships(
+            index,
+            starts,
+            control,
+            revision,
+            target,
+            &kinds,
+            &mut results,
+        )?;
+    }
     if kinds
         .iter()
         .any(|kind| matches!(kind.as_str(), "reference" | "caller"))
