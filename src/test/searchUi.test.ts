@@ -119,6 +119,8 @@ suite('Reforger search UI MCP mapping', () => {
 	});
 
 	test('keeps full-text search explicit inside the existing search UI', () => {
+		assert.doesNotMatch(searchUiSource, /Search the indexed workspace, loaded add-ons/);
+		assert.doesNotMatch(searchUiSource, /class="intro"/);
 		assert.match(searchUiSource, /const modeButtons = \(\) =>/);
 		assert.match(searchUiSource, /state\.mode === 'text'/);
 		assert.match(searchUiSource, /data-mode="semantic"/);
