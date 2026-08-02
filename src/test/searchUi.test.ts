@@ -135,6 +135,21 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /state\.mode === 'semantic' && state\.source === 'wiki'/);
 	});
 
+	test('hosts switchable hard-coded add-on selector prototypes inside Search In', () => {
+		assert.match(searchUiSource, /const prototypeVariants = \[\{ key: 'A', name: 'Compact menu' \}, \{ key: 'B', name: 'Inline checklist' \}, \{ key: 'C', name: 'Selected chips' \}\]/);
+		assert.match(searchUiSource, /const addonPrototypeSources = \[/);
+		assert.match(searchUiSource, /value: 'workspace', label: 'Workspace', detail: 'Live'/);
+		assert.match(searchUiSource, /label: 'Arma Reforger', detail: '5,776 scripts'/);
+		assert.match(searchUiSource, /data-addon-choice/);
+		assert.match(searchUiSource, /Prototype only — these selections do not filter search results yet\./);
+		assert.match(searchUiSource, /addonScopePrototype\(\) \+ sourceButtons\(\)/);
+		assert.match(searchUiSource, /data-prototype-previous/);
+		assert.match(searchUiSource, /data-prototype-next/);
+		assert.match(searchUiSource, /url\.searchParams\.set\('addonVariant', next\.key\)/);
+		assert.match(searchUiSource, /addonPrototypeSelected: state\.addonPrototypeSelected/);
+		assert.match(searchUiSource, /addonPrototypeSelected: jsonField/);
+	});
+
 	test('maps symbol search handoffs into source-browser rows', () => {
 		const results = normalizeSearchPage('gameData', {
 			results: [{
