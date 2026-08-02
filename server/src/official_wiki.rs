@@ -68,6 +68,7 @@ struct ValidatedPage {
     hash: [u8; 32],
     title: String,
     source_url: String,
+    contents: Arc<str>,
 }
 
 #[derive(Debug, Clone)]
@@ -288,8 +289,7 @@ impl OfficialWikiCorpus {
             {
                 continue;
             }
-            let contents = self.read_current_page(page)?;
-            hits.extend(search_page(page, &contents, &query, &revision));
+            hits.extend(search_page(page, &page.contents, &query, &revision));
         }
         hits.sort_by(|left, right| {
             left.0
@@ -424,15 +424,6 @@ impl OfficialWikiCorpus {
                 line_count,
             }),
         })
-    }
-
-    fn read_current_page(&self, page: &ValidatedPage) -> Result<String, OfficialWikiSearchError> {
-        self.read_current_page_bytes(page)
-            .map_err(|error| match error {
-                OfficialWikiReadError::Unavailable => OfficialWikiSearchError::Unavailable,
-                OfficialWikiReadError::Changed => OfficialWikiSearchError::Changed,
-                _ => OfficialWikiSearchError::Changed,
-            })
     }
 
     fn read_current_page_bytes(
@@ -717,7 +708,7 @@ fn validate_page(path: &Path, logical_path: String) -> Result<ValidatedPage, Str
         return Err(logical_path);
     }
     let contents = fs::read(path).map_err(|_| logical_path.clone())?;
-    let text = std::str::from_utf8(&contents).map_err(|_| logical_path.clone())?;
+    let text = String::from_utf8(contents).map_err(|_| logical_path.clone())?;
     let (title, source) = text
         .lines()
         .next()
@@ -730,13 +721,14 @@ fn validate_page(path: &Path, logical_path: String) -> Result<ValidatedPage, Str
     {
         return Err(logical_path);
     }
-    let hash: [u8; 32] = Sha256::digest(&contents).into();
+    let hash: [u8; 32] = Sha256::digest(text.as_bytes()).into();
     Ok(ValidatedPage {
         logical_path,
-        bytes: contents.len() as u64,
+        bytes: text.len() as u64,
         hash,
         title: title.to_string(),
         source_url: source.to_string(),
+        contents: Arc::from(text),
     })
 }
 
@@ -1110,6 +1102,39 @@ mod tests {
             })
             .unwrap();
         assert_eq!(direct.results[0].heading, "Second");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn searches_the_validated_snapshot_without_rereading_every_page() {
+        let root = std::env::temp_dir().join(format!(
+            "official-wiki-snapshot-search-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let page_path = root.join("Page.md");
+        fs::write(
+            &page_path,
+            "# [Page](https://community.bistudio.com/wiki/Arma_Reforger:Page)\nneedle\n",
+        )
+        .unwrap();
+        let corpus = OfficialWikiCorpus::new(root.clone());
+        assert!(corpus.status().available);
+
+        fs::remove_file(page_path).unwrap();
+        let results = corpus
+            .search(OfficialWikiSearchRequest {
+                query: "needle".to_string(),
+                path_prefix: None,
+                limit: None,
+                cursor: None,
+                offset: None,
+            })
+            .expect("search the immutable corpus snapshot");
+
+        assert_eq!(results.total, 1);
+        assert_eq!(results.results[0].relative_path, "Page.md");
         let _ = fs::remove_dir_all(root);
     }
 
