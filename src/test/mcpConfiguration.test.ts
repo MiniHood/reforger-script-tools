@@ -11,6 +11,7 @@ suite('MCP configuration', () => {
 			serverPath: 'C:\\Extensions\\reforger_language_server.exe',
 			addonSourceInventory: 'C:\\Storage\\addon-sources\\workbench-graph-v1.json',
 			addonIndexStorage: 'C:\\Storage\\addon-indexes',
+			externalIndexMode: 'loaded',
 		});
 
 		assert.deepStrictEqual(launch, {
@@ -21,6 +22,8 @@ suite('MCP configuration', () => {
 				'C:\\Storage\\addon-sources\\workbench-graph-v1.json',
 				'--addon-index-storage',
 				'C:\\Storage\\addon-indexes',
+				'--external-index-mode',
+				'loaded',
 			],
 		});
 	});
@@ -30,6 +33,7 @@ suite('MCP configuration', () => {
 			serverPath: '/extension/reforger_language_server',
 			addonSourceInventory: '/storage/addon-sources/workbench-graph-v1.json',
 			addonIndexStorage: '/storage/addon-indexes',
+			externalIndexMode: 'loaded',
 		});
 
 		assert.deepStrictEqual(launch.args, [
@@ -38,7 +42,20 @@ suite('MCP configuration', () => {
 			'/storage/addon-sources/workbench-graph-v1.json',
 			'--addon-index-storage',
 			'/storage/addon-indexes',
+			'--external-index-mode',
+			'loaded',
 		]);
+	});
+
+	test('carries all mode into MCP instead of implicitly selecting the Workbench graph', () => {
+		const launch = buildMcpLaunchConfiguration({
+			serverPath: '/extension/reforger_language_server',
+			addonSourceInventory: '/storage/addon-sources/workbench-graph-v1.json',
+			addonIndexStorage: '/storage/addon-indexes',
+			externalIndexMode: 'all',
+		});
+
+		assert.deepStrictEqual(launch.args.slice(-2), ['--external-index-mode', 'all']);
 	});
 
 	test('passes discovered add-on script roots to workspace semantic search', () => {
@@ -46,6 +63,7 @@ suite('MCP configuration', () => {
 			serverPath: '/extension/reforger_language_server',
 			addonSourceInventory: '/storage/graph.json',
 			addonIndexStorage: '/storage/addon-indexes',
+			externalIndexMode: 'loaded',
 			workspaceScripts: ['/projects/MyAddon/Scripts'],
 		});
 
@@ -55,6 +73,8 @@ suite('MCP configuration', () => {
 			'/storage/graph.json',
 			'--addon-index-storage',
 			'/storage/addon-indexes',
+			'--external-index-mode',
+			'loaded',
 			'--workspace-scripts',
 			'/projects/MyAddon/Scripts',
 		]);
@@ -86,11 +106,13 @@ suite('MCP configuration', () => {
 			serverPath: 'C:\\Users\\Gray\\.vscode\\extensions\\burn0ut7.reforger-script-tools-1.0.1\\dist\\server\\win32-x64\\reforger_language_server.exe',
 			addonSourceInventory: 'C:\\Storage\\graph.json',
 			addonIndexStorage: 'C:\\Storage\\addon-indexes',
+			externalIndexMode: 'loaded',
 		}));
 		const current = renderCodexMcpConfiguration(buildMcpLaunchConfiguration({
 			serverPath: 'C:\\Users\\Gray\\.vscode\\extensions\\burn0ut7.reforger-script-tools-1.0.2\\dist\\server\\win32-x64\\reforger_language_server.exe',
 			addonSourceInventory: 'C:\\Storage\\graph.json',
 			addonIndexStorage: 'C:\\Storage\\addon-indexes',
+			externalIndexMode: 'loaded',
 		}));
 
 		assert.doesNotMatch(current, /1\.0\.1/);

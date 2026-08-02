@@ -1,6 +1,7 @@
 use crate::addon_sources::{
-    read_cached_loaded_addon_indexes, read_cached_virtual_source, read_cached_virtual_sources,
-    LoadedAddonIndexInstance, LoadedAddonIndexResult, BASE_GAME_GUID, ENFUSION_CORE_GUID,
+    load_all_cached_addon_indexes, read_cached_loaded_addon_indexes, read_cached_virtual_source,
+    read_cached_virtual_sources, LoadedAddonIndexInstance, LoadedAddonIndexResult, BASE_GAME_GUID,
+    ENFUSION_CORE_GUID,
 };
 use crate::game_data_inspection::{
     inspect, read_source as read_source_evidence, GameDataInspectionError,
@@ -39,11 +40,20 @@ use std::time::{Duration, Instant};
 pub const GAME_DATA_INITIALIZATION_DEADLINE_MS: u64 = 120_000;
 pub const MAX_STRUCTURED_RESULT_BYTES: usize = 256 * 1024;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum GameDataExternalIndexMode {
+    All,
+    #[default]
+    Loaded,
+    None,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct GameDataCatalogueConfig {
     pub cache_path: Option<PathBuf>,
     pub addon_source_inventory: Option<PathBuf>,
     pub addon_index_storage: Option<PathBuf>,
+    pub external_index_mode: GameDataExternalIndexMode,
     pub workspace_roots: Vec<PathBuf>,
 }
 
@@ -758,6 +768,39 @@ fn initialize_catalogue(
     control.check()?;
     let started = Instant::now();
     let source = source_status(None);
+    if config.external_index_mode == GameDataExternalIndexMode::None {
+        return Ok(unavailable_state(
+            source,
+            started.elapsed(),
+            "game_data_external_index_disabled",
+            "External Game Data indexing is disabled.",
+            "Set reforgerScriptTools.workbench.externalIndexMode to loaded or all, regenerate the MCP configuration, then restart MCP.",
+        ));
+    }
+
+    if config.external_index_mode == GameDataExternalIndexMode::All {
+        let Some(storage) = config.addon_index_storage.as_ref() else {
+            return Ok(unavailable_state(
+                source,
+                started.elapsed(),
+                "game_data_addon_scope_not_configured",
+                "The parser-owned add-on index storage is not configured.",
+                "Regenerate the MCP configuration from the extension.",
+            ));
+        };
+        let loaded = load_all_cached_addon_indexes(storage, &config.workspace_roots, control)?;
+        if loaded.loaded_instances == 0 {
+            return Ok(unavailable_state(
+                source,
+                started.elapsed(),
+                "game_data_addon_scope_unavailable",
+                "No compatible cached add-on indexes are available.",
+                "Activate the language server so it indexes external add-ons, then restart MCP.",
+            ));
+        }
+        return Ok(ready_layered_state(loaded));
+    }
+
     match (&config.addon_source_inventory, &config.addon_index_storage) {
         (Some(inventory), Some(storage)) => {
             let loaded = read_cached_loaded_addon_indexes(
@@ -1219,7 +1262,90 @@ fn counts(index: &SymbolIndex) -> GameDataCounts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::addon_sources::LoadedAddonInstanceIdentity;
+    use crate::addon_sources::{load_or_build_loaded_addon_indexes, LoadedAddonInstanceIdentity};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn all_mode_publishes_every_cached_addon_not_only_the_current_graph() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "reforger_game_data_all_scope_{}_{}",
+            std::process::id(),
+            nonce
+        ));
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::create_dir_all(first.join("Scripts")).unwrap();
+        fs::create_dir_all(second.join("Scripts")).unwrap();
+        fs::write(first.join("Scripts/First.c"), "class First {}\n").unwrap();
+        fs::write(second.join("Scripts/Second.c"), "class Second {}\n").unwrap();
+        let graph = root.join("graph.json");
+        let storage = root.join("indexes");
+        let addon = |guid: &str, id: &str, source_root: &Path| {
+            serde_json::json!({
+                "guid": guid,
+                "id": id,
+                "title": id,
+                "sourceRoot": source_root,
+            })
+        };
+        fs::write(
+            &graph,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "reforger-workbench-loaded-addon-graph-v1",
+                "bridgeVersion": "1.52.0",
+                "protocolVersion": 1,
+                "addons": [
+                    addon("1111111111111111", "First", &first),
+                    addon("2222222222222222", "Second", &second),
+                ],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        load_or_build_loaded_addon_indexes(&graph, &storage, &[], &IndexBuildControl::default())
+            .unwrap();
+
+        fs::write(
+            &graph,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "reforger-workbench-loaded-addon-graph-v1",
+                "bridgeVersion": "1.52.0",
+                "protocolVersion": 1,
+                "addons": [addon("1111111111111111", "First", &first)],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let loaded_status = GameDataCatalogue::new(GameDataCatalogueConfig {
+            addon_source_inventory: Some(graph.clone()),
+            addon_index_storage: Some(storage.clone()),
+            external_index_mode: GameDataExternalIndexMode::Loaded,
+            ..GameDataCatalogueConfig::default()
+        })
+        .status(&IndexBuildControl::default())
+        .unwrap();
+        let all_status = GameDataCatalogue::new(GameDataCatalogueConfig {
+            addon_source_inventory: Some(graph),
+            addon_index_storage: Some(storage),
+            external_index_mode: GameDataExternalIndexMode::All,
+            ..GameDataCatalogueConfig::default()
+        })
+        .status(&IndexBuildControl::default())
+        .unwrap();
+
+        assert_eq!(loaded_status.addons.len(), 1);
+        assert_eq!(all_status.addons.len(), 2);
+        assert!(all_status
+            .addons
+            .iter()
+            .any(|addon| addon.addon_guid == "2222222222222222"));
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn scope_revision_changes_with_exact_instance_root() {

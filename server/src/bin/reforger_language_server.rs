@@ -1,4 +1,6 @@
-use reforger_language_server::game_data_catalogue::GameDataCatalogueConfig;
+use reforger_language_server::game_data_catalogue::{
+    GameDataCatalogueConfig, GameDataExternalIndexMode,
+};
 use reforger_language_server::lsp::{
     run_stdio as run_lsp_stdio, BracketColoringMode, ExternalIndexMode, LspServerOptions,
 };
@@ -347,6 +349,15 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
                 game_data.addon_index_storage =
                     Some(path_value(&mut args, "--addon-index-storage")?)
             }
+            "--external-index-mode" => {
+                let value = string_value(&mut args, "--external-index-mode")?;
+                game_data.external_index_mode = match value.as_str() {
+                    "all" => GameDataExternalIndexMode::All,
+                    "loaded" => GameDataExternalIndexMode::Loaded,
+                    "none" => GameDataExternalIndexMode::None,
+                    _ => return Err(format!("invalid external index mode '{value}'")),
+                };
+            }
             "--official-wiki-root" => {
                 official_wiki_root = Some(path_value(&mut args, "--official-wiki-root")?)
             }
@@ -409,13 +420,14 @@ fn string_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<S
 
 fn print_help() {
     println!(
-        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server mcp-api-bundle\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|read-logs|integration-status|bootstrap-integration|maintain-integration|process-status|launch-default|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --index-cache <legacy single-cache path>\n  --workspace-scripts <path> (repeatable)\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <test/development override>"
+        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server mcp-api-bundle\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|read-logs|integration-status|bootstrap-integration|maintain-integration|process-status|launch-default|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --external-index-mode <all|loaded|none>\n  --index-cache <legacy single-cache path>\n  --workspace-scripts <path> (repeatable)\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <test/development override>"
     );
 }
 
 #[cfg(test)]
 mod tests {
     use super::{parse_args_from, ServerMode, WorkbenchApiCommand};
+    use reforger_language_server::game_data_catalogue::GameDataExternalIndexMode;
     use reforger_language_server::lsp::BracketColoringMode;
     use std::path::PathBuf;
 
@@ -466,6 +478,8 @@ mod tests {
                 "graph.json".to_string(),
                 "--addon-index-storage".to_string(),
                 "addon-indexes".to_string(),
+                "--external-index-mode".to_string(),
+                "all".to_string(),
                 "--workspace-scripts".to_string(),
                 "Scripts".to_string(),
             ]
@@ -483,6 +497,10 @@ mod tests {
         assert_eq!(
             options.game_data.addon_index_storage,
             Some(PathBuf::from("addon-indexes"))
+        );
+        assert_eq!(
+            options.game_data.external_index_mode,
+            GameDataExternalIndexMode::All
         );
         assert_eq!(
             options.game_data.workspace_roots,

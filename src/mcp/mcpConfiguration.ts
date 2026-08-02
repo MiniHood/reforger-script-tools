@@ -3,6 +3,12 @@ import * as vscode from 'vscode';
 import { mcpCommands, mcpServer } from '../extensionConfig/mcp';
 import { gameDataStorage } from '../extensionConfig/gameData';
 import { languageClientIndexCache } from '../extensionConfig/languageClient';
+import {
+	externalIndexModes,
+	type ExternalIndexMode,
+	workbenchConfig,
+	workbenchDefaults,
+} from '../extensionConfig/workbench';
 import { resolveLanguageServerPath } from '../languageClient/serverPath';
 import { discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
 
@@ -15,6 +21,7 @@ export interface McpLaunchInputs {
 	serverPath: string;
 	addonSourceInventory: string;
 	addonIndexStorage: string;
+	externalIndexMode: ExternalIndexMode;
 	workspaceScripts?: string[];
 }
 
@@ -30,6 +37,8 @@ export function buildMcpLaunchConfiguration(inputs: McpLaunchInputs): McpLaunch 
 		inputs.addonSourceInventory,
 		'--addon-index-storage',
 		inputs.addonIndexStorage,
+		'--external-index-mode',
+		inputs.externalIndexMode,
 		...(inputs.workspaceScripts ?? []).flatMap(root => ['--workspace-scripts', root]),
 	];
 	return {
@@ -86,6 +95,7 @@ export function registerMcpConfigurationCommand(
 					context.globalStorageUri.fsPath,
 					languageClientIndexCache.rootFolder,
 				),
+				externalIndexMode: readExternalIndexMode(),
 				workspaceScripts: await discoverWorkspaceScriptRoots(),
 			});
 			const configuration = format === 'codex'
@@ -98,6 +108,16 @@ export function registerMcpConfigurationCommand(
 			);
 		},
 	));
+}
+
+function readExternalIndexMode(): ExternalIndexMode {
+	const value = vscode.workspace.getConfiguration(workbenchConfig.section).get(
+		workbenchConfig.settings.externalIndexMode,
+		workbenchDefaults.externalIndexMode,
+	);
+	return typeof value === 'string' && externalIndexModes.includes(value as ExternalIndexMode)
+		? value as ExternalIndexMode
+		: workbenchDefaults.externalIndexMode;
 }
 
 async function selectConfigurationFormat(): Promise<ConfigurationFormat | undefined> {
