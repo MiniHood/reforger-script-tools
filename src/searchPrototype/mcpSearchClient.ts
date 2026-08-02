@@ -119,6 +119,20 @@ const allSearchResourceKinds = searchResourceKindFilters
 	.flatMap(filter => filter.kinds ?? [])
 	.filter((kind, index, values) => values.indexOf(kind) === index);
 
+const searchSymbolKinds: readonly SearchSymbolKind[] = [
+	'class',
+	'constructor',
+	'destructor',
+	'enum',
+	'enumMember',
+	'field',
+	'function',
+	'globalField',
+	'method',
+	'preprocessorMacro',
+	'typedef',
+];
+
 export interface SearchHit {
 	id: string;
 	source: SearchSource;
@@ -138,6 +152,7 @@ export interface SearchHit {
 	textMatchStart?: number;
 	textMatchLength?: number;
 	resourceName?: string;
+	symbolKind?: SearchSymbolKind;
 }
 
 export interface SearchResponse {
@@ -1078,7 +1093,8 @@ export function formatSearchKind(kind: string): string {
 
 function normalizeSymbolHit(source: SearchSource, hit: RecordValue, index: number): SearchHit[] {
 	const name = asString(hit.name, 'Unnamed symbol');
-	const kind = formatSearchKind(asString(hit.kind, 'Symbol'));
+	const rawKind = asString(hit.kind, '');
+	const kind = formatSearchKind(rawKind || 'Symbol');
 	const qualifiedName = asString(hit.qualifiedName, name);
 	const relativePath = asString(hit.relativePath, 'Unknown source');
 	const range = asRecord(hit.declarationRange);
@@ -1101,6 +1117,7 @@ function normalizeSymbolHit(source: SearchSource, hit: RecordValue, index: numbe
 		path: `${relativePath}:${line}`,
 		excerpt,
 		matchKind: asString(hit.matchKind, 'symbol'),
+		...(isSearchSymbolKind(rawKind) ? { symbolKind: rawKind } : {}),
 		...(typeof hit.sourceUri === 'string' ? { sourceUri: hit.sourceUri } : {}),
 		selectionStartLine: asNumber(asRecord(hit.selectionRange).startLine, line),
 		selectionEndLine: asNumber(asRecord(hit.selectionRange).endLine, line),
@@ -1108,6 +1125,10 @@ function normalizeSymbolHit(source: SearchSource, hit: RecordValue, index: numbe
 		...(addonGuid ? { addonGuid } : {}),
 		...(addonLabel ? { addonLabel } : {}),
 	}];
+}
+
+function isSearchSymbolKind(value: string): value is SearchSymbolKind {
+	return searchSymbolKinds.includes(value as SearchSymbolKind);
 }
 
 function normalizeTextHit(source: SearchSource, hit: RecordValue, index: number): SearchHit[] {

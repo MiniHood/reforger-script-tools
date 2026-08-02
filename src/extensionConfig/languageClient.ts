@@ -66,6 +66,7 @@ export const languageClientRequests = {
 	inputRoute: 'reforger/inputRoute',
 	blockCommentPair: 'reforger/blockCommentPair',
 	activeScopeDelimiters: 'reforger/activeScopeDelimiters',
+	previewContext: 'reforger/previewContext',
 	readPackSource: 'reforger/readPackSource',
 } as const;
 

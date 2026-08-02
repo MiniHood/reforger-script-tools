@@ -37,6 +37,12 @@ Semantic-token classification is a language contract, not a colour palette.
 Rust identifies language roles; VS Code settings and the TypeScript shell own
 their presentation, including hover rendering where editor token colours are
 not available.
+Search preview Auto context follows the same boundary. Rust selects the nearest
+enclosing indexed declaration and returns a bounded line range; fields and
+other value declarations remain one line, while callable and type scopes may
+expand to at most 80 lines around the match. The TypeScript shell requests that
+range and renders it, while explicit numeric context remains a presentation
+control.
 The fixed collection type names `array`, `set`, and `map` retain their class
 role in type positions even when no external index is available; other
 source-backed class names still require indexed facts.

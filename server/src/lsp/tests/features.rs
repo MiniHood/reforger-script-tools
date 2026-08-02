@@ -6621,6 +6621,66 @@ fn semantic_scope_delimiters_color_only_proven_unmatched_openers() {
 }
 
 #[test]
+fn preview_context_request_projects_the_nearest_semantic_declaration() {
+    let source = "class Example\n{\n\tint m_Value;\n\tvoid Run()\n\t{\n\t\tPrint(\"here\");\n\t}\n}\n";
+    let uri = "file:///Scripts/PreviewContext.c";
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": source
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    server.writer.clear();
+
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "reforger/previewContext",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 5, "character": 0 }
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8_lossy(&server.writer);
+    let response: Value = serde_json::from_str(
+        output
+            .split("\r\n\r\n")
+            .last()
+            .expect("framed preview context response"),
+    )
+    .unwrap();
+    assert_eq!(
+        response["result"],
+        json!({
+            "startLine": 3,
+            "endLine": 6,
+            "kind": "method",
+            "truncated": false
+        })
+    );
+}
+
+#[test]
 fn active_scope_delimiter_request_returns_current_innermost_distinct_pairs() {
     let source = "class Example\n{\n\tvoid Run()\n\t{\n\t\tif ((true))\n\t\t{\n\t\t}\n\t}\n}\n";
     let uri = "file:///Scripts/ActiveScope.c";

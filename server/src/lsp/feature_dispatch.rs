@@ -25,8 +25,8 @@ use super::{
     DocumentRuntime, ExternalIndexHandle, HoverSelectionSource, LspPositionIndex, QueryQuality,
     RuntimeEffect, TextSpan, ACTIVE_SCOPE_DELIMITERS_METHOD, BLOCK_COMMENT_PAIR_METHOD,
     CONTROL_HEADER_ENTER_METHOD, DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD,
-    RANGE_FORMATTING_METHOD, READ_PACK_SOURCE_METHOD, WORKSPACE_FILE_CHANGED_METHOD,
-    WORKSPACE_FILE_DELETED_METHOD,
+    PREVIEW_CONTEXT_METHOD, RANGE_FORMATTING_METHOD, READ_PACK_SOURCE_METHOD,
+    WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::{json, Value};
 use std::time::Instant;
@@ -774,6 +774,46 @@ impl FeatureDispatcher<'_> {
                         pair_count,
                         start.elapsed().as_millis()
                     ));
+                    self.respond(id, result)?;
+                }
+            }
+            PREVIEW_CONTEXT_METHOD => {
+                if let Some(id) = message.id {
+                    let start = Instant::now();
+                    let RequestCommand::Feature(FeatureCommand::PreviewContext(params)) = &command
+                    else {
+                        unreachable!("preview context method has typed parameters");
+                    };
+                    let mut log_uri = "<missing>".to_string();
+                    let mut result_kind = "unavailable";
+                    let result = params
+                        .clone()
+                        .and_then(|params| {
+                            log_uri = params.text_document.uri;
+                            let query = self
+                                .document_runtime
+                                .capture_query(&log_uri, self.external_index.snapshot())?;
+                            let DocumentQueryState::Cached(analysis) = query.state() else {
+                                return None;
+                            };
+                            let requested_line = params.position.line;
+                            let context = crate::lsp::preview_context::preview_context(
+                                &query.document.snapshot.text(),
+                                analysis,
+                                requested_line,
+                            );
+                            result_kind = context.kind;
+                            serde_json::to_value(context).ok()
+                        })
+                        .unwrap_or(Value::Null);
+                    self.log(|| {
+                        format!(
+                            "request previewContext uri={} kind={} elapsed_ms={}",
+                            log_uri,
+                            result_kind,
+                            start.elapsed().as_millis()
+                        )
+                    });
                     self.respond(id, result)?;
                 }
             }

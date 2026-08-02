@@ -122,7 +122,7 @@ suite('Reforger search UI MCP mapping', () => {
 	test('queues script text matches for asynchronous semantic coloring', () => {
 		assert.match(searchUiSource, /const semanticHits = previewHits\.filter\(hit => hit\.source !== 'wiki'\)/);
 		assert.match(searchUiSource, /length: Math\.min\(4, semanticHits\.length\)/);
-		assert.match(searchUiSource, /const rawPreview = \{ hit, document, previewLine, preview, matchRange \};[\s\S]*?queueRawPreview\(hit\.id\);[\s\S]*?queueSemanticPreview\(rawPreview\);/);
+		assert.match(searchUiSource, /const rawPreview = \{ hit, document, previewLine, preview, matchRange, autoContext, semanticDocument \};[\s\S]*?queueRawPreview\(hit\.id\);[\s\S]*?queueSemanticPreview\(rawPreview\);/);
 		assert.match(searchUiSource, /else if \(hit\.kind === 'text'\) \{\s*return undefined;/);
 		assert.match(searchUiSource, /state\.sourcePreviews\[result\.id\] \?\? \(result\.kind === 'text' \? result\.excerpt : undefined\)/);
 	});
@@ -154,6 +154,22 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.strictEqual(formatSearchKind('destructor'), 'function');
 	});
 
+	test('preserves the authoritative symbol kind for result accents', () => {
+		const results = normalizeSearchPage('workspace', {
+			results: [{
+				name: 'SCR_Example',
+				kind: 'class',
+				qualifiedName: 'SCR_Example',
+				relativePath: 'Scripts/Example.c',
+				declarationRange: { startLine: 4 },
+				selectionRange: { startLine: 4, endLine: 4 },
+				readSourceInput: { relativePath: 'Scripts/Example.c' },
+			}],
+		});
+
+		assert.strictEqual(results[0].symbolKind, 'class');
+	});
+
 	test('extracts the authoritative source line for a symbol preview', () => {
 		assert.strictEqual(sourceLinePreview({ content: '    class SCR_Mode\n', startLine: 18, endLine: 18 }, 18), 'class SCR_Mode');
 		assert.strictEqual(sourceLinePreview({ content: 'only line', startLine: 0, endLine: 0 }, 1), 'only line');
@@ -163,7 +179,9 @@ suite('Reforger search UI MCP mapping', () => {
 		const document = { content: 'one\n  two\n\nthree\nfour\nfive', startLine: 1, endLine: 6 };
 		assert.strictEqual(sourceContextPreview(document, 4, 1), 'three');
 		assert.strictEqual(sourceContextPreview(document, 4, 2), '  two\n\nthree\nfour\nfive');
-		assert.match(searchUiSource, /data-preview-context type="number" min="1" max="249" value="' \+ previewContextLines/);
+		assert.match(searchUiSource, /data-preview-context-down/);
+		assert.match(searchUiSource, /data-preview-context-up/);
+		assert.match(searchUiSource, /previewContextLines === 0 \? 'Auto' : previewContextLines/);
 		assert.match(searchUiSource, /type: 'previewContext', contextLines: previewContextLines/);
 		assert.match(searchUiSource, /clearTimeout\(previewContextTimer\);[\s\S]*?setTimeout\(\(\) => vscode\.postMessage\(\{ type: 'previewContext'/);
 		assert.match(searchUiSource, /previewContextLines: numberField\(snapshot\.previewContextLines\)/);
@@ -194,7 +212,8 @@ suite('Reforger search UI MCP mapping', () => {
 
 	test('keeps semantic token offsets across a multi-line preview', () => {
 		assert.match(searchUiSource, /semanticPreviewForLines\(/);
-		assert.match(searchUiSource, /active\.previewContextLines === 1[\s\S]*?semanticPreviewForLine/);
+		assert.match(searchUiSource, /active\.previewContextLines === 0 && autoContext[\s\S]*?semanticPreviewForLines/);
+		assert.match(searchUiSource, /active\.previewContextLines <= 1[\s\S]*?semanticPreviewForLine/);
 		assert.match(searchUiSource, /line - active\.previewContextLines/);
 		assert.match(searchUiSource, /line \+ active\.previewContextLines/);
 		assert.strictEqual(typeof semanticPreviewForLine, 'function');
@@ -255,7 +274,8 @@ suite('Reforger search UI MCP mapping', () => {
 	});
 
 	test('removes the result-limit status after a search completes', () => {
-		assert.match(searchUiSource, /state\.status !== 'loading'[\s\S]*?\.source-header > div:first-child > \.muted'\)\?\.remove\(\)/);
+		assert.match(searchUiSource, /state\.status === 'loading' \? 'Query running' : 'Index ready'/);
+		assert.doesNotMatch(searchUiSource, /Limited to|result-limit/);
 	});
 
 	test('focuses and preserves the selection of the selected-source filter', () => {
@@ -292,10 +312,10 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /selectionTouched/);
 		assert.match(searchUiSource, /message\.type === 'scope'/);
 		assert.match(searchUiSource, /nextSources\.filter\(source => source\.defaultSelected\)/);
-		assert.match(searchUiSource, /selected\.length > 3/);
-		assert.match(searchUiSource, /' more<\/span>'/);
-		assert.match(searchUiSource, /<button class="addon-trigger"[\s\S]*?<div class="addon-chips">/);
-		assert.match(searchUiSource, /\.addon-chips \{[^}]*margin-top: 6px;/);
+		assert.match(searchUiSource, /selected\.length > 1/);
+		assert.match(searchUiSource, /class="scope-count">\+' \+ \(selected\.length - 1\)/);
+		assert.match(searchUiSource, /<button class="addon-trigger"[\s\S]*?<span class="addon-summary">/);
+		assert.doesNotMatch(searchUiSource, /addon-chips/);
 		assert.doesNotMatch(searchUiSource, /addonPrototypeSources/);
 		assert.doesNotMatch(searchUiSource, /SEARCH IN/);
 		assert.match(searchUiSource, /No search scopes selected\./);
@@ -314,39 +334,28 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /document\.querySelector\('\.addon-menu'\)\?\.remove\(\)/);
 		assert.match(searchClientSource, /workspaceScopeId[\s\S]*?wikiScopeId[\s\S]*?\.\.\.addonSources/);
 		assert.match(searchClientSource, /wikiScopeId[^\n]+pinned: true/);
-		assert.match(searchUiSource, /<div class="atlas-filter-strip"><div class="control-block scope-control"><div class="group-label">SEARCH SCOPE<\/div>' \+ searchScope\(\) \+ '<\/div><div class="control-block atlas-query"><div class="group-label">SEARCH<\/div>' \+ queryField\(\) \+ textSearchOptions\(\) \+ '<\/div><div class="atlas-secondary-controls"><div class="control-block mode-control"><div class="group-label">SEARCH MODE<\/div>' \+ modeControls\(\)/);
+		assert.match(searchUiSource, /class="control-block search-scope-control"><div class="group-label">SEARCH SCOPE<\/div>' \+ searchScope\(\)/);
 	});
 
-	test('offers four header prototypes over one shared Source Atlas match surface', () => {
-		assert.match(searchUiSource, /function renderSearchUi\(webview: vscode\.Webview, prototypeVariantsEnabled: boolean\): string/);
-		assert.match(searchUiSource, /context\.extensionMode !== vscode\.ExtensionMode\.Production/);
-		assert.match(searchUiSource, /class="shell search-atlas variant-atlas"/);
-		assert.match(searchUiSource, /\{ key: 'atlas', short: 'A', name: 'Current Atlas' \}/);
-		assert.match(searchUiSource, /\{ key: 'deck', short: 'B', name: 'Command Deck' \}/);
-		assert.match(searchUiSource, /\{ key: 'brief', short: 'C', name: 'Search Brief' \}/);
-		assert.match(searchUiSource, /\{ key: 'signal', short: 'D', name: 'Signal Bar' \}/);
-		assert.match(searchUiSource, /new URLSearchParams\(window\.location\.search\)\.get\('variant'\)/);
-		assert.match(searchUiSource, /const prototypeSwitcher = \(\) => \{/);
-		assert.match(searchUiSource, /const pageRenderers = \{ atlas: renderAtlasHeader, deck: renderCommandDeck, brief: renderSearchBrief, signal: renderSignalBar \}/);
-		assert.match(searchUiSource, /cyclePrototypeVariant\(event\.key === 'ArrowLeft' \? -1 : 1\)/);
-		assert.match(searchUiSource, /\.atlas-filter-strip \{ display: grid; grid-template-columns: 180px minmax\(240px, 1fr\); grid-template-areas: "scope query" "secondary secondary"; align-items: start;/);
-		assert.match(searchUiSource, /\.control-block \.group-label \{ min-height: 22px; padding: 0 0 7px;/);
-		assert.match(searchUiSource, /\.atlas-filter-strip \.addon-trigger \{ width: 100%; min-height: 38px;/);
-		assert.match(searchUiSource, /\.atlas-query \{ grid-area: query; min-width: 240px;/);
-		assert.match(searchUiSource, /\.atlas-secondary-controls \{ grid-area: secondary; display: flex; align-items: start;/);
-		assert.match(searchUiSource, /const typeControl = state\.mode === 'text' \? '' : '<div class="control-block type-control">/);
-		assert.match(searchUiSource, /class="control-block scope-control"[\s\S]*?class="control-block atlas-query"[\s\S]*?class="atlas-secondary-controls"[\s\S]*?class="control-block mode-control"[\s\S]*?' \+ typeControl \+ '/);
-		assert.match(searchUiSource, /\.atlas-card \{[^}]*border-left: 3px solid var\(--accent\);/);
+	test('promotes the Signal Bar header over the shared grouped match surface', () => {
+		assert.match(searchUiSource, /function renderSearchUi\(webview: vscode\.Webview\): string/);
+		assert.doesNotMatch(searchUiSource, /prototypeSwitcher|pageRenderers|prototypeVariant/);
+		assert.match(searchUiSource, /class="search-masthead"/);
+		assert.match(searchUiSource, /class="search-primary"[\s\S]*?class="search-query"[\s\S]*?class="search-count"/);
+		assert.match(searchUiSource, /class="search-secondary"[\s\S]*?SEARCH SCOPE[\s\S]*?SEARCH MODE[\s\S]*?typeControl \+ pageControls\(true\)/);
+		assert.match(searchUiSource, /\.search-scope-control \{ width: 180px;/);
+		assert.match(searchUiSource, /const overflow = selected\.length > 1 \? '<span class="scope-count">\+'/);
+		assert.doesNotMatch(searchUiSource, /addon-tags|addon-chip/);
+		assert.match(searchUiSource, /\.atlas-card \{[^}]*border-left: 3px solid var\(--result-accent\);/);
+		assert.match(searchUiSource, /\.atlas-card\.result-class/);
+		assert.match(searchUiSource, /\.atlas-card\.result-string/);
+		assert.match(searchUiSource, /const resultAccent = result =>/);
 		assert.match(searchUiSource, /const resultGroups = \(\) => \{/);
 		assert.match(searchUiSource, /visibleResults\(\)\.forEach\(result => \{/);
 		assert.match(searchUiSource, /<section class="atlas-group"><div class="atlas-group-head"><h2>/);
 		assert.match(searchUiSource, /results\.map\(resultCard\)\.join\(''\)/);
 		assert.match(searchUiSource, /\.atlas-results\.two-column \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
 		assert.match(searchUiSource, /const sharedMatchArea = \(\) => warnings \+ resultBody\(resultGroups\(\)\) \+ bottomPager/);
-		assert.match(searchUiSource, /renderAtlasHeader[\s\S]*?sharedMatchArea\(\)[\s\S]*?renderCommandDeck[\s\S]*?sharedMatchArea\(\)[\s\S]*?renderSearchBrief[\s\S]*?sharedMatchArea\(\)[\s\S]*?renderSignalBar[\s\S]*?sharedMatchArea\(\)/);
-		assert.match(searchUiSource, /\.command-deck \{/);
-		assert.match(searchUiSource, /\.brief-header \{/);
-		assert.match(searchUiSource, /\.signal-header \{/);
 		assert.doesNotMatch(searchUiSource, /atlas-lanes|atlas-lane/);
 	});
 
@@ -396,6 +405,7 @@ suite('Reforger search UI MCP mapping', () => {
 			id: 'gameData-0-gd1:symbol',
 			source: 'gameData',
 			kind: 'symbol',
+			symbolKind: 'class',
 			title: 'SCR_BaseGameMode',
 			detail: 'class',
 			path: 'Game/GameMode/SCR_BaseGameMode.c:18',
@@ -591,7 +601,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /const maxSearchPages = \$\{searchLimits\.maxPages\};/);
 		assert.match(searchUiSource, /Math\.min\(maxSearchPages, Math\.max\(1, Math\.ceil\(state\.total \/ state\.pageSize\)\)\)/);
 		assert.doesNotMatch(searchUiSource, /results per source/);
-		assert.match(searchUiSource, /'Page ' \+ state\.page \+ ' of ' \+ totalPages\(\)/);
+		assert.match(searchUiSource, /<span class="page-status"><span class="muted">Page<\/span><input data-page-input[\s\S]*?<span class="muted">of ' \+ pageTotal \+ '<\/span>/);
 		assert.match(searchUiSource, /<div class="empty">No results match this search\.<\/div>/);
 		assert.doesNotMatch(searchUiSource, /Enter a symbol, concept, or documentation term to search\./);
 		assert.doesNotMatch(searchUiSource, /function search\(resetPagination\) \{ if \(resetPagination\) \{ state\.page = 1; state\.total = 0; \}/);
@@ -622,11 +632,12 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /searchMode: state\.mode/);
 		assert.match(searchUiSource, /matchCase: false, matchWholeWord: false, useRegex: false/);
 		assert.match(searchUiSource, /data-text-option="matchCase"/);
-		assert.match(searchUiSource, />Match case<\/label>/);
+		assert.match(searchUiSource, /title="Match case"[\s\S]*?>Aa<\/button>/);
 		assert.match(searchUiSource, /data-text-option="matchWholeWord"/);
-		assert.match(searchUiSource, />Match whole word<\/label>/);
+		assert.match(searchUiSource, /title="Match whole word"[\s\S]*?>\|ab\|<\/button>/);
 		assert.match(searchUiSource, /data-text-option="useRegex"/);
-		assert.match(searchUiSource, />Regular expression<\/label>/);
+		assert.match(searchUiSource, /title="Use regular expression"[\s\S]*?>\.\*<\/button>/);
+		assert.match(searchUiSource, /state\[element\.dataset\.textOption\] = !state\[element\.dataset\.textOption\]/);
 		assert.match(searchUiSource, /matchCase: state\.matchCase, matchWholeWord: state\.matchWholeWord, useRegex: state\.useRegex/);
 		assert.match(searchClientSource, /matchCase: textOptions\.matchCase/);
 		assert.match(searchClientSource, /matchWholeWord: textOptions\.matchWholeWord/);

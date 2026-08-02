@@ -115,6 +115,55 @@ export async function provideLanguageServerSemanticTokens(
 	return new vscode.SemanticTokens(new Uint32Array(response.data));
 }
 
+export interface LanguageServerPreviewContext {
+	startLine: number;
+	endLine: number;
+	kind: string;
+	truncated: boolean;
+}
+
+export async function provideLanguageServerPreviewContext(
+	document: vscode.TextDocument,
+	line: number,
+	token: vscode.CancellationToken,
+): Promise<LanguageServerPreviewContext | undefined> {
+	const activeClient = client;
+	if (!activeClient || activeClient.state !== State.Running) {
+		return undefined;
+	}
+	const response = await activeClient.sendRequest<unknown>(
+		languageClientRequests.previewContext,
+		{
+			textDocument: { uri: document.uri.toString() },
+			position: { line, character: 0 },
+		},
+		token,
+	);
+	if (!isLanguageServerPreviewContext(response, document.lineCount, line)) {
+		return undefined;
+	}
+	return response;
+}
+
+function isLanguageServerPreviewContext(
+	value: unknown,
+	lineCount: number,
+	requestedLine: number,
+): value is LanguageServerPreviewContext {
+	if (!value || typeof value !== 'object') {
+		return false;
+	}
+	const candidate = value as Partial<LanguageServerPreviewContext>;
+	return Number.isInteger(candidate.startLine)
+		&& Number.isInteger(candidate.endLine)
+		&& typeof candidate.kind === 'string'
+		&& typeof candidate.truncated === 'boolean'
+		&& (candidate.startLine ?? -1) >= 0
+		&& (candidate.endLine ?? lineCount) < lineCount
+		&& (candidate.startLine ?? requestedLine + 1) <= requestedLine
+		&& (candidate.endLine ?? requestedLine - 1) >= requestedLine;
+}
+
 interface ExternalIndexProgressParams {
   phase: string;
   status?: string;

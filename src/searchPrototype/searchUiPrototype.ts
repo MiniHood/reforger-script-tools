@@ -8,7 +8,11 @@ import { searchCommands, searchContext, searchLimits } from '../extensionConfig/
 import {
 	workbenchConfig,
 } from '../extensionConfig/workbench';
-import { provideLanguageServerSemanticTokens } from '../languageClient/languageClient';
+import {
+	provideLanguageServerPreviewContext,
+	provideLanguageServerSemanticTokens,
+	type LanguageServerPreviewContext,
+} from '../languageClient/languageClient';
 import { discoverWorkspaceProjectFiles, discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
 import { resolveLanguageServerPath } from '../languageClient/serverPath';
 import { readExternalIndexMode } from '../mcp/mcpConfiguration';
@@ -21,9 +25,9 @@ import {
 	searchResourceKindFilters,
 	resourceKindsFor,
 	sourceContextPreview,
-	sourceLinePreview,
 	sourcePreviewLine,
 	sourceMatchRange,
+	stripSourceComments,
 	type SearchDocument,
 	type SearchHit,
 	type SearchSymbolKind,
@@ -65,6 +69,8 @@ interface RawPreview {
 	previewLine: number;
 	preview: string;
 	matchRange: SourceMatchRange | undefined;
+	autoContext?: LanguageServerPreviewContext;
+	semanticDocument?: SemanticSourceDocument;
 }
 
 export function registerSearchUi(context: vscode.ExtensionContext): void {
@@ -110,16 +116,13 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 		semanticDocuments: new Map(),
 		previewCancellation: undefined,
 		searchInFlight: false,
-		previewContextLines: 1,
+		previewContextLines: 0,
 		latestQuery: '',
 		scopeRefresh: undefined,
 		disposed: false,
 	};
 	activePanel = panel;
-	panel.webview.html = renderSearchUi(
-		panel.webview,
-		context.extensionMode !== vscode.ExtensionMode.Production,
-	);
+	panel.webview.html = renderSearchUi(panel.webview);
 	const indexModeSubscription = vscode.workspace.onDidChangeConfiguration(event => {
 		if (event.affectsConfiguration(`${workbenchConfig.section}.${workbenchConfig.settings.externalIndexMode}`)) {
 			void refreshSearchScope(context, active);
@@ -215,7 +218,7 @@ async function handleMessage(
 		return;
 	}
 	if (message.type === 'previewContext') {
-		const contextLines = Math.max(1, Math.min(249, Math.floor(numberField(message.contextLines) ?? 1)));
+		const contextLines = Math.max(0, Math.min(249, Math.floor(numberField(message.contextLines) ?? 0)));
 		active.previewContextLines = contextLines;
 		if (active.latestResults.size > 0) {
 			const client = await getClient(context, active);
@@ -298,7 +301,6 @@ function logSearchSnapshot(value: unknown): void {
 	const warnings = snapshotWarnings(snapshot.warnings);
 	const results = snapshotResults(snapshot.results);
 	diagnostic('searchUi.snapshot', {
-		prototypeVariant: textField(snapshot.prototypeVariant),
 		query: textField(snapshot.query),
 		scopeOpen: snapshot.scopeOpen === true,
 		scopeFilter: textField(snapshot.scopeFilter),
@@ -567,10 +569,11 @@ async function hydrateSearchPreviews(
 		if (active.disposed || cancellationToken.isCancellationRequested || requestId !== active.requestSequence) {
 			return;
 		}
-		const { hit, document, previewLine, preview, matchRange } = rawPreview;
+		const { hit, document, previewLine, preview, matchRange, autoContext } = rawPreview;
 		try {
 			const semanticStartedAt = performance.now();
-			const semanticDocument = await semanticSourceDocument(active, client, hit, document, cancellationToken);
+			const semanticDocument = rawPreview.semanticDocument
+				?? await semanticSourceDocument(active, client, hit, document, cancellationToken);
 			semanticMs += performance.now() - semanticStartedAt;
 			if (cancellationToken.isCancellationRequested || requestId !== active.requestSequence) {
 				return;
@@ -578,7 +581,15 @@ async function hydrateSearchPreviews(
 			let semanticPreview: SemanticPreview | undefined;
 			if (semanticDocument) {
 				const line = Math.max(0, previewLine - semanticDocument.startLine);
-				semanticPreview = active.previewContextLines === 1
+				semanticPreview = active.previewContextLines === 0 && autoContext
+					? semanticPreviewForLines(
+						semanticDocument.document,
+						semanticDocument.semanticTokens,
+						autoContext.startLine,
+						autoContext.endLine,
+						hit.kind === 'text',
+					)
+					: active.previewContextLines <= 1
 					? semanticPreviewForLine(semanticDocument.document, semanticDocument.semanticTokens, line, hit.kind === 'text')
 					: semanticPreviewForLines(
 						semanticDocument.document,
@@ -617,6 +628,10 @@ async function hydrateSearchPreviews(
 				semanticDocument: Boolean(semanticDocument),
 				semanticLanguageId: semanticDocument?.document.languageId,
 				semanticStartLine: semanticDocument?.startLine,
+				autoContextKind: autoContext?.kind,
+				autoContextStartLine: autoContext?.startLine,
+				autoContextEndLine: autoContext?.endLine,
+				autoContextTruncated: autoContext?.truncated,
 				semanticPreviewText: semanticPreview?.text.slice(0, 500),
 				semanticMatchStart: semanticMatchRange?.start,
 				semanticMatchLength: semanticMatchRange?.length,
@@ -660,20 +675,41 @@ async function hydrateSearchPreviews(
 			const hit = previewHits[nextIndex++];
 			try {
 				const readStartedAt = performance.now();
-				const document = await client.read(hit, contextLines);
+				const document = await client.read(hit, contextLines === 0 ? 1 : contextLines);
 				const hitReadMs = performance.now() - readStartedAt;
 				readMs += hitReadMs;
 				if (hit.addonGuid) {
 					readMsByAddon[hit.addonGuid] = (readMsByAddon[hit.addonGuid] ?? 0) + hitReadMs;
 				}
 				const previewLine = sourcePreviewLine(document, hit.selectionStartLine, hit.title);
-				const preview = sourceContextPreview(document, previewLine, contextLines, hit.title);
+				let semanticDocument: SemanticSourceDocument | undefined;
+				let autoContext: LanguageServerPreviewContext | undefined;
+				let preview = sourceContextPreview(document, previewLine, contextLines, hit.title);
+				if (contextLines === 0 && hit.source !== 'wiki') {
+					semanticDocument = await semanticSourceDocument(active, client, hit, document, cancellationToken);
+					if (semanticDocument?.startLine === 1) {
+						const requestedLine = Math.max(0, previewLine - 1);
+						autoContext = await provideLanguageServerPreviewContext(
+							semanticDocument.document,
+							requestedLine,
+							cancellationToken,
+						);
+						if (autoContext) {
+							preview = sourceDocumentRangePreview(
+								semanticDocument.document,
+								autoContext.startLine,
+								autoContext.endLine,
+								hit.kind === 'text',
+							);
+						}
+					}
+				}
 				previews[hit.id] = preview;
 				const matchRange = sourceMatchRange(preview, query);
 				if (matchRange) {
 					matchRanges[hit.id] = matchRange;
 				}
-				const rawPreview = { hit, document, previewLine, preview, matchRange };
+				const rawPreview = { hit, document, previewLine, preview, matchRange, autoContext, semanticDocument };
 				rawPreviews.set(hit.id, rawPreview);
 				queueRawPreview(hit.id);
 				queueSemanticPreview(rawPreview);
@@ -745,6 +781,20 @@ async function hydrateSearchPreviews(
 		items: jsonField(previewDiagnostics.slice(0, 100)),
 		elapsedMs: Date.now() - startedAt,
 	});
+}
+
+function sourceDocumentRangePreview(
+	document: vscode.TextDocument,
+	startLine: number,
+	endLine: number,
+	preserveComments: boolean,
+): string {
+	const lines: string[] = [];
+	for (let line = startLine; line <= endLine; line += 1) {
+		const text = document.lineAt(line).text;
+		lines.push((preserveComments ? text : stripSourceComments(text)).trimEnd());
+	}
+	return lines.join('\n');
 }
 
 async function semanticSourceDocument(
@@ -971,8 +1021,7 @@ function selectionRange(
 	);
 }
 
-// PROTOTYPE — Four Search header/toolbars, switchable via ?variant=, on the existing Search Webview.
-function renderSearchUi(webview: vscode.Webview, prototypeVariantsEnabled: boolean): string {
+function renderSearchUi(webview: vscode.Webview): string {
 	const nonce = createNonce();
 	return `<!DOCTYPE html>
 <html lang="en">
@@ -993,9 +1042,6 @@ h1, h2, h3, p { margin-top: 0; }
 h1 { font-size: 24px; margin: 6px 0 8px; }
 h2 { font-size: 16px; margin-bottom: 6px; }
 h3 { font-size: 13px; margin: 0 0 4px; }
-.text-options { display: inline-flex; align-items: center; gap: 12px; white-space: nowrap; }
-.text-option { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; user-select: none; }
-.text-option input { margin: 0; accent-color: var(--accent); }
 .group-label { padding: 0 4px 6px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .07em; }
 .search-scope { margin: 0 0 12px; padding: 8px; border: 1px solid var(--border); background: var(--alt); }
 .search-scope .addon-trigger { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; padding: 8px 9px; border: 1px solid var(--border); background: var(--panel); }
@@ -1011,9 +1057,6 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .scope-actions { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
 .scope-actions button { flex: 0 0 auto; width: auto; margin: 0; padding: 5px 7px; color: var(--accent); font-size: 10px; white-space: nowrap; }
 .scope-actions [data-scope-all] { flex: 0 0 76px; width: 76px; box-sizing: border-box; }
-.addon-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
-.addon-chip { max-width: 100%; padding: 3px 6px; border-radius: 10px; background: var(--selected); color: var(--selected-text); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.source-header { display: flex; justify-content: space-between; align-items: end; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
 .page-controls { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 14px; }
 .page-controls [data-result-layout] { display: inline-flex; align-items: center; justify-content: center; padding: 0; line-height: 0; }
 .layout-toggle { display: inline-grid; grid-template-columns: repeat(2, 5px); grid-template-rows: repeat(2, 5px); gap: 2px; }
@@ -1047,11 +1090,6 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .error { padding: 10px 12px; border: 1px solid var(--vscode-inputValidation-errorBorder); color: var(--vscode-errorForeground); background: var(--vscode-inputValidation-errorBackground); }
 .warning { padding: 8px 10px; border-left: 2px solid var(--vscode-editorWarning-foreground); color: var(--muted); }
 .empty { padding: 30px 14px; border: 1px dashed var(--border); color: var(--muted); }
-.prototype-switcher { position: fixed; z-index: 20; left: 50%; bottom: 16px; display: grid; grid-template-columns: 34px minmax(190px, auto) 34px; align-items: center; gap: 3px; padding: 4px; transform: translateX(-50%); border: 1px solid var(--vscode-contrastBorder, var(--accent)); border-radius: 18px; background: var(--vscode-editorWidget-background); box-shadow: 0 8px 30px rgba(0, 0, 0, .45); }
-.prototype-switcher button { min-height: 28px; border: 0; border-radius: 14px; background: transparent; }
-.prototype-switcher button:hover { background: var(--selected); }
-.prototype-switcher-label { padding: 0 10px; color: var(--text); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-align: center; white-space: nowrap; }
-.prototype-switcher-label small { margin-left: 7px; color: var(--muted); font-weight: 400; }
 .query-field { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--border); background: var(--alt); outline: none; }
 .query-field:focus { border-color: var(--accent); }
 .control-buttons { display: flex; flex-wrap: wrap; gap: 5px; }
@@ -1060,16 +1098,6 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .control-block { min-width: 0; }
 .control-block .group-label { min-height: 22px; padding: 0 0 7px; }
 .search-atlas { padding: 26px 28px 72px; }
-.atlas-hero { padding-bottom: 18px; border-bottom: 1px solid var(--border); }
-.atlas-filter-strip { display: grid; grid-template-columns: 180px minmax(240px, 1fr); grid-template-areas: "scope query" "secondary secondary"; align-items: start; gap: 14px 18px; margin: 14px 0 18px; }
-.atlas-filter-strip .scope-control { grid-area: scope; }
-.atlas-filter-strip .search-scope { position: relative; margin: 0; padding: 0; border: 0; background: transparent; }
-.atlas-filter-strip .addon-trigger { width: 100%; min-height: 38px; }
-.atlas-filter-strip .addon-menu { left: 0; }
-.atlas-filter-strip .query-field { min-height: 38px; box-sizing: border-box; }
-.atlas-query { grid-area: query; min-width: 240px; }
-.atlas-query .text-options { margin-top: 8px; }
-.atlas-secondary-controls { grid-area: secondary; display: flex; align-items: start; gap: 18px; }
 .atlas-groups { display: grid; gap: 14px; margin-top: 12px; }
 .atlas-group { min-width: 0; border: 1px solid var(--border); background: var(--panel); }
 .atlas-group-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--alt); }
@@ -1077,61 +1105,51 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .atlas-results { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 12px; align-items: start; }
 .atlas-results.two-column { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .atlas-group .atlas-results { margin: 0; padding: 10px; }
-.atlas-card { min-width: 0; padding: 12px; border: 1px solid var(--border); border-left: 3px solid var(--accent); background: var(--panel); cursor: pointer; user-select: text; }
+.atlas-card { --result-accent: var(--accent); min-width: 0; padding: 12px; border: 1px solid var(--border); border-left: 3px solid var(--result-accent); background: var(--panel); cursor: pointer; user-select: text; }
+.atlas-card.result-class { --result-accent: var(--vscode-symbolIcon-classForeground, #4ec9b0); }
+.atlas-card.result-function { --result-accent: var(--vscode-symbolIcon-functionForeground, #c586c0); }
+.atlas-card.result-field { --result-accent: var(--vscode-symbolIcon-fieldForeground, #9cdcfe); }
+.atlas-card.result-enum { --result-accent: var(--vscode-symbolIcon-enumeratorForeground, #dcdcaa); }
+.atlas-card.result-string { --result-accent: var(--vscode-symbolIcon-stringForeground, #ce9178); }
+.atlas-card.result-resource { --result-accent: var(--vscode-symbolIcon-fileForeground, var(--accent)); }
+.atlas-card.result-documentation { --result-accent: var(--vscode-symbolIcon-keyForeground, var(--accent)); }
 .atlas-card:hover, .atlas-card.selected { border-color: var(--accent); }
 .atlas-card:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 .atlas-card-head { display: flex; justify-content: space-between; gap: 10px; }
 .atlas-card .result-path { max-width: none; margin: 4px 0 0; text-align: left; }
-.variant-kicker { color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
-.prototype-scope .search-scope { position: relative; margin: 0; padding: 0; border: 0; background: transparent; }
-.prototype-scope .addon-trigger { width: 100%; min-height: 38px; }
-.prototype-scope .addon-menu { left: 0; }
-
-/* B — Command deck: a dense control surface with the result toolbar inside the deck. */
-.command-deck { margin-bottom: 14px; border: 1px solid var(--border); border-top: 3px solid var(--accent); background: var(--panel); }
-.command-deck-title { display: flex; align-items: end; justify-content: space-between; gap: 20px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
-.command-deck-title h1 { margin: 3px 0 0; font-size: 18px; }
-.command-state { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
-.command-state::before { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); content: ''; }
-.command-query { display: grid; grid-template-columns: auto minmax(280px, 1fr); align-items: center; gap: 10px; padding: 12px 16px 8px; }
-.command-prompt { color: var(--accent); font: 700 18px var(--vscode-editor-font-family); }
-.command-query-options { grid-column: 2; }
-.command-filter-row { display: grid; grid-template-columns: 180px max-content minmax(360px, 1fr); align-items: start; gap: 16px; padding: 8px 16px 14px; }
-.command-result-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 16px; border-top: 1px solid var(--border); background: var(--alt); }
-.command-result-copy { display: flex; align-items: baseline; gap: 8px; }
-
-/* C — Search brief: an editorial summary beside a contained search form. */
-.brief-header { display: grid; grid-template-columns: minmax(240px, .72fr) minmax(520px, 1.45fr); gap: 24px; margin-bottom: 14px; padding: 20px; border: 1px solid var(--border); background: linear-gradient(120deg, var(--panel), var(--bg)); }
-.brief-intro { display: flex; flex-direction: column; justify-content: space-between; min-height: 190px; padding-right: 20px; border-right: 1px solid var(--border); }
-.brief-intro h1 { max-width: 390px; margin: 8px 0 10px; font-size: 28px; line-height: 1.1; }
-.brief-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.brief-metric { padding: 9px 10px; border-left: 2px solid var(--accent); background: var(--alt); }
-.brief-metric strong { display: block; margin-top: 3px; font-size: 18px; }
-.brief-form { display: grid; align-content: start; gap: 14px; }
-.brief-query .query-field { min-height: 44px; }
-.brief-filter-row { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 14px; align-items: start; }
-.brief-types { grid-column: 1 / -1; }
-.brief-result-bar { display: flex; align-items: center; justify-content: flex-end; min-height: 43px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
-
-/* D — Signal bar: compact app chrome with every search control in two horizontal bands. */
-.signal-header { margin-bottom: 12px; border-bottom: 1px solid var(--border); }
-.signal-primary { display: grid; grid-template-columns: max-content minmax(320px, 1fr) max-content; align-items: center; gap: 14px; padding: 10px 12px; border: 1px solid var(--border); background: var(--alt); box-shadow: inset 3px 0 0 var(--accent); }
-.signal-brand { display: flex; align-items: center; gap: 9px; white-space: nowrap; }
-.signal-brand-mark { display: grid; width: 25px; height: 25px; place-items: center; border: 1px solid var(--accent); color: var(--accent); font-weight: 800; }
-.signal-brand strong { display: block; font-size: 12px; }
-.signal-brand small { color: var(--muted); }
-.signal-primary .query-field { min-height: 38px; background: var(--bg); }
-.signal-count { color: var(--muted); text-align: right; white-space: nowrap; }
-.signal-count strong { display: block; color: var(--text); font-size: 16px; }
-.signal-secondary { display: flex; align-items: start; gap: 14px; padding: 9px 12px 11px; border-right: 1px solid var(--border); border-left: 1px solid var(--border); }
-.signal-secondary .prototype-scope { width: 180px; }
-.signal-secondary .signal-types { min-width: 0; }
-.signal-secondary .page-controls { margin-left: auto; align-self: end; }
-.signal-secondary .group-label { min-height: auto; padding-bottom: 4px; font-size: 9px; }
+.search-masthead { padding: 4px 2px 18px; }
+.search-masthead-kicker { color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+.search-masthead h1 { margin: 5px 0 5px; font-size: 23px; }
+.search-masthead p { margin: 0; }
+.search-header { margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+.search-primary { display: grid; grid-template-columns: max-content minmax(320px, 1fr) max-content; align-items: center; gap: 14px; padding: 10px 12px; border: 1px solid var(--border); background: var(--alt); box-shadow: inset 3px 0 0 var(--accent); }
+.search-brand { display: flex; align-items: center; gap: 9px; white-space: nowrap; }
+.search-brand-mark { display: grid; width: 25px; height: 25px; place-items: center; border: 1px solid var(--accent); color: var(--accent); font-weight: 800; }
+.search-brand strong { display: block; font-size: 12px; }
+.search-brand small { display: block; color: var(--muted); }
+.search-query { display: flex; min-width: 0; }
+.search-query .query-field { min-height: 38px; background: var(--bg); }
+.text-option-buttons { display: inline-flex; margin-left: -1px; }
+.text-option-buttons button { min-width: 38px; min-height: 38px; padding: 0 7px; border-left-color: transparent; background: var(--bg); font-family: var(--vscode-editor-font-family); }
+.text-option-buttons button:first-child { border-left-color: var(--border); }
+.text-option-buttons button.active { z-index: 1; border-color: var(--accent); color: var(--accent); background: var(--selected); }
+.search-count { color: var(--muted); text-align: right; white-space: nowrap; }
+.search-count strong { display: block; color: var(--text); font-size: 16px; }
+.search-secondary { display: flex; align-items: start; gap: 14px; padding: 9px 12px 11px; border-right: 1px solid var(--border); border-left: 1px solid var(--border); }
+.search-scope-control { width: 180px; }
+.search-scope-control .search-scope { position: relative; margin: 0; padding: 0; border: 0; background: transparent; }
+.search-scope-control .addon-trigger { width: 100%; min-height: 38px; }
+.search-scope-control .addon-menu { left: 0; }
+.scope-count { color: var(--accent); font-size: 10px; }
+.search-secondary .search-types { min-width: 0; }
+.search-secondary .page-controls { margin-left: auto; align-self: end; }
+.search-secondary .group-label { min-height: auto; padding-bottom: 4px; font-size: 9px; }
+.context-stepper { display: inline-flex; align-items: center; gap: 2px; white-space: nowrap; }
+.context-stepper-label { margin-right: 4px; }
+.context-stepper output { min-width: 34px; text-align: center; color: var(--text); }
 @media (max-width: 980px) { .atlas-results.two-column { grid-template-columns: 1fr; } }
-@media (max-width: 1100px) { .brief-header { grid-template-columns: 1fr; } .brief-intro { min-height: 0; padding: 0 0 16px; border-right: 0; border-bottom: 1px solid var(--border); } .signal-primary { grid-template-columns: max-content minmax(260px, 1fr); } .signal-count { display: none; } .signal-secondary { flex-wrap: wrap; } .signal-secondary .page-controls { flex-basis: 100%; margin-left: 0; } }
-@media (max-width: 820px) { .command-filter-row { grid-template-columns: 180px minmax(280px, 1fr); } .command-filter-row .type-control { grid-column: 1 / -1; } }
-@media (max-width: 720px) { .shell { padding: 18px 14px 68px; } .atlas-filter-strip { grid-template-columns: 1fr; grid-template-areas: "scope" "query" "secondary"; } .atlas-secondary-controls, .signal-secondary { flex-direction: column; } .command-filter-row, .brief-filter-row, .signal-primary { grid-template-columns: 1fr; } .command-filter-row .type-control, .brief-types { grid-column: auto; } .command-result-bar, .brief-result-bar { align-items: flex-start; flex-direction: column; } .command-query { grid-template-columns: 1fr; } .command-prompt { display: none; } .command-query-options { grid-column: auto; } .text-options { flex-wrap: wrap; } .source-header { align-items: flex-start; gap: 10px; } .atlas-card-head { align-items: flex-start; flex-wrap: wrap; } .result-path { max-width: 100%; margin-left: 0; text-align: left; } .prototype-switcher { bottom: 10px; grid-template-columns: 32px minmax(150px, auto) 32px; } .prototype-switcher-label small { display: none; } }
+@media (max-width: 1100px) { .search-primary { grid-template-columns: max-content minmax(260px, 1fr); } .search-count { display: none; } .search-secondary { flex-wrap: wrap; } .search-secondary .page-controls { flex-basis: 100%; margin-left: 0; } }
+@media (max-width: 720px) { .shell { padding: 18px 14px 60px; } .search-primary { grid-template-columns: 1fr; } .search-secondary { flex-direction: column; } .search-query { flex-wrap: wrap; } .text-option-buttons { margin: -1px 0 0; } .atlas-card-head { align-items: flex-start; flex-wrap: wrap; } .result-path { max-width: 100%; margin-left: 0; text-align: left; } }
 </style>
 </head>
 <body>
@@ -1145,29 +1163,15 @@ window.__reforgerSearchVscode.postMessage({ type: 'webviewReady', width: window.
 </script>
 <script nonce="${nonce}">
 const vscode = window.__reforgerSearchVscode;
-const prototypeEnabled = ${prototypeVariantsEnabled};
-const prototypeVariants = [
-  { key: 'atlas', short: 'A', name: 'Current Atlas' },
-  { key: 'deck', short: 'B', name: 'Command Deck' },
-  { key: 'brief', short: 'C', name: 'Search Brief' },
-  { key: 'signal', short: 'D', name: 'Signal Bar' },
-];
-const requestedVariant = new URLSearchParams(window.location.search).get('variant');
-const rememberedVariant = vscode.getState()?.prototypeVariant;
-const initialVariant = prototypeEnabled && prototypeVariants.some(variant => variant.key === requestedVariant)
-  ? requestedVariant
-  : prototypeEnabled && prototypeVariants.some(variant => variant.key === rememberedVariant)
-    ? rememberedVariant
-    : 'atlas';
-const state = { variant: initialVariant, query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, type: 'all', resultColumns: 1, results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, truncated: false, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, scopeOpen: false, scopeFilter: '', scopeRevision: '', scopeAuthority: '', scopeDiscoveryMs: 0, unavailableScopeIds: [], scopeSources: [{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true }, { id: 'wiki', label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true }], selectedScopeIds: ['workspace', 'wiki'], selectionTouched: false, removedScopeIds: [], uiPerformance: { renderCount: 0, lastRenderMs: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
+const state = { query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, type: 'all', resultColumns: 1, results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, truncated: false, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, scopeOpen: false, scopeFilter: '', scopeRevision: '', scopeAuthority: '', scopeDiscoveryMs: 0, unavailableScopeIds: [], scopeSources: [{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true }, { id: 'wiki', label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true }], selectedScopeIds: ['workspace', 'wiki'], selectionTouched: false, removedScopeIds: [], uiPerformance: { renderCount: 0, lastRenderMs: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
 let pendingQuerySelection;
-let previewContextLines = 1;
+let previewContextLines = 0;
 let previewContextTimer;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const sourceLabel = result => result.addonLabel ?? (result.source === 'wiki' ? 'Official Wiki' : result.source === 'workspace' ? 'Workspace' : result.source === 'workbench' ? 'Workbench' : 'Game Data');
 const visibleResults = () => state.results;
 const modeButtons = () => '<button class="' + (state.mode === 'semantic' ? 'active' : '') + '" data-mode="semantic">Semantic</button><button class="' + (state.mode === 'text' ? 'active' : '') + '" data-mode="text">Text</button><button class="' + (state.mode === 'resource' ? 'active' : '') + '" data-mode="resource">Resources</button>';
-const textSearchOptions = () => state.mode !== 'text' ? '' : '<div class="text-options" aria-label="Text search options"><label class="text-option"><input type="checkbox" data-text-option="matchCase"' + (state.matchCase ? ' checked' : '') + '>Match case</label><label class="text-option"><input type="checkbox" data-text-option="matchWholeWord"' + (state.matchWholeWord ? ' checked' : '') + '>Match whole word</label><label class="text-option"><input type="checkbox" data-text-option="useRegex"' + (state.useRegex ? ' checked' : '') + '>Regular expression</label></div>';
+const textSearchOptions = () => state.mode !== 'text' ? '' : '<div class="text-option-buttons" aria-label="Text matching options"><button type="button" data-text-option="matchCase" class="' + (state.matchCase ? 'active' : '') + '" aria-pressed="' + state.matchCase + '" title="Match case" aria-label="Match case">Aa</button><button type="button" data-text-option="matchWholeWord" class="' + (state.matchWholeWord ? 'active' : '') + '" aria-pressed="' + state.matchWholeWord + '" title="Match whole word" aria-label="Match whole word">|ab|</button><button type="button" data-text-option="useRegex" class="' + (state.useRegex ? 'active' : '') + '" aria-pressed="' + state.useRegex + '" title="Use regular expression" aria-label="Use regular expression">.*</button></div>';
 const eligibleScopeSources = () => state.scopeSources.filter(source => source.kind !== 'wiki' || state.mode === 'text');
 const selectedEligibleScopeIds = () => state.selectedScopeIds.filter(id => eligibleScopeSources().some(source => source.id === id));
 const sameScopeIds = (left, right) => left.length === right.length && left.every(id => right.includes(id));
@@ -1185,10 +1189,10 @@ const scopeChoices = () => {
 };
 const searchScope = () => {
   const selected = eligibleScopeSources().filter(source => state.selectedScopeIds.includes(source.id));
-  const shown = selected.slice(0, 3).map(source => '<span class="addon-chip">' + esc(source.label) + '</span>').join('');
-  const overflow = selected.length > 3 ? '<span class="addon-chip">+' + (selected.length - 3) + ' more</span>' : '';
-  const chips = shown + overflow || '<span class="muted">No search scopes selected</span>';
-  return '<div class="search-scope"><button class="addon-trigger" data-scope-open><span>Edit selected sources</span><span>' + (state.scopeOpen ? '&#9650;' : '&#9660;') + '</span></button>' + (state.scopeOpen ? scopeChoices() : '') + '<div class="addon-chips">' + chips + '</div></div>';
+  const first = selected[0]?.label ?? 'No sources';
+  const overflow = selected.length > 1 ? '<span class="scope-count">+' + (selected.length - 1) + '</span>' : '';
+  const title = selected.length > 0 ? selected.map(source => source.label).join(', ') : 'No search scopes selected';
+  return '<div class="search-scope"><button class="addon-trigger" data-scope-open title="' + esc(title) + '" aria-label="Edit search scope: ' + esc(title) + '"><span class="addon-summary">' + esc(first) + ' ' + overflow + '</span><span>' + (state.scopeOpen ? '&#9650;' : '&#9660;') + '</span></button>' + (state.scopeOpen ? scopeChoices() : '') + '</div>';
 };
 const resultTypes = ${JSON.stringify(searchKindFilters.map(({ value, label }) => ({ value, label })))};
 const resourceResultTypes = ${JSON.stringify(searchResourceKindFilters.map(({ value, label }) => ({ value, label })))};
@@ -1206,7 +1210,7 @@ const pageControls = (includeLayoutToggle = false) => {
   const pageTotal = totalPages();
   const sizes = pageSizeOptions.map(size => '<option value="' + size + '"' + (state.pageSize === size ? ' selected' : '') + '>' + size + ' results</option>').join('');
   const layoutToggle = includeLayoutToggle ? '<button type="button" data-result-layout class="' + (state.resultColumns === 2 ? 'active' : '') + '" aria-label="Toggle two-column result grid" aria-pressed="' + (state.resultColumns === 2) + '" title="Toggle two-column result grid"><span class="layout-toggle" aria-hidden="true"><span></span><span></span><span></span><span></span></span></button>' : '';
-  const previewControl = includeLayoutToggle ? '<label class="muted">Context <input data-preview-context type="number" min="1" max="249" value="' + previewContextLines + '" aria-label="Preview context lines"></label>' : '';
+  const previewControl = includeLayoutToggle ? '<div class="context-stepper" aria-label="Preview context"><span class="muted context-stepper-label">Context</span><button type="button" data-preview-context-down aria-label="Decrease preview context"' + (previewContextLines === 0 ? ' disabled' : '') + '>&minus;</button><output aria-live="polite" title="' + (previewContextLines === 0 ? 'Automatic enclosing scope' : previewContextLines + ' surrounding lines') + '">' + (previewContextLines === 0 ? 'Auto' : previewContextLines) + '</output><button type="button" data-preview-context-up aria-label="Increase preview context">+</button></div>' : '';
   return '<div class="page-controls" aria-label="Search result pages">' + previewControl + layoutToggle + '<select data-page-size aria-label="Total results per page"' + (state.status === 'loading' ? ' disabled' : '') + '>' + sizes + '</select><span class="page-status"><span class="muted">Page</span><input data-page-input type="number" min="1" max="' + pageTotal + '" value="' + state.page + '" aria-label="Current result page"' + (navigationDisabled ? ' disabled' : '') + '><span class="muted">of ' + pageTotal + '</span></span><span class="page-arrows"><button type="button" data-page-prev' + (navigationDisabled || state.page <= 1 ? ' disabled' : '') + ' aria-label="Previous page">‹</button><button type="button" data-page-next' + (navigationDisabled || state.page >= pageTotal ? ' disabled' : '') + ' aria-label="Next page">›</button></span></div>';
 };
 const inlineMarkdown = value => value
@@ -1301,7 +1305,17 @@ const resultPreview = result => result.kind === 'documentation'
   ? '<div class="md-preview">' + renderMarkdown(result.excerpt) + '</div>'
   : '<pre class="snippet" data-result-preview="' + esc(result.id) + '">' + semanticPreviewText(result) + '</pre>';
 const resultExternalAction = result => result.sourceUrl ? '<button data-external="' + esc(result.id) + '">Open official page</button>' : '';
-const resultCard = result => '<article class="atlas-card ' + (state.selected === result.id ? 'selected' : '') + '" data-open="' + esc(result.id) + '" tabindex="0" role="button"><div class="atlas-card-head"><strong>' + esc(result.title) + '</strong><span class="tag">' + esc(result.detail) + '</span></div><div class="result-path">' + esc(result.path) + '</div>' + resultPreview(result) + '<div class="result-actions">' + resultExternalAction(result) + '</div></article>';
+const resultAccent = result => {
+  if (result.kind === 'text') return 'string';
+  if (result.kind === 'resource') return 'resource';
+  if (result.kind === 'documentation') return 'documentation';
+  if (result.symbolKind === 'class') return 'class';
+  if (['function', 'method', 'constructor', 'destructor'].includes(result.symbolKind)) return 'function';
+  if (['field', 'globalField'].includes(result.symbolKind)) return 'field';
+  if (['enum', 'enumMember'].includes(result.symbolKind)) return 'enum';
+  return 'default';
+};
+const resultCard = result => '<article class="atlas-card result-' + resultAccent(result) + ' ' + (state.selected === result.id ? 'selected' : '') + '" data-open="' + esc(result.id) + '" tabindex="0" role="button"><div class="atlas-card-head"><strong>' + esc(result.title) + '</strong><span class="tag">' + esc(result.detail) + '</span></div><div class="result-path">' + esc(result.path) + '</div>' + resultPreview(result) + '<div class="result-actions">' + resultExternalAction(result) + '</div></article>';
 const resultGroups = () => {
   const groups = new Map();
   visibleResults().forEach(result => {
@@ -1324,7 +1338,6 @@ const updateResultPreviews = ids => {
 };
 const hasTextSelection = () => Boolean(window.getSelection()?.toString());
 const captureSearchSnapshot = () => vscode.postMessage({ type: 'debugSnapshot', snapshot: {
-  prototypeVariant: state.variant,
   query: state.query,
   scopeOpen: state.scopeOpen,
   scopeFilter: state.scopeFilter,
@@ -1363,6 +1376,7 @@ const captureSearchSnapshot = () => vscode.postMessage({ type: 'debugSnapshot', 
     id: result.id,
     source: result.source,
     kind: result.kind,
+    symbolKind: result.symbolKind,
     title: result.title,
     detail: result.detail,
     path: result.path,
@@ -1398,29 +1412,6 @@ const focusScopeFilter = (selectionStart, selectionEnd = selectionStart) => {
   filter.focus();
   filter.setSelectionRange(selectionStart, selectionEnd);
 };
-const prototypeSwitcher = () => {
-  if (!prototypeEnabled) return '';
-  const current = prototypeVariants.find(variant => variant.key === state.variant) ?? prototypeVariants[0];
-  return '<nav class="prototype-switcher" aria-label="Search header prototypes"><button type="button" data-variant-prev aria-label="Previous prototype">&larr;</button><div class="prototype-switcher-label">' + esc(current.short + ' — ' + current.name) + '<small>&larr; &rarr; to compare</small></div><button type="button" data-variant-next aria-label="Next prototype">&rarr;</button></nav>';
-};
-const setPrototypeVariant = value => {
-  if (!prototypeEnabled || !prototypeVariants.some(variant => variant.key === value)) return;
-  state.variant = value;
-  vscode.setState({ ...(vscode.getState() ?? {}), prototypeVariant: value });
-  try {
-    const url = new URL(window.location.href);
-    url.searchParams.set('variant', value);
-    window.history.replaceState(null, '', url);
-  } catch {
-    // VS Code still preserves the selection through the Webview state above.
-  }
-  render(false);
-};
-const cyclePrototypeVariant = direction => {
-  const currentIndex = Math.max(0, prototypeVariants.findIndex(variant => variant.key === state.variant));
-  const nextIndex = (currentIndex + direction + prototypeVariants.length) % prototypeVariants.length;
-  setPrototypeVariant(prototypeVariants[nextIndex].key);
-};
 const resultBody = content => state.error
   ? '<div class="error">' + esc(state.error) + '</div>'
   : state.mode !== 'resource' && selectedEligibleScopeIds().length === 0
@@ -1433,26 +1424,18 @@ function render(focusQuery = false) {
   const warnings = state.warnings.map(warning => '<div class="warning">' + esc(warning) + '</div>').join('');
   const bottomPager = state.query.trim() && totalMatches() > 0 ? '<div class="page-bottom">' + pageControls() + '</div>' : '';
   const sourceCount = new Set(visibleResults().map(sourceLabel)).size;
-  const typeControl = state.mode === 'text' ? '' : '<div class="control-block type-control"><div class="group-label">RESULT TYPE</div>' + typeControls() + '</div>';
   const sourceNoun = sourceCount === 1 ? ' source' : ' sources';
   const sharedMatchArea = () => warnings + resultBody(resultGroups()) + bottomPager;
-  const renderAtlasHeader = () => '<div class="shell search-atlas variant-atlas"><div class="atlas-hero"><h1>See where a concept lives</h1><p class="muted">Compare matching code, resources, and documentation across source authorities.</p></div><div class="atlas-filter-strip"><div class="control-block scope-control"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '</div><div class="control-block atlas-query"><div class="group-label">SEARCH</div>' + queryField() + textSearchOptions() + '</div><div class="atlas-secondary-controls"><div class="control-block mode-control"><div class="group-label">SEARCH MODE</div>' + modeControls() + '</div>' + typeControl + '</div></div><div class="source-header"><div><h2>' + totalMatchesLabel() + ' matches across ' + sourceCount + sourceNoun + '</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Page ' + state.page + ' of ' + totalPages()) + '</span></div>' + pageControls(true) + '</div>' + sharedMatchArea() + '</div>';
-  const renderCommandDeck = () => '<div class="shell search-atlas variant-deck"><header class="command-deck"><div class="command-deck-title"><div><div class="variant-kicker">B · Command deck</div><h1>Search the source atlas</h1></div><div class="command-state">' + (state.status === 'loading' ? 'Query running' : 'Index ready') + '</div></div><div class="command-query"><span class="command-prompt">&gt;_</span>' + queryField() + '<div class="command-query-options">' + textSearchOptions() + '</div></div><div class="command-filter-row"><div class="control-block prototype-scope"><div class="group-label">SCOPE</div>' + searchScope() + '</div><div class="control-block"><div class="group-label">MODE</div>' + modeControls() + '</div>' + typeControl + '</div><div class="command-result-bar"><div class="command-result-copy"><strong>' + totalMatchesLabel() + ' matches</strong><span class="muted">' + sourceCount + sourceNoun + ' · page ' + state.page + ' of ' + totalPages() + '</span></div>' + pageControls(true) + '</div></header>' + sharedMatchArea() + '</div>';
-  const renderSearchBrief = () => '<div class="shell search-atlas variant-brief"><header class="brief-header"><section class="brief-intro"><div><div class="variant-kicker">C · Search brief</div><h1>Trace an idea through the project.</h1><p class="muted">Shape the question on the right, then compare every source below.</p></div><div class="brief-metrics"><div class="brief-metric"><span class="muted">Matches</span><strong>' + totalMatchesLabel() + '</strong></div><div class="brief-metric"><span class="muted">Sources</span><strong>' + sourceCount + '</strong></div></div></section><section class="brief-form"><div class="control-block brief-query"><div class="group-label">WHAT ARE YOU LOOKING FOR?</div>' + queryField() + textSearchOptions() + '</div><div class="brief-filter-row"><div class="control-block prototype-scope"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '</div><div class="control-block"><div class="group-label">SEARCH MODE</div>' + modeControls() + '</div>' + (state.mode === 'text' ? '' : '<div class="control-block type-control brief-types"><div class="group-label">RESULT TYPE</div>' + typeControls() + '</div>') + '</div></section></header><div class="brief-result-bar">' + pageControls(true) + '</div>' + sharedMatchArea() + '</div>';
-  const renderSignalBar = () => '<div class="shell search-atlas variant-signal"><header class="signal-header"><div class="signal-primary"><div class="signal-brand"><span class="signal-brand-mark">S</span><span><strong>Reforger Search</strong><small>D · Signal bar</small></span></div><div class="signal-query">' + queryField() + textSearchOptions() + '</div><div class="signal-count"><strong>' + totalMatchesLabel() + '</strong>matches / ' + sourceCount + sourceNoun + '</div></div><div class="signal-secondary"><div class="control-block prototype-scope"><div class="group-label">SCOPE</div>' + searchScope() + '</div><div class="control-block"><div class="group-label">MODE</div>' + modeControls() + '</div>' + (state.mode === 'text' ? '' : '<div class="control-block signal-types"><div class="group-label">TYPE</div>' + typeControls() + '</div>') + pageControls(true) + '</div></header>' + sharedMatchArea() + '</div>';
-  const pageRenderers = { atlas: renderAtlasHeader, deck: renderCommandDeck, brief: renderSearchBrief, signal: renderSignalBar };
-  const renderPage = prototypeEnabled ? pageRenderers[state.variant] ?? pageRenderers.atlas : pageRenderers.atlas;
-  document.getElementById('app').innerHTML = renderPage() + prototypeSwitcher();
-	if (state.status !== 'loading') {
-		document.querySelector('.source-header > div:first-child > .muted')?.remove();
-	}
+  const typeControl = state.mode === 'text' ? '' : '<div class="control-block search-types"><div class="group-label">RESULT TYPE</div>' + typeControls() + '</div>';
+  const page = '<div class="shell search-atlas"><section class="search-masthead"><div class="search-masthead-kicker">Source intelligence</div><h1>Search the source atlas</h1><p class="muted">Trace symbols, text, and resources across every selected source.</p></section><header class="search-header"><div class="search-primary"><div class="search-brand"><span class="search-brand-mark">S</span><span><strong>Reforger Search</strong><small>' + (state.status === 'loading' ? 'Query running' : 'Index ready') + '</small></span></div><div class="search-query">' + queryField() + textSearchOptions() + '</div><div class="search-count"><strong>' + totalMatchesLabel() + '</strong>matches / ' + sourceCount + sourceNoun + '</div></div><div class="search-secondary"><div class="control-block search-scope-control"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '</div><div class="control-block"><div class="group-label">SEARCH MODE</div>' + modeControls() + '</div>' + typeControl + pageControls(true) + '</div></header>' + sharedMatchArea() + '</div>';
+  document.getElementById('app').innerHTML = page;
   const query = document.getElementById('query');
   const focusSearchQuery = () => { query.focus(); query.setSelectionRange(state.query.length, state.query.length); };
   if (focusQuery) focusSearchQuery();
   else if (pendingQuerySelection) { query.focus(); query.setSelectionRange(pendingQuerySelection.start, pendingQuerySelection.end); pendingQuerySelection = undefined; }
   query.addEventListener('input', event => { state.query = event.target.value; pendingQuerySelection = { start: event.target.selectionStart ?? state.query.length, end: event.target.selectionEnd ?? state.query.length }; if (state.mode !== 'text') search(true); });
   query.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); search(true); } });
-  document.querySelectorAll('[data-text-option]').forEach(element => element.addEventListener('change', () => { state[element.dataset.textOption] = element.checked; search(true); }));
+  document.querySelectorAll('[data-text-option]').forEach(element => element.addEventListener('click', () => { state[element.dataset.textOption] = !state[element.dataset.textOption]; render(false); search(true); }));
   document.querySelectorAll('[data-mode]').forEach(element => element.addEventListener('click', () => { state.mode = element.dataset.mode === 'text' ? 'text' : element.dataset.mode === 'resource' ? 'resource' : 'semantic'; state.type = 'all'; state.page = 1; render(false); search(true); }));
   document.querySelectorAll('[data-type]').forEach(element => element.addEventListener('click', () => { state.type = element.dataset.type; state.page = 1; render(false); search(true); }));
   document.querySelectorAll('[data-scope-open]').forEach(element => element.addEventListener('click', () => { state.scopeOpen = !state.scopeOpen; render(false); if (state.scopeOpen) focusScopeFilter(state.scopeFilter.length); }));
@@ -1462,7 +1445,9 @@ function render(focusQuery = false) {
   document.querySelectorAll('[data-page-prev]').forEach(element => element.addEventListener('click', () => requestPage(state.page - 1)));
   document.querySelectorAll('[data-page-next]').forEach(element => element.addEventListener('click', () => requestPage(state.page + 1)));
   document.querySelectorAll('[data-page-size]').forEach(element => element.addEventListener('change', event => { state.pageSize = Number(event.target.value); search(true); }));
-  document.querySelectorAll('[data-preview-context]').forEach(element => element.addEventListener('input', event => { previewContextLines = Math.max(1, Math.min(249, Number.parseInt(event.target.value, 10) || 1)); event.target.value = previewContextLines; clearTimeout(previewContextTimer); previewContextTimer = setTimeout(() => vscode.postMessage({ type: 'previewContext', contextLines: previewContextLines }), 180); }));
+  const setPreviewContext = value => { previewContextLines = Math.max(0, Math.min(249, value)); render(false); clearTimeout(previewContextTimer); previewContextTimer = setTimeout(() => vscode.postMessage({ type: 'previewContext', contextLines: previewContextLines }), 100); };
+  document.querySelectorAll('[data-preview-context-down]').forEach(element => element.addEventListener('click', () => setPreviewContext(previewContextLines - 1)));
+  document.querySelectorAll('[data-preview-context-up]').forEach(element => element.addEventListener('click', () => setPreviewContext(previewContextLines + 1)));
   document.querySelectorAll('[data-result-layout]').forEach(element => element.addEventListener('click', () => { state.resultColumns = state.resultColumns === 2 ? 1 : 2; render(false); }));
   document.querySelectorAll('[data-page-input]').forEach(element => {
     element.addEventListener('change', event => requestPage(event.target.value));
@@ -1473,19 +1458,11 @@ function render(focusQuery = false) {
     element.addEventListener('keydown', event => { if (event.target.closest('[data-external]')) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openResult(element); } });
   });
   document.querySelectorAll('[data-external]').forEach(element => element.addEventListener('click', event => { event.stopPropagation(); vscode.postMessage({ type: 'external', id: element.dataset.external }); }));
-  document.querySelectorAll('[data-variant-prev]').forEach(element => element.addEventListener('click', () => cyclePrototypeVariant(-1)));
-  document.querySelectorAll('[data-variant-next]').forEach(element => element.addEventListener('click', () => cyclePrototypeVariant(1)));
   state.uiPerformance.lastRenderMs = performance.now() - renderStartedAt;
   state.uiPerformance.renderCount += 1;
 }
 document.addEventListener('keydown', event => {
   if (event.ctrlKey && event.key === 'F3') { event.preventDefault(); event.stopPropagation(); captureSearchSnapshot(); return; }
-  const editingTarget = event.target instanceof Element && Boolean(event.target.closest('input, textarea, select, [contenteditable="true"]'));
-  if (prototypeEnabled && !editingTarget && !event.ctrlKey && !event.altKey && !event.metaKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
-    event.preventDefault();
-    cyclePrototypeVariant(event.key === 'ArrowLeft' ? -1 : 1);
-    return;
-  }
   if (document.activeElement !== document.body || event.ctrlKey || event.altKey || event.metaKey || event.isComposing || event.key.length !== 1) return;
   const query = document.getElementById('query');
   query.focus();

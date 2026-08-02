@@ -50,6 +50,7 @@ mod incoming_scheduler;
 mod logging;
 mod on_type_formatting;
 mod open_documents;
+mod preview_context;
 mod request_router;
 mod response_writer;
 mod runtime_scheduler;
@@ -169,6 +170,7 @@ const DEBUG_COMPLETION_METHOD: &str = "reforger/debugCompletion";
 const BLOCK_COMMENT_PAIR_METHOD: &str = "reforger/blockCommentPair";
 const CONTROL_HEADER_ENTER_METHOD: &str = "reforger/inputRoute";
 const ACTIVE_SCOPE_DELIMITERS_METHOD: &str = "reforger/activeScopeDelimiters";
+const PREVIEW_CONTEXT_METHOD: &str = "reforger/previewContext";
 const READ_PACK_SOURCE_METHOD: &str = "reforger/readPackSource";
 const RANGE_FORMATTING_METHOD: &str = "textDocument/rangeFormatting";
 const WORKSPACE_FILE_CHANGED_METHOD: &str = "reforger/workspaceFileChanged";
@@ -319,7 +321,10 @@ fn source_backed_request_method(method: &str) -> bool {
     // would let a plain identifier completion race and hide a snippet.
     matches!(
         method,
-        "textDocument/completion" | DEBUG_HOVER_METHOD | DEBUG_COMPLETION_METHOD
+        "textDocument/completion"
+            | DEBUG_HOVER_METHOD
+            | DEBUG_COMPLETION_METHOD
+            | PREVIEW_CONTEXT_METHOD
     )
 }
 
@@ -1296,7 +1301,8 @@ fn validate_message_params(method: &str, params: &Option<Value>) -> Result<(), S
         | "textDocument/hover"
         | "textDocument/definition"
         | DEBUG_HOVER_METHOD
-        | DEBUG_COMPLETION_METHOD => validate_params::<HoverParams>(params, method),
+        | DEBUG_COMPLETION_METHOD
+        | PREVIEW_CONTEXT_METHOD => validate_params::<HoverParams>(params, method),
         RANGE_FORMATTING_METHOD => validate_params::<RangeFormattingParams>(params, method),
         BLOCK_COMMENT_PAIR_METHOD => validate_params::<BlockCommentPairParams>(params, method),
         CONTROL_HEADER_ENTER_METHOD => validate_params::<InputRouteParams>(params, method),

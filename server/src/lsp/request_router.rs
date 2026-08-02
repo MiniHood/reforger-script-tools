@@ -10,7 +10,7 @@ use super::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DocumentSymbolParams, HoverParams, InputRouteParams, RangeFormattingParams, RpcMessage,
     ACTIVE_SCOPE_DELIMITERS_METHOD, BLOCK_COMMENT_PAIR_METHOD, CONTROL_HEADER_ENTER_METHOD,
-    DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD, LOADED_ADDON_GRAPH_METHOD,
+    DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD, LOADED_ADDON_GRAPH_METHOD, PREVIEW_CONTEXT_METHOD,
     RANGE_FORMATTING_METHOD, READ_PACK_SOURCE_METHOD, WORKSPACE_FILE_CHANGED_METHOD,
     WORKSPACE_FILE_DELETED_METHOD,
 };
@@ -63,6 +63,7 @@ pub(super) enum FeatureCommand {
     BlockCommentPair(Option<BlockCommentPairParams>),
     InputRoute(Option<InputRouteParams>),
     ActiveScopeDelimiters(Option<ActiveScopeDelimiterParams>),
+    PreviewContext(Option<HoverParams>),
     ReadPackSource(Option<super::ReadPackSourceParams>),
     OtherTextDocument,
 }
@@ -138,6 +139,9 @@ pub(super) fn classify_request(value: Value) -> Result<RoutedRequest, String> {
         Some(ACTIVE_SCOPE_DELIMITERS_METHOD) => RequestCommand::Feature(
             FeatureCommand::ActiveScopeDelimiters(parse_typed_params(&message.params)),
         ),
+        Some(PREVIEW_CONTEXT_METHOD) => RequestCommand::Feature(FeatureCommand::PreviewContext(
+            parse_typed_params(&message.params),
+        )),
         Some(READ_PACK_SOURCE_METHOD) => RequestCommand::Feature(FeatureCommand::ReadPackSource(
             parse_typed_params(&message.params),
         )),
@@ -218,6 +222,21 @@ mod tests {
         };
         assert_eq!(params.text_document.uri, "file:///script.c");
         assert_eq!(params.position.line, 2);
+
+        let routed = classify_request(json!({
+            "method": "reforger/previewContext",
+            "params": {
+                "textDocument": {"uri": "file:///script.c"},
+                "position": {"line": 8, "character": 0}
+            }
+        }))
+        .unwrap();
+        let RequestCommand::Feature(FeatureCommand::PreviewContext(Some(params))) = routed.command
+        else {
+            panic!("preview context must retain its document position");
+        };
+        assert_eq!(params.text_document.uri, "file:///script.c");
+        assert_eq!(params.position.line, 8);
 
         let routed = classify_request(json!({
             "method": "reforger/readPackSource",
