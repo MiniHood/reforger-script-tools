@@ -279,7 +279,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /function render\(focusQuery = false\)/);
 		assert.match(searchUiSource, /\nrender\(true\);\n<\/script>/);
 		assert.match(searchUiSource, /pendingQuerySelection = \{ start: event\.target\.selectionStart \?\? state\.query\.length, end: event\.target\.selectionEnd \?\? state\.query\.length \}/);
-		assert.match(searchUiSource, /else if \(pendingQuerySelection\) \{ query\.focus\(\); query\.setSelectionRange\(pendingQuerySelection\.start, pendingQuerySelection\.end\); pendingQuerySelection = undefined; \}/);
+		assert.match(searchUiSource, /else if \(pendingQuerySelection && query\) \{ query\.focus\(\); query\.setSelectionRange\(pendingQuerySelection\.start, pendingQuerySelection\.end\); pendingQuerySelection = undefined; \}/);
 		assert.match(searchUiSource, /query\.focus\(\);\s+query\.setSelectionRange\(query\.value\.length, query\.value\.length\);\s+query\.setRangeText\(event\.key/);
 	});
 
@@ -389,6 +389,13 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /data-relation-depth="all"/);
 		assert.match(searchUiSource, /UI prototype only &mdash; results are not filtered yet\./);
 		assert.match(searchUiSource, /relationIncludes: \['direct'\], relationDepth: 'direct'/);
+		assert.match(searchUiSource, /relationAnchor: null/);
+		assert.match(searchUiSource, /Choose an exact declaration/);
+		assert.match(searchUiSource, /data-relation-anchor/);
+		assert.match(searchUiSource, /data-clear-relation-anchor/);
+		assert.match(searchUiSource, /state\.relationAnchor\?\.symbolKind === 'class'/);
+		assert.match(searchUiSource, /state\.relationAnchor\?\.symbolKind === 'method'/);
+		assert.match(searchUiSource, /Your text can be broad; relationships begin from one selected symbol\./);
 		assert.doesNotMatch(searchUiSource, /resultTypes = [^\n]+Related code/);
 	});
 
@@ -439,8 +446,11 @@ suite('Reforger search UI MCP mapping', () => {
 			source: 'gameData',
 			kind: 'symbol',
 			symbolKind: 'class',
+			symbolRef: 'gd1:symbol',
 			title: 'SCR_BaseGameMode',
 			detail: 'class',
+			qualifiedName: 'SCR_BaseGameMode',
+			signature: 'class SCR_BaseGameMode',
 			path: 'Game/GameMode/SCR_BaseGameMode.c:18',
 			excerpt: 'class SCR_BaseGameMode',
 			matchKind: 'symbol',
@@ -508,11 +518,12 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.strictEqual(results[0].addonLabel, 'Example Add-on');
 		assert.strictEqual(results[0].sourceUri, 'file:///C:/Addons/Example/Scripts/SCR_AddonClass.c');
 		assert.strictEqual(results[0].readInput.addonGuid, 'A1B2C3D4E5F60718');
+		assert.strictEqual(results[0].symbolRef, 'sr2:addon-symbol');
 		assert.match(results[0].id, /A1B2C3D4E5F60718/);
 	});
 
 	test('keeps the full result path above a full-width preview', () => {
-		assert.match(searchUiSource, /\.atlas-card-head \{ display: flex; justify-content: space-between;/);
+		assert.match(searchUiSource, /\.atlas-card-head \{ display: flex;[^}]*justify-content: space-between;/);
 		assert.match(searchUiSource, /\.result-path \{[^}]*overflow-wrap: anywhere;/);
 		assert.match(searchUiSource, /\.atlas-card \.result-path \{[^}]*max-width: none;[^}]*text-align: left;/);
 		assert.match(searchUiSource, /<div class="atlas-card-head"><strong>[\s\S]*?<div class="result-path">[\s\S]*?resultPreview\(result\)/);
@@ -596,8 +607,8 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /data-open="' \+ esc\(result\.id\) \+ '" tabindex="0" role="button"/);
 		assert.doesNotMatch(searchUiSource, /<button class="open" data-open=/);
 		assert.match(searchUiSource, /const hasTextSelection = \(\) => Boolean\(window\.getSelection\(\)\?\.toString\(\)\);/);
-		assert.match(searchUiSource, /if \(event\.target\.closest\('\[data-external\]'\) \|\| hasTextSelection\(\)\) return;/);
-		assert.match(searchUiSource, /keydown', event => \{ if \(event\.target\.closest\('\[data-external\]'\)\) return;/);
+		assert.match(searchUiSource, /if \(event\.target\.closest\('\[data-external\], \[data-relation-anchor\]'\) \|\| hasTextSelection\(\)\) return;/);
+		assert.match(searchUiSource, /keydown', event => \{ if \(event\.target\.closest\('\[data-external\], \[data-relation-anchor\]'\)\) return;/);
 		assert.match(searchUiSource, /data-external="' \+ esc\(result\.id\) \+ '">Open official page/);
 	});
 

@@ -153,6 +153,9 @@ export interface SearchHit {
 	textMatchLength?: number;
 	resourceName?: string;
 	symbolKind?: SearchSymbolKind;
+	symbolRef?: string;
+	qualifiedName?: string;
+	signature?: string;
 }
 
 export interface SearchResponse {
@@ -1105,6 +1108,7 @@ function normalizeSymbolHit(source: SearchSource, hit: RecordValue, index: numbe
 	const readInput = asRecord(hit.readSourceInput);
 	const addonGuid = asOptionalString(hit.addonGuid);
 	const addonLabel = normalizedAddonLabel(hit);
+	const symbolRef = asOptionalString(hit.symbolRef);
 	if (!readInput.relativePath) {
 		return [];
 	}
@@ -1114,10 +1118,13 @@ function normalizeSymbolHit(source: SearchSource, hit: RecordValue, index: numbe
 		kind: 'symbol',
 		title: name,
 		detail: kind,
+		qualifiedName,
+		signature,
 		path: `${relativePath}:${line}`,
 		excerpt,
 		matchKind: asString(hit.matchKind, 'symbol'),
 		...(isSearchSymbolKind(rawKind) ? { symbolKind: rawKind } : {}),
+		...(symbolRef ? { symbolRef } : {}),
 		...(typeof hit.sourceUri === 'string' ? { sourceUri: hit.sourceUri } : {}),
 		selectionStartLine: asNumber(asRecord(hit.selectionRange).startLine, line),
 		selectionEndLine: asNumber(asRecord(hit.selectionRange).endLine, line),
