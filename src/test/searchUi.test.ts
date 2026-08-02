@@ -90,7 +90,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.deepStrictEqual(sourceMatchRange('void foo()', 'FOO'), { start: 5, length: 3 });
 		assert.strictEqual(sourceMatchRange('void Bar()', 'Foo'), undefined);
 		assert.doesNotMatch(searchUiSource, /highlightText\(result\.excerpt, state\.query \+ ' ' \+ result\.title\)/);
-		assert.match(searchUiSource, /hydrateSymbolPreviews\(active, client, requestId, result\.results, normalizedQuery\)/);
+		assert.match(searchUiSource, /hydrateSymbolPreviews\(active, client, requestId, result\.results, normalizedQuery, previewCancellation\.token\)/);
 		assert.match(searchUiSource, /const matchRange = sourceMatchRange\(preview, query\);/);
 	});
 
@@ -332,14 +332,21 @@ suite('Reforger search UI MCP mapping', () => {
 	test('publishes raw previews before semantic coloring completes', () => {
 		const rawPhase = searchUiSource.indexOf('const flushRawPreviews = (): void =>');
 		const rawMessage = searchUiSource.indexOf("type: 'previews',", rawPhase);
-		const semanticPhase = searchUiSource.indexOf("const semanticWorker = async");
-		const semanticMessage = searchUiSource.indexOf("type: 'semanticPreviews'", semanticPhase);
+		const semanticPhase = searchUiSource.indexOf('const hydrateSemanticPreview = async');
+		const semanticMessage = searchUiSource.indexOf("type: 'semanticPreviews'", rawMessage);
+		const semanticQueued = searchUiSource.indexOf('queueSemanticPreview(rawPreview)');
+		const rawWorkersComplete = searchUiSource.indexOf('await Promise.all(Array.from({ length: Math.min(sourcePreviewWorkerCount');
 		assert.ok(rawPhase >= 0);
 		assert.ok(rawMessage > rawPhase);
-		assert.ok(semanticPhase > rawMessage);
-		assert.ok(semanticMessage > semanticPhase);
+		assert.ok(semanticMessage > rawMessage);
+		assert.ok(semanticPhase > semanticMessage);
+		assert.ok(semanticQueued > semanticPhase);
+		assert.ok(rawWorkersComplete > semanticQueued);
 		assert.match(searchUiSource, /queueRawPreview\(hit\.id\)/);
 		assert.match(searchUiSource, /flushRawPreviews\(\);/);
+		assert.match(searchUiSource, /active\.previewCancellation\?\.cancel\(\)/);
+		assert.match(searchUiSource, /firstSemanticMs/);
+		assert.doesNotMatch(searchUiSource, /pendingUpdates/);
 		assert.match(searchUiSource, /searchUi\.previewRawCompleted/);
 		assert.match(searchUiSource, /phase: 'raw'/);
 		assert.match(searchUiSource, /phase: 'semantic'/);

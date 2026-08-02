@@ -44,6 +44,7 @@ interface ActiveSearch {
 	latestResults: Map<string, SearchHit>;
 	requestSequence: number;
 	semanticDocuments: Map<string, Promise<SemanticSourceDocument | undefined>>;
+	previewCancellation: vscode.CancellationTokenSource | undefined;
 	scopeRefresh: Promise<void> | undefined;
 	disposed: boolean;
 }
@@ -102,6 +103,7 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 		latestResults: new Map(),
 		requestSequence: 0,
 		semanticDocuments: new Map(),
+		previewCancellation: undefined,
 		scopeRefresh: undefined,
 		disposed: false,
 	};
@@ -118,6 +120,8 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 	panel.onDidDispose(() => {
 		indexModeSubscription.dispose();
 		active.disposed = true;
+		active.previewCancellation?.cancel();
+		active.previewCancellation?.dispose();
 		if (active.client) {
 			void active.client.then(client => client.dispose(), () => undefined);
 		}
@@ -131,6 +135,9 @@ async function restartSearchScopeForIndexMode(
 	context: vscode.ExtensionContext,
 	active: ActiveSearch,
 ): Promise<void> {
+	active.previewCancellation?.cancel();
+	active.previewCancellation?.dispose();
+	active.previewCancellation = undefined;
 	active.requestSequence += 1;
 	active.latestResults.clear();
 	active.semanticDocuments.clear();
@@ -324,6 +331,9 @@ async function runSearch(
 	page: number,
 	pageSize: number,
 ): Promise<void> {
+	active.previewCancellation?.cancel();
+	active.previewCancellation?.dispose();
+	active.previewCancellation = undefined;
 	const normalizedQuery = mode === 'text' ? query : query.trim();
 	const requestId = ++active.requestSequence;
 	const startedAt = Date.now();
@@ -373,7 +383,15 @@ async function runSearch(
 			pageSize: result.pageSize,
 			performance: result.performance,
 		});
-		void hydrateSymbolPreviews(active, client, requestId, result.results, normalizedQuery);
+		const previewCancellation = new vscode.CancellationTokenSource();
+		active.previewCancellation = previewCancellation;
+		void hydrateSymbolPreviews(active, client, requestId, result.results, normalizedQuery, previewCancellation.token)
+			.finally(() => {
+				if (active.previewCancellation === previewCancellation) {
+					active.previewCancellation = undefined;
+				}
+				previewCancellation.dispose();
+			});
 	} catch (error) {
 		if (!active.disposed && requestId === active.requestSequence) {
 			diagnostic('searchUi.searchFailed', {
@@ -396,6 +414,7 @@ async function hydrateSymbolPreviews(
 	requestId: number,
 	hits: SearchHit[],
 	query: string,
+	cancellationToken: vscode.CancellationToken,
 ): Promise<void> {
 	const symbolHits = hits.filter(hit => hit.kind === 'symbol');
 	const textHits = hits.filter(hit => hit.kind === 'text');
@@ -413,6 +432,9 @@ async function hydrateSymbolPreviews(
 	const readMsByAddon: Record<string, number> = {};
 	const readFailuresByAddon: Record<string, number> = {};
 	let semanticMs = 0;
+	let semanticPhaseStartedAt: number | undefined;
+	let firstSemanticMs: number | undefined;
+	let rawMs: number | undefined;
 	let nextIndex = 0;
 	let firstRawMs: number | undefined;
 	const pendingRawPreviewIds: string[] = [];
@@ -449,6 +471,118 @@ async function hydrateSymbolPreviews(
 			flushRawPreviews();
 		}
 	};
+	const postSemanticUpdate = (id: string, preview: SemanticPreview): void => {
+		if (active.disposed || cancellationToken.isCancellationRequested || requestId !== active.requestSequence) {
+			return;
+		}
+		firstSemanticMs ??= Date.now() - startedAt;
+		active.panel.webview.postMessage({
+			type: 'semanticPreviews',
+			requestId,
+			previews: { [id]: preview },
+			performance: {
+				phase: 'semantic',
+				totalMs: Date.now() - startedAt,
+				rawMs: rawMs ?? Date.now() - startedAt,
+				firstSemanticMs,
+				readMs,
+				readMsByAddon,
+				readFailuresByAddon,
+				semanticMs,
+				requestedCount: previewHits.length,
+				loadedCount: rawPreviews.size,
+				semanticCount: Object.keys(semanticPreviews).length,
+			},
+		});
+	};
+	const hydrateSemanticPreview = async (rawPreview: RawPreview): Promise<void> => {
+		if (active.disposed || cancellationToken.isCancellationRequested || requestId !== active.requestSequence) {
+			return;
+		}
+		const { hit, document, previewLine, preview, matchRange } = rawPreview;
+		try {
+			const semanticStartedAt = performance.now();
+			const semanticDocument = await semanticSourceDocument(active, client, hit, document, cancellationToken);
+			semanticMs += performance.now() - semanticStartedAt;
+			if (cancellationToken.isCancellationRequested || requestId !== active.requestSequence) {
+				return;
+			}
+			let semanticPreview: SemanticPreview | undefined;
+			if (semanticDocument) {
+				const line = Math.max(0, previewLine - semanticDocument.startLine);
+				semanticPreview = semanticPreviewForLine(
+					semanticDocument.document,
+					semanticDocument.semanticTokens,
+					line,
+				);
+				if (semanticPreview) {
+					semanticPreviews[hit.id] = semanticPreview;
+					if (semanticPreview.text === preview) {
+						const semanticMatchRange = sourceMatchRange(semanticPreview.text, query);
+						if (semanticMatchRange) {
+							matchRanges[hit.id] = semanticMatchRange;
+						}
+					}
+					postSemanticUpdate(hit.id, semanticPreview);
+				}
+			}
+			const displayedMatchRange = matchRanges[hit.id];
+			const semanticMatchRange = semanticPreview ? sourceMatchRange(semanticPreview.text, query) : undefined;
+			previewDiagnostics.push({
+				id: hit.id,
+				title: hit.title,
+				path: hit.path,
+				selectionStartLine: hit.selectionStartLine,
+				previewLine,
+				previewText: preview.slice(0, 500),
+				rawMatchStart: matchRange?.start,
+				rawMatchLength: matchRange?.length,
+				rawMatchText: matchRange ? preview.slice(matchRange.start, matchRange.start + matchRange.length) : undefined,
+				matchStart: displayedMatchRange?.start,
+				matchLength: displayedMatchRange?.length,
+				matchText: displayedMatchRange ? preview.slice(displayedMatchRange.start, displayedMatchRange.start + displayedMatchRange.length) : undefined,
+				displayedTextMatchesSemanticText: semanticPreview?.text === preview,
+				semanticDocument: Boolean(semanticDocument),
+				semanticLanguageId: semanticDocument?.document.languageId,
+				semanticStartLine: semanticDocument?.startLine,
+				semanticPreviewText: semanticPreview?.text.slice(0, 500),
+				semanticMatchStart: semanticMatchRange?.start,
+				semanticMatchLength: semanticMatchRange?.length,
+				semanticMatchText: semanticMatchRange
+					? semanticPreview?.text.slice(semanticMatchRange.start, semanticMatchRange.start + semanticMatchRange.length)
+					: undefined,
+				semanticTokenCount: semanticPreview?.tokens.length ?? 0,
+				semanticTokenRoles: semanticPreview ? [...new Set(semanticPreview.tokens.map(token => token.role))] : [],
+				semanticEnabled: semanticPreview?.enabled,
+				semanticForegrounds: semanticPreview?.foregrounds,
+			});
+		} catch (error) {
+			if (!cancellationToken.isCancellationRequested) {
+				previewDiagnostics.push({
+					id: hit.id,
+					title: hit.title,
+					path: hit.path,
+					phase: 'semantic-hydration-failed',
+					message: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+	};
+	const semanticWorkerTails = Array.from(
+		{ length: Math.min(4, symbolHits.length) },
+		() => Promise.resolve(),
+	);
+	let nextSemanticWorker = 0;
+	const queueSemanticPreview = (rawPreview: RawPreview): void => {
+		if (semanticWorkerTails.length === 0) {
+			return;
+		}
+		semanticPhaseStartedAt ??= Date.now();
+		const worker = nextSemanticWorker;
+		nextSemanticWorker = (nextSemanticWorker + 1) % semanticWorkerTails.length;
+		semanticWorkerTails[worker] = semanticWorkerTails[worker]
+			.then(() => hydrateSemanticPreview(rawPreview));
+	};
 	const readWorker = async (): Promise<void> => {
 		while (nextIndex < previewHits.length && !active.disposed && requestId === active.requestSequence) {
 			const hit = previewHits[nextIndex++];
@@ -484,8 +618,10 @@ async function hydrateSymbolPreviews(
 				if (matchRange) {
 					matchRanges[hit.id] = matchRange;
 				}
-				rawPreviews.set(hit.id, { hit, document, previewLine, preview, matchRange });
+				const rawPreview = { hit, document, previewLine, preview, matchRange };
+				rawPreviews.set(hit.id, rawPreview);
 				queueRawPreview(hit.id);
+				queueSemanticPreview(rawPreview);
 			} catch (error) {
 				if (hit.addonGuid) {
 					readFailuresByAddon[hit.addonGuid] = (readFailuresByAddon[hit.addonGuid] ?? 0) + 1;
@@ -506,7 +642,7 @@ async function hydrateSymbolPreviews(
 	if (active.disposed || requestId !== active.requestSequence) {
 		return;
 	}
-	const rawMs = Date.now() - startedAt;
+	rawMs = Date.now() - startedAt;
 	diagnostic('searchUi.previewRawCompleted', {
 		requestId,
 		requestedCount: previewHits.length,
@@ -518,107 +654,7 @@ async function hydrateSymbolPreviews(
 		readFailuresByAddon: jsonField(readFailuresByAddon),
 	});
 
-	const semanticItems = [...rawPreviews.values()].filter(item => item.hit.kind === 'symbol');
-	let semanticIndex = 0;
-	const postSemanticUpdates = (updates: Record<string, SemanticPreview>): void => {
-		if (Object.keys(updates).length === 0 || active.disposed || requestId !== active.requestSequence) {
-			return;
-		}
-		active.panel.webview.postMessage({
-			type: 'semanticPreviews',
-			requestId,
-			previews: updates,
-			performance: {
-				phase: 'semantic',
-				totalMs: Date.now() - startedAt,
-				rawMs,
-				readMs,
-				readMsByAddon,
-				readFailuresByAddon,
-				semanticMs,
-				requestedCount: previewHits.length,
-				loadedCount: rawPreviews.size,
-				semanticCount: Object.keys(semanticPreviews).length,
-			},
-		});
-	};
-	const semanticWorker = async (): Promise<void> => {
-		const pendingUpdates: Record<string, SemanticPreview> = {};
-		while (semanticIndex < semanticItems.length && !active.disposed && requestId === active.requestSequence) {
-			const rawPreview = semanticItems[semanticIndex++];
-			const { hit, document, previewLine, preview, matchRange } = rawPreview;
-			try {
-				const semanticStartedAt = performance.now();
-				const semanticDocument = await semanticSourceDocument(active, client, hit, document);
-				semanticMs += performance.now() - semanticStartedAt;
-				let semanticPreview: SemanticPreview | undefined;
-				if (semanticDocument) {
-					const line = Math.max(0, previewLine - semanticDocument.startLine);
-					semanticPreview = semanticPreviewForLine(
-						semanticDocument.document,
-						semanticDocument.semanticTokens,
-						line,
-					);
-					if (semanticPreview) {
-						semanticPreviews[hit.id] = semanticPreview;
-						pendingUpdates[hit.id] = semanticPreview;
-						if (semanticPreview.text === preview) {
-							const semanticMatchRange = sourceMatchRange(semanticPreview.text, query);
-							if (semanticMatchRange) {
-								matchRanges[hit.id] = semanticMatchRange;
-							}
-						}
-					}
-				}
-				const displayedMatchRange = matchRanges[hit.id];
-				const semanticMatchRange = semanticPreview ? sourceMatchRange(semanticPreview.text, query) : undefined;
-				previewDiagnostics.push({
-					id: hit.id,
-					title: hit.title,
-					path: hit.path,
-					selectionStartLine: hit.selectionStartLine,
-					previewLine,
-					previewText: preview.slice(0, 500),
-					rawMatchStart: matchRange?.start,
-					rawMatchLength: matchRange?.length,
-					rawMatchText: matchRange ? preview.slice(matchRange.start, matchRange.start + matchRange.length) : undefined,
-					matchStart: displayedMatchRange?.start,
-					matchLength: displayedMatchRange?.length,
-					matchText: displayedMatchRange ? preview.slice(displayedMatchRange.start, displayedMatchRange.start + displayedMatchRange.length) : undefined,
-					displayedTextMatchesSemanticText: semanticPreview?.text === preview,
-					semanticDocument: Boolean(semanticDocument),
-					semanticLanguageId: semanticDocument?.document.languageId,
-					semanticStartLine: semanticDocument?.startLine,
-					semanticPreviewText: semanticPreview?.text.slice(0, 500),
-					semanticMatchStart: semanticMatchRange?.start,
-					semanticMatchLength: semanticMatchRange?.length,
-					semanticMatchText: semanticMatchRange
-						? semanticPreview?.text.slice(semanticMatchRange.start, semanticMatchRange.start + semanticMatchRange.length)
-						: undefined,
-					semanticTokenCount: semanticPreview?.tokens.length ?? 0,
-					semanticTokenRoles: semanticPreview ? [...new Set(semanticPreview.tokens.map(token => token.role))] : [],
-					semanticEnabled: semanticPreview?.enabled,
-					semanticForegrounds: semanticPreview?.foregrounds,
-				});
-				if (Object.keys(pendingUpdates).length >= 4) {
-					postSemanticUpdates({ ...pendingUpdates });
-					for (const id of Object.keys(pendingUpdates)) {
-						delete pendingUpdates[id];
-					}
-				}
-			} catch (error) {
-				previewDiagnostics.push({
-					id: hit.id,
-					title: hit.title,
-					path: hit.path,
-					phase: 'semantic-hydration-failed',
-					message: error instanceof Error ? error.message : String(error),
-				});
-			}
-		}
-		postSemanticUpdates({ ...pendingUpdates });
-	};
-	await Promise.all(Array.from({ length: Math.min(4, semanticItems.length) }, () => semanticWorker()));
+	await Promise.all(semanticWorkerTails);
 	if (active.disposed || requestId !== active.requestSequence) {
 		return;
 	}
@@ -626,6 +662,8 @@ async function hydrateSymbolPreviews(
 		phase: 'complete',
 		totalMs: Date.now() - startedAt,
 		rawMs,
+		firstSemanticMs,
+		semanticWallMs: semanticPhaseStartedAt === undefined ? 0 : Date.now() - semanticPhaseStartedAt,
 		readMs,
 		readMsByAddon,
 		readFailuresByAddon,
@@ -644,6 +682,8 @@ async function hydrateSymbolPreviews(
 		readMsByAddon: jsonField(previewPerformance.readMsByAddon),
 		readFailuresByAddon: jsonField(previewPerformance.readFailuresByAddon),
 		semanticMs: previewPerformance.semanticMs,
+		firstSemanticMs: previewPerformance.firstSemanticMs,
+		semanticWallMs: previewPerformance.semanticWallMs,
 		totalMs: previewPerformance.totalMs,
 		rawMs: previewPerformance.rawMs,
 		items: jsonField(previewDiagnostics.slice(0, 100)),
@@ -656,6 +696,7 @@ async function semanticSourceDocument(
 	client: McpSearchClient,
 	hit: SearchHit,
 	boundedDocument: SearchDocument,
+	cancellationToken: vscode.CancellationToken,
 ): Promise<SemanticSourceDocument | undefined> {
 	if (hit.source === 'wiki') {
 		return undefined;
@@ -663,18 +704,32 @@ async function semanticSourceDocument(
 	const cacheKey = hit.sourceUri ?? `${hit.source}:${String(hit.readInput.relativePath ?? hit.id)}`;
 	const cached = active.semanticDocuments.get(cacheKey);
 	if (cached) {
-		return cached;
+		const value = await cached;
+		if (value || cancellationToken.isCancellationRequested) {
+			return value;
+		}
+		if (active.semanticDocuments.get(cacheKey) === cached) {
+			active.semanticDocuments.delete(cacheKey);
+		}
 	}
-	const pending = loadSemanticSourceDocument(client, hit, boundedDocument)
+	if (cancellationToken.isCancellationRequested) {
+		return undefined;
+	}
+	const pending = loadSemanticSourceDocument(client, hit, boundedDocument, cancellationToken)
 		.catch(() => undefined);
 	active.semanticDocuments.set(cacheKey, pending);
-	return pending;
+	const value = await pending;
+	if (!value && active.semanticDocuments.get(cacheKey) === pending) {
+		active.semanticDocuments.delete(cacheKey);
+	}
+	return value;
 }
 
 async function loadSemanticSourceDocument(
 	client: McpSearchClient,
 	hit: SearchHit,
 	boundedDocument: SearchDocument,
+	cancellationToken: vscode.CancellationToken,
 ): Promise<SemanticSourceDocument | undefined> {
 	let document: vscode.TextDocument;
 	let startLine = 1;
@@ -694,13 +749,8 @@ async function loadSemanticSourceDocument(
 	} catch {
 		return undefined;
 	}
-	const cancellation = new vscode.CancellationTokenSource();
-	try {
-		const semanticTokens = await provideLanguageServerSemanticTokens(document, cancellation.token);
-		return semanticTokens ? { document, semanticTokens, startLine } : undefined;
-	} finally {
-		cancellation.dispose();
-	}
+	const semanticTokens = await provideLanguageServerSemanticTokens(document, cancellationToken);
+	return semanticTokens ? { document, semanticTokens, startLine } : undefined;
 }
 
 async function getClient(
@@ -1319,7 +1369,7 @@ function snapshotPerformance(value: unknown): Record<string, unknown> {
 	const result: Record<string, unknown> = {};
 	for (const key of [
 		'totalMs', 'rawMs', 'firstRawMs', 'startupMs', 'initialSearchMs', 'rangeSearchMs', 'mergeMs', 'requestedPage', 'pageSize',
-		'sourcePageSize', 'readMs', 'semanticMs', 'requestedCount', 'loadedCount', 'semanticCount',
+		'sourcePageSize', 'readMs', 'semanticMs', 'firstSemanticMs', 'semanticWallMs', 'requestedCount', 'loadedCount', 'semanticCount',
 		'renderCount', 'lastRenderMs', 'searchStartedAt', 'lastSearchResponseMs', 'lastPreviewMessageMs', 'lastSemanticMessageMs',
 	]) {
 		const number = numberField(value[key]);
