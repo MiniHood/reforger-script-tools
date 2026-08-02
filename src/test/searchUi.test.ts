@@ -173,6 +173,9 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /document\.addEventListener\('click', event => \{/);
 		assert.match(searchUiSource, /event\.target\.closest\('\.search-scope'\)/);
 		assert.match(searchUiSource, /document\.querySelector\('\.addon-menu'\)\?\.remove\(\)/);
+		assert.match(searchClientSource, /workspaceScopeId[\s\S]*?wikiScopeId[\s\S]*?\.\.\.addonSources/);
+		assert.match(searchClientSource, /wikiScopeId[^\n]+pinned: true/);
+		assert.match(searchUiSource, /SEARCH SCOPE<\/div>' \+ searchScope\(\) \+ '<div class="group-label">SEARCH MODE<\/div>' \+ modeButtons\(\)/);
 	});
 
 	test('maps symbol search handoffs into source-browser rows', () => {

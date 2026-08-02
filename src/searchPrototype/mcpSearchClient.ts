@@ -483,8 +483,8 @@ export class McpSearchClient {
 			unavailableScopeIds,
 			sources: [
 				{ id: workspaceScopeId, label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true },
+				{ id: wikiScopeId, label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true },
 				...addonSources,
-				{ id: wikiScopeId, label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: false, defaultSelected: true },
 			],
 		};
 	}
