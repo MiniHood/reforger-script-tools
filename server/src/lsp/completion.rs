@@ -2,8 +2,8 @@ use crate::analysis_runtime::QueryQuality;
 #[cfg(test)]
 use crate::callable::callable_signature_parts;
 use crate::callable::{
-    callable_argument_context_at_offset, callable_type_owner, CallableParameter,
-    CallableSignatureParts, CallableTarget,
+    builtin_callable_fact, callable_argument_context_at_offset, callable_type_owner,
+    CallableParameter, CallableSignatureParts, CallableTarget,
 };
 use crate::construction::{
     compatible_construction_candidates, lexical_construction_context_at_operand, ConstructionQuery,
@@ -1168,7 +1168,7 @@ pub(crate) fn completion_report_for_current_argument_labels_at_offset_with_exter
         );
     }
     let parameter_candidates =
-        parameter_label_candidates_for_callables(&callable_candidates, &context);
+        parameter_label_candidates_for_callables(&callable_candidates, None, &context);
     let edit_range = range_for_span(source, context.prefix_span);
     let empty_local_index = SymbolIndex::default();
     let (items, source_kind_counts, origin_counts) = completion_items_for_parameter_labels(
@@ -3650,8 +3650,22 @@ fn argument_label_completion_report_for_indexes(
         workspace_index,
         game_data_index,
     );
-    let parameter_candidates =
-        parameter_label_candidates_for_callables(&callable_candidates, &context);
+    let builtin_parts = match &context.target {
+        CallableTarget::Attribute { name } => {
+            builtin_callable_fact(name).map(|fact| fact.signature_parts())
+        }
+        _ => None,
+    };
+    let indexed_candidates = if builtin_parts.is_some() {
+        &[][..]
+    } else {
+        callable_candidates.as_slice()
+    };
+    let parameter_candidates = parameter_label_candidates_for_callables(
+        indexed_candidates,
+        builtin_parts.as_ref(),
+        &context,
+    );
     timings.candidate_lookup = lookup_start.elapsed();
 
     let render_start = Instant::now();
@@ -3679,7 +3693,7 @@ fn argument_label_completion_report_for_indexes(
         prefix: context.prefix,
         source_kind_counts,
         origin_counts,
-        failure_reason: if callable_candidates.is_empty() {
+        failure_reason: if callable_candidates.is_empty() && builtin_parts.is_none() {
             Some("callable target was not resolved".to_string())
         } else {
             None
@@ -3791,16 +3805,27 @@ struct ParameterLabelCandidate {
 
 fn parameter_label_candidates_for_callables(
     callables: &[EditorCompletionCandidate],
+    builtin_parts: Option<&CallableSignatureParts>,
     context: &ArgumentLabelCompletionContext,
 ) -> Vec<ParameterLabelCandidate> {
     let mut by_name = BTreeMap::<String, ParameterLabelCandidate>::new();
     let mut order = 0usize;
 
-    for callable in callables {
-        let Some(parts) = callable.callable_signature_parts.clone() else {
-            continue;
-        };
-        for (parameter_index, parameter) in parts.parameters_info.into_iter().enumerate() {
+    let callable_parts = callables
+        .iter()
+        .filter_map(|callable| {
+            callable
+                .callable_signature_parts
+                .as_ref()
+                .map(|parts| (parts, callable.source_kind, callable.origin))
+        })
+        .chain(
+            builtin_parts
+                .map(|parts| (parts, SourceKind::GameData, EditorCompletionOrigin::Direct)),
+        );
+
+    for (parts, source_kind, origin) in callable_parts {
+        for (parameter_index, parameter) in parts.parameters_info.iter().cloned().enumerate() {
             // The active positional `func` parameter describes the callable
             // reference slot. It is not itself a callable value, so it must
             // not enter the value list ahead of ordinary scoped completion.
@@ -3825,8 +3850,8 @@ fn parameter_label_candidates_for_callables(
                     parameter,
                     required,
                     active_positional: parameter_index == context.argument_index,
-                    source_kind: callable.source_kind,
-                    origin: callable.origin,
+                    source_kind,
+                    origin,
                     sort_index: order,
                 };
                 order += 1;

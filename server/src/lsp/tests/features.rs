@@ -2727,20 +2727,10 @@ fn completion_returns_optional_parameter_labels_inside_attribute_args() {
 	int m_Value;
 }
 "#;
-    let external = file_index_for_source(
-        r#"class UniqueAttribute {}
-class Attribute : UniqueAttribute
-{
-	void Attribute(string defvalue = "", string uiwidget = "auto", string desc = "");
-}
-"#,
-    )
-    .index;
-
     let report = completion_report_for_source_position_with_external(
         source,
         position_after_needle(source, "defv"),
-        Some(&external),
+        None,
     );
 
     assert_eq!(report.completion_context, "argument-label");

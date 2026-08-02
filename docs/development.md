@@ -212,11 +212,10 @@ dist/server/win32-x64/reforger_language_server.exe mcp `
 ```
 
 In VS Code, run **Reforger Script Tools: Copy MCP Configuration** and choose
-Codex TOML or generic MCP JSON. The copied command contains absolute packaged
-runtime and the parser-owned Game Data cache location, so the client does not
-depend on a running VS Code process. MCP only consumes that cache: activate the
-language server to build or refresh it after Game Data changes, then restart
-the MCP process. The copied command captures the current
+Codex TOML or generic MCP JSON. The copied command contains the absolute
+packaged runtime, loaded-add-on inventory, parser-owned index storage, and
+packaged official-wiki evidence root, so the client does not depend on a
+running VS Code process. The copied command captures the current
 `reforgerScriptTools.workbench.externalIndexMode`; regenerate the configuration
 after changing that setting. In `loaded` mode MCP filters compatible caches by
 the persisted Workbench graph, while `all` publishes every compatible cached

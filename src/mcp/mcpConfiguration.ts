@@ -100,6 +100,7 @@ export function registerMcpConfigurationCommand(
 					languageClientIndexCache.rootFolder,
 				),
 				externalIndexMode: readExternalIndexMode(),
+				officialWikiRoot: path.join(context.extensionPath, 'data', 'official-wiki'),
 				workspaceScripts: await discoverWorkspaceScriptRoots(),
 				dependencyProjectFiles: await discoverWorkspaceProjectFiles(),
 			});

@@ -1009,7 +1009,7 @@ struct AttributeDisplay {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AttributeParamDisplay {
     name: String,
-    type_text: &'static str,
+    type_text: String,
     value: String,
 }
 
@@ -1047,7 +1047,7 @@ fn attribute_display(display: &SymbolDisplayInfo) -> Option<AttributeDisplay> {
         }
         params.push(AttributeParamDisplay {
             name,
-            type_text: spec.type_text,
+            type_text: spec.type_and_modifiers.to_string(),
             value,
         });
     }
@@ -1090,9 +1090,9 @@ fn render_attribute_constructor(context: Option<&HoverRenderContext<'_, '_>>) ->
 fn render_attribute_constructor_signature(context: Option<&HoverRenderContext<'_, '_>>) -> String {
     let signature = builtin_callable_fact("Attribute")
         .expect("the compiler owns the Attribute callable fact")
-        .signature;
+        .signature();
     let Some(open) = signature.find('(') else {
-        return escape_html_text(signature);
+        return escape_html_text(&signature);
     };
     let prefix = signature[..open].trim();
     let params_and_suffix = &signature[open..];
@@ -1100,7 +1100,7 @@ fn render_attribute_constructor_signature(context: Option<&HoverRenderContext<'_
     let return_type = tokens.next().unwrap_or_default();
     let name = tokens.next().unwrap_or_default();
     if return_type.is_empty() || name.is_empty() {
-        return escape_html_text(signature);
+        return escape_html_text(&signature);
     }
     format!(
         "{} {}{}",
