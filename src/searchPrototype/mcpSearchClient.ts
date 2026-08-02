@@ -10,6 +10,19 @@ export type SearchMode = 'semantic' | 'text';
 export const workspaceScopeId = 'workspace';
 export const wikiScopeId = 'wiki';
 
+export function addonScopeLabel(title: string, displayId: string, fallbackId: string): string {
+	const normalizedTitle = title.trim();
+	const normalizedDisplayId = displayId.trim();
+	const compositePrefix = `${normalizedDisplayId} (`;
+	if (normalizedDisplayId && normalizedTitle.startsWith(compositePrefix) && normalizedTitle.endsWith(')')) {
+		const humanTitle = normalizedTitle.slice(compositePrefix.length, -1).trim();
+		if (humanTitle) {
+			return humanTitle;
+		}
+	}
+	return normalizedTitle || normalizedDisplayId || fallbackId;
+}
+
 export interface SearchScopeSource {
 	id: string;
 	label: string;
@@ -468,7 +481,8 @@ export class McpSearchClient {
 			if (!/^[0-9A-F]{16}$/.test(id) || addon.available === false) {
 				return [];
 			}
-			const title = asString(addon.title, asString(addon.displayId, id));
+			const displayId = asString(addon.displayId, id);
+			const title = addonScopeLabel(asString(addon.title, ''), displayId, id);
 			const scriptCount = asNumber(addon.scriptCount, 0);
 			return [{
 				id,

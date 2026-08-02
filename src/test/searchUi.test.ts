@@ -2,7 +2,7 @@ import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { searchLimits } from '../extensionConfig/search';
-import { formatSearchKind, maxSearchPages, normalizeSearchPage, searchKindFilters, searchToolFor, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
+import { addonScopeLabel, formatSearchKind, maxSearchPages, normalizeSearchPage, searchKindFilters, searchToolFor, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
 import { semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
 
 const searchUiSource = fs.readFileSync(
@@ -15,6 +15,14 @@ const searchClientSource = fs.readFileSync(
 );
 
 suite('Reforger search UI MCP mapping', () => {
+	test('shows one human-facing add-on name in Search Scope', () => {
+		assert.strictEqual(
+			addonScopeLabel('GlobalConflictsCore (Global Conflicts CORE)', 'GlobalConflictsCore', '623555110E2B2CA0'),
+			'Global Conflicts CORE',
+		);
+		assert.strictEqual(addonScopeLabel('Arma Reforger', 'ArmaReforger', '58D0FB3206B6F859'), 'Arma Reforger');
+	});
+
 	test('routes each source to its authoritative search tool', () => {
 		assert.strictEqual(searchToolFor('workspace'), 'search_workspace_symbols');
 		assert.strictEqual(searchToolFor('gameData'), 'search_game_data_symbols');
