@@ -82,6 +82,17 @@ pub struct LoadedAddonInstanceIdentity {
     pub source_root: PathBuf,
 }
 
+/// Workbench-owned loaded add-on identity used by metadata-only catalogues.
+/// This keeps source discovery in one route while allowing projections that do
+/// not need the semantic symbol index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedAddonSourceInfo {
+    pub guid: String,
+    pub display_id: String,
+    pub title: String,
+    pub source_root: PathBuf,
+}
+
 /// Bounded performance facts for one add-on scope refresh.
 /// Paths and source text deliberately stay out of this reporting surface.
 #[derive(Debug, Clone, Copy, Default)]
@@ -2737,6 +2748,12 @@ fn addon_archive_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(archives)
 }
 
+/// Returns only the direct PAC artifacts Workbench's loaded add-on source
+/// route authorizes for this exact source root.
+pub fn loaded_addon_archive_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
+    addon_archive_paths(root)
+}
+
 fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<Vec<u8>, String> {
     let mut json = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
     json.push(b'\n');
@@ -2833,6 +2850,75 @@ fn read_loaded_addon_graph(inventory_path: &Path) -> Result<LoadedAddonGraph, St
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(LoadedAddonGraph { addons })
+}
+
+pub fn read_loaded_addon_sources(
+    inventory_path: &Path,
+) -> Result<Vec<LoadedAddonSourceInfo>, String> {
+    Ok(read_loaded_addon_graph(inventory_path)?
+        .addons
+        .into_iter()
+        .map(|addon| LoadedAddonSourceInfo {
+            guid: addon.guid,
+            display_id: addon.id,
+            title: addon.title,
+            source_root: addon.source_root,
+        })
+        .collect())
+}
+
+/// Reads the last Workbench graph even when one of its source roots is no
+/// longer present. Resource metadata may still be served from its exact
+/// per-instance cache; callers must label that provenance as stale.
+pub fn read_loaded_addon_sources_allow_stale(
+    inventory_path: &Path,
+) -> Result<Vec<LoadedAddonSourceInfo>, String> {
+    let raw = fs::read_to_string(inventory_path).map_err(|error| {
+        format!(
+            "Failed to read add-on source inventory {}: {error}",
+            inventory_path.display()
+        )
+    })?;
+    let graph: WorkbenchLoadedAddonGraphInventory =
+        serde_json::from_str(&raw).map_err(|error| {
+            format!(
+                "Invalid Workbench loaded add-on graph {}: {error}",
+                inventory_path.display()
+            )
+        })?;
+    if graph.schema != "reforger-workbench-loaded-addon-graph-v1"
+        || graph.protocol_version != 1
+        || graph.bridge_version.is_empty()
+        || graph.addons.is_empty()
+    {
+        return Err("Unsupported Workbench loaded add-on graph schema or protocol".to_string());
+    }
+    let mut instances = BTreeSet::new();
+    graph
+        .addons
+        .into_iter()
+        .map(|addon| {
+            let guid = addon.guid.to_ascii_uppercase();
+            if guid.len() != 16
+                || !guid.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || addon.id.is_empty()
+                || addon.title.is_empty()
+                || !addon.source_root.is_absolute()
+                || !instances.insert((guid.clone(), addon.source_root.clone()))
+            {
+                return Err(
+                    "Workbench loaded add-on graph contains an invalid or duplicate instance"
+                        .to_string(),
+                );
+            }
+            Ok(LoadedAddonSourceInfo {
+                guid,
+                display_id: addon.id,
+                title: addon.title,
+                source_root: addon.source_root,
+            })
+        })
+        .collect()
 }
 
 fn modified_unix_ms(metadata: &fs::Metadata) -> u128 {

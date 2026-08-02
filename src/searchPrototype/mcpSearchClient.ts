@@ -83,15 +83,16 @@ export type SearchResourceKind =
 	| 'script'
 	| 'prefab'
 	| 'config'
+	| 'model'
 	| 'material'
-	| 'layout'
 	| 'texture'
-	| 'imageset'
+	| 'layout'
 	| 'audio'
 	| 'animation'
 	| 'particle'
 	| 'string'
-	| 'ai';
+	| 'ai'
+	| 'other';
 
 export interface SearchResourceKindFilter {
 	value: string;
@@ -106,13 +107,15 @@ export const searchResourceKindFilters: readonly SearchResourceKindFilter[] = [
 	{ value: 'audio', label: 'Audio', kinds: ['audio'] },
 	{ value: 'world', label: 'Worlds', kinds: ['world'] },
 	{ value: 'config', label: 'Configs', kinds: ['config'] },
+	{ value: 'model', label: 'Models', kinds: ['model'] },
 	{ value: 'material', label: 'Materials', kinds: ['material'] },
-	{ value: 'texture', label: 'Textures', kinds: ['texture', 'imageset'] },
+	{ value: 'texture', label: 'Textures', kinds: ['texture'] },
 	{ value: 'layout', label: 'Layouts', kinds: ['layout'] },
 	{ value: 'animation', label: 'Animations', kinds: ['animation'] },
 	{ value: 'particle', label: 'Particles', kinds: ['particle'] },
 	{ value: 'string', label: 'Strings', kinds: ['string'] },
 	{ value: 'ai', label: 'AI', kinds: ['ai'] },
+	{ value: 'other', label: 'Other', kinds: ['other'] },
 ];
 
 const allSearchResourceKinds = searchResourceKindFilters
@@ -152,6 +155,8 @@ export interface SearchHit {
 	textMatchStart?: number;
 	textMatchLength?: number;
 	resourceName?: string;
+	workbenchLink?: string;
+	resourceStale?: boolean;
 	symbolKind?: SearchSymbolKind;
 	symbolRef?: string;
 	qualifiedName?: string;
@@ -427,6 +432,17 @@ function createSearchPerformanceTrace(): SearchPerformanceTrace {
 	};
 }
 
+function emptySearchResponse(pageSize: number, page: number, mode: SearchMode, selectedScopeIds: readonly string[]): SearchResponse {
+	const normalizedPageSize = Math.min(100, Math.max(1, Number.isFinite(pageSize) ? Math.floor(pageSize) : 25));
+	const normalizedPage = Math.min(maxSearchPages, Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1));
+	const trace = createSearchPerformanceTrace();
+	return {
+		results: [], warnings: [], total: 0, truncated: false, totalBySource: {},
+		page: normalizedPage, pageSize: normalizedPageSize,
+		performance: finishSearchPerformance(trace, normalizedPage, normalizedPageSize, [], mode, defaultTextSearchOptions, [...selectedScopeIds], []),
+	};
+}
+
 function sourcePerformanceFor(
 	trace: SearchPerformanceTrace,
 	source: SearchSource,
@@ -507,7 +523,14 @@ export class McpSearchClient {
 		resourceKinds?: readonly SearchResourceKind[],
 	): Promise<SearchResponse> {
 		if (mode === 'resource') {
-			return this.searchResources(query, pageSize, page, resourceKinds ?? allSearchResourceKinds);
+			const addonGuids = selectedScopeIds
+				.filter(value => /^[0-9a-f]{16}$/i.test(value))
+				.map(value => value.toUpperCase())
+				.sort();
+			if (addonGuids.length === 0) {
+				return emptySearchResponse(pageSize, page, 'resource', selectedScopeIds);
+			}
+			return this.searchResources(query, pageSize, page, resourceKinds ?? allSearchResourceKinds, addonGuids);
 		}
 		const trace = createSearchPerformanceTrace();
 		await this.start();
@@ -835,14 +858,15 @@ export class McpSearchClient {
 		pageSize: number,
 		page: number,
 		kinds: readonly SearchResourceKind[],
+		addonGuids: readonly string[],
 	): Promise<SearchResponse> {
 		const trace = createSearchPerformanceTrace();
 		await this.start();
 		trace.startupMs = performance.now() - trace.startedAt;
 		const normalizedPageSize = Math.min(100, Math.max(1, Number.isFinite(pageSize) ? Math.floor(pageSize) : 25));
 		const requestedPage = Math.min(maxSearchPages, Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1));
-		const source: SearchSource = 'workbench';
-		const cacheKey = `resource\u0000${normalizedPageSize}\u0000${query}\u0000${kinds.join(',')}`;
+		const source: SearchSource = 'gameData';
+		const cacheKey = `resource\u0000${normalizedPageSize}\u0000${query}\u0000${kinds.join(',')}\u0000${addonGuids.join(',')}`;
 		let pages = this.searchPageCaches.get(cacheKey);
 		if (!pages) {
 			if (this.searchPageCaches.size >= maxSearchPageCaches) {
@@ -863,17 +887,29 @@ export class McpSearchClient {
 				break;
 			}
 			const startedAt = performance.now();
-			const value = asRecord(await this.callTool('workbench_search_resources', {
-				kinds,
-				query,
-				limit: normalizedPageSize,
-				...(previous?.nextCursor ? { cursor: previous.nextCursor } : {}),
-			}));
+			let value: RecordValue;
+			try {
+				value = asRecord(await this.callTool('search_game_data_resources', {
+					kinds,
+					query,
+					...(addonGuids.length ? { addonGuids } : {}),
+					...(previous?.stats?.catalogueRevision ? { catalogueRevision: previous.stats.catalogueRevision } : {}),
+					limit: normalizedPageSize,
+					...(previous?.nextCursor ? { cursor: previous.nextCursor } : {}),
+				}));
+			} catch (error) {
+				if (error instanceof McpToolError && error.code === 'stale_resource_cursor' && requestedPage > 1) {
+					this.searchPageCaches.delete(cacheKey);
+					return this.searchResources(query, pageSize, 1, kinds, addonGuids);
+				}
+				throw error;
+			}
 			const results = normalizeResourceSearchPage(value);
 			pages.set(current, {
 				results,
-				total: (current - 1) * normalizedPageSize + results.length + (value.truncated === true ? 1 : 0),
+				total: asNumber(value.total, results.length),
 				truncated: value.truncated === true,
+				stats: { catalogueRevision: asOptionalString(value.catalogueRevision) },
 				...(typeof value.nextCursor === 'string' && value.nextCursor.length > 0 ? { nextCursor: value.nextCursor } : {}),
 			});
 			const sourceTrace = sourcePerformanceFor(trace, source);
@@ -891,10 +927,10 @@ export class McpSearchClient {
 			warnings: [],
 			total,
 			truncated: currentPage.truncated,
-			totalBySource: { workbench: total },
+			totalBySource: { gameData: total },
 			page: pages.has(requestedPage) ? requestedPage : 1,
 			pageSize: normalizedPageSize,
-			performance: finishSearchPerformance(trace, requestedPage, normalizedPageSize, [source], 'resource', defaultTextSearchOptions, [], []),
+			performance: finishSearchPerformance(trace, requestedPage, normalizedPageSize, [source], 'resource', defaultTextSearchOptions, addonGuids, addonGuids),
 		};
 	}
 
@@ -1232,16 +1268,18 @@ export function normalizeResourceSearchPage(value: unknown): SearchHit[] {
 		const extension = asString(hit.extension, 'resource');
 		const addonGuid = asOptionalString(hit.addonGuid);
 		return [{
-			id: `workbench-resource-${index}-${resourceName}`,
-			source: 'workbench' as const,
+			id: `game-data-resource-${index}-${resourceName}`,
+			source: 'gameData' as const,
 			kind: 'resource' as const,
 			title: name,
-			detail: extension,
+			detail: `${extension}${hit.stale === true ? ' · stale cache' : ''}`,
 			path: logicalPath,
 			excerpt: resourceName,
 			matchKind: 'resource',
 			readInput: {},
 			resourceName,
+			...(asOptionalString(hit.workbenchLink) ? { workbenchLink: asOptionalString(hit.workbenchLink) } : {}),
+			...(hit.stale === true ? { resourceStale: true } : {}),
 			...(addonGuid ? { addonGuid } : {}),
 			...(asOptionalString(hit.addonId) ? { addonLabel: asOptionalString(hit.addonId) } : {}),
 		}];

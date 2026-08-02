@@ -22,6 +22,10 @@ use crate::official_wiki::{
     OfficialWikiReadRequest, OfficialWikiSearchError, OfficialWikiSearchPage,
     OfficialWikiSearchRequest, OfficialWikiStatus,
 };
+use crate::resource_catalogue::{
+    ResourceCatalogueConfig, ResourceCatalogueService, ResourceKind, ResourceSearchError,
+    ResourceSearchPage, ResourceSearchRequest,
+};
 use crate::source_relationships::{
     SourceAuthority, SourceRelationshipError, SourceRelationshipPage, SourceRelationshipQuery,
     SourceRelationshipRequest,
@@ -74,6 +78,7 @@ pub const GAME_DATA_STATUS_TOOL_NAME: &str = "game_data_status";
 pub const SEARCH_GAME_DATA_SYMBOLS_TOOL_NAME: &str = "search_game_data_symbols";
 pub const SEARCH_WORKSPACE_SYMBOLS_TOOL_NAME: &str = "search_workspace_symbols";
 pub const SEARCH_GAME_DATA_TEXT_TOOL_NAME: &str = "search_game_data_text";
+pub const SEARCH_GAME_DATA_RESOURCES_TOOL_NAME: &str = "search_game_data_resources";
 pub const SEARCH_WORKSPACE_TEXT_TOOL_NAME: &str = "search_workspace_text";
 pub const INSPECT_WORKSPACE_SYMBOL_TOOL_NAME: &str = "inspect_workspace_symbol";
 pub const LIST_WORKSPACE_SYMBOL_MEMBERS_TOOL_NAME: &str = "list_workspace_symbol_members";
@@ -213,6 +218,7 @@ const GAME_DATA_STATUS_DESCRIPTION: &str = "Load and report the parser-owned Ref
 const SEARCH_GAME_DATA_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the immutable Reforger Game Data Catalogue. Results are ranked deterministically and contain opaque revision-bound symbol references plus ready-to-copy inspection and source-read inputs; this is not a source-text search. The best 10,000 matches are reachable and `truncated` reports whether more matches existed. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry.";
 const SEARCH_WORKSPACE_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the configured user add-on workspace index. Results use the same language-owned symbol references, deterministic pagination, and inspection handoffs as Game Data search; the index is built once per MCP process from --workspace-scripts roots. The best 10,000 matches are reachable and `truncated` reports whether more matches existed. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry. Identifier-prefix queries ending in `_` (for example, `SCR_`) match declared symbol names only, not containing names, signatures, or types.";
 const SEARCH_GAME_DATA_TEXT_DESCRIPTION: &str = "Explicit bounded full-text search over readable Reforger Game Data source files. Matching is a case-insensitive literal substring by default; optional case-sensitive, whole-word, and regular-expression modes are explicit. Comments, strings, expressions, and local-variable uses are included; this is not fuzzy, semantic, or Wiki search. Results are deterministic, revision-bound, paged with an opaque cursor, and carry exact source ranges, a line excerpt, and a ready-to-copy readSourceInput. This scan is intentionally on demand and may take seconds across the corpus; use semantic search for declarations. Do not use this tool to infer live Workbench state.";
+const SEARCH_GAME_DATA_RESOURCES_DESCRIPTION: &str = "Search the offline metadata-only Game Data Resource Catalogue for packed and loose resources in the exact Workbench-loaded add-on scope. It never reads resource payloads, extracts archives, or requires live Workbench. Search terms match basename and logical path case-insensitively; results are deterministic, revision-bound, carry provenance, and include a complete Workbench resource link. Use workbench_search_resources separately when live registered-resource truth or editor inspection is required.";
 const SEARCH_WORKSPACE_TEXT_DESCRIPTION: &str = "Explicit bounded full-text search over readable user add-on workspace script files. Matching is a case-insensitive literal substring by default; optional case-sensitive, whole-word, and regular-expression modes are explicit. Comments, strings, expressions, and local-variable uses are included; this is not fuzzy, semantic, or Wiki search. Results are deterministic, revision-bound, paged with an opaque cursor, and carry exact source ranges, a line excerpt, and a ready-to-copy readSourceInput. This scan is intentionally on demand and may take seconds across the configured workspace; use semantic search for declarations.";
 const INSPECT_WORKSPACE_SYMBOL_DESCRIPTION: &str = "Inspect one opaque workspace symbol reference returned by search_workspace_symbols. Returns parser-owned declaration, documentation, member, and source-location facts for the user add-on index.";
 const LIST_WORKSPACE_SYMBOL_MEMBERS_DESCRIPTION: &str = "List direct members of one revision-bound workspace symbol with semantic-kind filters and opaque pagination.";
@@ -1004,6 +1010,23 @@ struct McpWorkbenchResourceSearchInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpGameDataResourceSearchInput {
+    #[schemars(length(max = 256))]
+    query: String,
+    #[schemars(length(min = 1))]
+    addon_guids: Option<Vec<String>>,
+    #[schemars(length(min = 1))]
+    kinds: Option<Vec<ResourceKind>>,
+    #[schemars(length(min = 1, max = 128))]
+    catalogue_revision: Option<String>,
+    #[schemars(range(min = 1, max = 200))]
+    limit: Option<usize>,
+    #[schemars(length(max = 512))]
+    cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct McpGameDataSearchInput {
     #[schemars(length(min = 1, max = 256))]
     query: String,
@@ -1246,6 +1269,7 @@ pub struct McpServerOptions {
 #[derive(Debug, Clone)]
 pub struct ReforgerMcpServer {
     game_data: Arc<GameDataCatalogue>,
+    resource_catalogue: Arc<ResourceCatalogueService>,
     official_wiki: Arc<OfficialWikiCorpus>,
     workbench: Arc<WorkbenchController>,
     workspace: Arc<WorkspaceCatalogue>,
@@ -1255,8 +1279,14 @@ pub struct ReforgerMcpServer {
 
 impl ReforgerMcpServer {
     pub fn new(options: McpServerOptions) -> Self {
+        let resource_config = ResourceCatalogueConfig {
+            addon_source_inventory: options.game_data.addon_source_inventory.clone(),
+            addon_index_storage: options.game_data.addon_index_storage.clone(),
+            workspace_roots: options.game_data.workspace_roots.clone(),
+        };
         Self {
             game_data: Arc::new(GameDataCatalogue::new(options.game_data)),
+            resource_catalogue: Arc::new(ResourceCatalogueService::new(resource_config)),
             official_wiki: Arc::new(match options.official_wiki_root {
                 Some(root) => OfficialWikiCorpus::new(root),
                 None => OfficialWikiCorpus::packaged(),
@@ -1422,6 +1452,41 @@ impl ReforgerMcpServer {
             }
         };
         typed_success(&page)
+    }
+
+    async fn search_game_data_resources(
+        &self,
+        input: McpGameDataResourceSearchInput,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let _permit = self.acquire_request_admission(&context).await?;
+        let catalogue = self.resource_catalogue.clone();
+        let control = IndexBuildControl::default();
+        let worker_control = control.clone();
+        let request = ResourceSearchRequest {
+            catalogue_revision: input.catalogue_revision.unwrap_or_default(),
+            addon_guids: input.addon_guids,
+            query: input.query,
+            kinds: input.kinds,
+            cursor: input.cursor,
+            limit: input.limit.unwrap_or(100),
+        };
+        let mut worker =
+            tokio::task::spawn_blocking(move || catalogue.search(&worker_control, request));
+        let deadline = tokio::time::sleep(Duration::from_millis(initialization_deadline_ms()));
+        tokio::pin!(deadline);
+        let result = tokio::select! {
+            biased;
+            _ = context.ct.cancelled() => { cancel_text_search_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); }
+            _ = &mut deadline => { cancel_text_search_worker(&control, &mut worker).await; return Ok(deadline_exceeded()); }
+            result = &mut worker => result.map_err(|_| McpError::internal_error("Game Data resource-search worker failed", None))?,
+        };
+        match result {
+            Ok(page) => typed_success(&page),
+            Err(ResourceSearchError::Cancelled) => Err(McpError::internal_error("request cancelled", None)),
+            Err(ResourceSearchError::StaleRevision) | Err(ResourceSearchError::InvalidCursor) => Ok(tool_error("stale_resource_cursor", "The resource catalogue revision or cursor is stale.", "Call the resource search without catalogueRevision and cursor, then continue with the returned revision and cursor.")),
+            Err(ResourceSearchError::Unavailable) => Ok(tool_error("game_data_unavailable", "The offline Game Data resource catalogue is unavailable.", "Configure the Workbench loaded add-on inventory and retry.")),
+        }
     }
 
     async fn search_game_data_text(
@@ -2403,6 +2468,7 @@ impl ReforgerMcpServer {
         vec![
             game_data_status_tool(),
             search_game_data_symbols_tool(),
+            search_game_data_resources_tool(),
             search_workspace_symbols_tool(),
             search_game_data_text_tool(),
             search_workspace_text_tool(),
@@ -2690,6 +2756,10 @@ impl ReforgerMcpServer {
                 },
             )
             .await;
+        }
+        if request.name == SEARCH_GAME_DATA_RESOURCES_TOOL_NAME {
+            let input = parse_workbench_input::<McpGameDataResourceSearchInput>(&request)?;
+            return self.search_game_data_resources(input, context).await;
         }
         if request.name == WORKBENCH_SEARCH_RESOURCES_TOOL_NAME {
             let input = parse_workbench_input::<McpWorkbenchResourceSearchInput>(&request)?;
@@ -4675,6 +4745,10 @@ fn api_reference_summary(name: &str) -> (&'static str, &'static str) {
             "Game Data",
             "Find exact Enfusion declarations by name, signature, or type.",
         ),
+        "search_game_data_resources" => (
+            "Game Data",
+            "Search packed and loose resource metadata without live Workbench.",
+        ),
         "search_game_data_text" => (
             "Game Data",
             "Explicitly scan readable Game Data source text for literal matches.",
@@ -5085,6 +5159,7 @@ fn render_combined_api_reference() -> String {
     };
     let tool = descriptor(GAME_DATA_STATUS_TOOL_NAME);
     let search_tool = descriptor(SEARCH_GAME_DATA_SYMBOLS_TOOL_NAME);
+    let resource_search_tool = descriptor(SEARCH_GAME_DATA_RESOURCES_TOOL_NAME);
     let input_schema = serde_json::to_string_pretty(tool.input_schema.as_ref())
         .expect("tool input schema serializes");
     let output_schema = serde_json::to_string_pretty(
@@ -5235,6 +5310,7 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         search_name = search_tool.name,
         search_description = search_tool.description.as_deref().unwrap_or_default(),
     ));
+    append_simple_tool_reference(&mut reference, &resource_search_tool);
     for (tool, guidance) in [
         (
             &example_tool,
@@ -5618,6 +5694,27 @@ fn search_game_data_symbols_tool() -> Tool {
         strip_rust_numeric_formats(Arc::make_mut(output_schema));
     }
     strip_rust_numeric_formats(Arc::make_mut(&mut tool.input_schema));
+    tool
+}
+
+fn search_game_data_resources_tool() -> Tool {
+    let mut tool = Tool::new(
+        SEARCH_GAME_DATA_RESOURCES_TOOL_NAME,
+        SEARCH_GAME_DATA_RESOURCES_DESCRIPTION,
+        empty_object_schema(),
+    )
+    .with_title("Search Game Data resources")
+    .with_input_schema::<McpGameDataResourceSearchInput>()
+    .with_output_schema::<ResourceSearchPage>()
+    .with_annotations(
+        ToolAnnotations::with_title("Search Game Data resources")
+            .read_only(true)
+            .open_world(false),
+    );
+    strip_rust_numeric_formats(Arc::make_mut(&mut tool.input_schema));
+    if let Some(output_schema) = tool.output_schema.as_mut() {
+        strip_rust_numeric_formats(Arc::make_mut(output_schema));
+    }
     tool
 }
 

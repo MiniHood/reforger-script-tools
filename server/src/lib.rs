@@ -16,6 +16,7 @@ pub mod index_build;
 pub mod index_cache;
 pub mod index_query;
 pub mod lexer;
+pub mod resource_catalogue;
 // Protocol adapters. The executable composition root selects exactly one mode.
 pub mod lsp;
 pub mod mcp;

@@ -411,7 +411,7 @@ async function runSearch(
 			})
 			: await client.search(
 				normalizedQuery,
-				mode === 'resource' ? [] : scopeIdsFor(scopeValue),
+				scopeIdsFor(scopeValue),
 				pageSize,
 				page,
 				mode === 'semantic' ? searchKindsFor(typeValue) : undefined,
@@ -938,10 +938,11 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 	try {
 		diagnostic('searchUi.resultOpenStarted', { source: hit.source, kind: hit.kind });
 		if (hit.kind === 'resource') {
-			if (!hit.resourceName) {
-				throw new Error('The resource search result did not include a canonical resource identity.');
+			const resourceLink = hit.workbenchLink;
+			if (!resourceLink) {
+				throw new Error('The resource search result did not include a complete Workbench resource link.');
 			}
-			await vscode.env.openExternal(enfusionResourceUri(hit.resourceName));
+			await vscode.env.openExternal(vscode.Uri.parse(resourceLink, true));
 			diagnostic('searchUi.resultOpenCompleted', { source: hit.source, enfusionResourceLink: true });
 			return;
 		}

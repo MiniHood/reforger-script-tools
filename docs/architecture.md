@@ -197,9 +197,13 @@ handoffs. Changing mode or removing the anchor's source clears the editor's
 relationship state; changed catalogue scope clears cached pages so a stale
 anchor is rejected rather than mixed with a newer generation.
 The Search page's resource mode is separate from those indexed-source modes:
-it queries Workbench's registered-resource catalogue by native terms and fixed
-resource kinds, then opens the exact canonical `ResourceName` through
-an `enfusion://` Workbench link rather than attempting filesystem navigation.
+it queries Rust's offline, metadata-only Game Data Resource Catalogue for the
+exact loaded add-on scope. Packed PAC file tables and bounded loose-root
+enumeration contribute only logical paths, extensions, classification,
+provenance, and registration state; no payload is read or extracted. Results
+carry an opaque catalogue revision and complete Workbench link, so the UI does
+not reconstruct editor URLs. `workbench_search_resources` remains the separate
+live registered-resource route for native editor truth and inspection.
 MCP accepts only the explicit layered inputs: add-on source inventory, add-on
 index storage, external-index mode, and any workspace dependency descriptors.
 Configuration export and the extension-hosted Search page derive their child

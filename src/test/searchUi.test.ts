@@ -19,7 +19,7 @@ const searchClientSource = fs.readFileSync(
 suite('Reforger search UI MCP mapping', () => {
 	test('maps canonical Workbench resources and exposes their fixed kind filters', () => {
 		assert.deepStrictEqual(resourceKindsFor('audio'), ['audio']);
-		assert.deepStrictEqual(resourceKindsFor('texture'), ['texture', 'imageset']);
+		assert.deepStrictEqual(resourceKindsFor('texture'), ['texture']);
 		assert.ok(resourceKindsFor('all').includes('prefab'));
 		assert.ok(searchResourceKindFilters.some(filter => filter.value === 'script'));
 		assert.deepStrictEqual(normalizeResourceSearchPage({
@@ -30,10 +30,11 @@ suite('Reforger search UI MCP mapping', () => {
 				logicalPath: 'Prefabs/Props/Radio.et',
 				name: 'Radio',
 				extension: 'et',
+				workbenchLink: 'enfusion://ResourceManager/~ArmaReforger:Prefabs/Props/Radio.et',
 			}],
 		}), [{
-			id: 'workbench-resource-0-{58D0FB3206B6F859}Prefabs/Props/Radio.et',
-			source: 'workbench',
+			id: 'game-data-resource-0-{58D0FB3206B6F859}Prefabs/Props/Radio.et',
+			source: 'gameData',
 			kind: 'resource',
 			title: 'Radio',
 			detail: 'et',
@@ -42,6 +43,7 @@ suite('Reforger search UI MCP mapping', () => {
 			matchKind: 'resource',
 			readInput: {},
 			resourceName: '{58D0FB3206B6F859}Prefabs/Props/Radio.et',
+			workbenchLink: 'enfusion://ResourceManager/~ArmaReforger:Prefabs/Props/Radio.et',
 			addonGuid: '58D0FB3206B6F859',
 			addonLabel: 'ArmaReforger',
 		}]);
@@ -52,8 +54,8 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /resourceResultTypes/);
 		assert.match(searchUiSource, /resourceKindsFor\(typeValue\)/);
 		assert.match(searchUiSource, /hit\.kind === 'resource'/);
-		assert.match(searchClientSource, /workbench_search_resources/);
-		assert.match(searchUiSource, /enfusion:\/\/\$\{resourceName\}/);
+		assert.match(searchClientSource, /search_game_data_resources/);
+		assert.match(searchUiSource, /workbenchLink/);
 	});
 
 	test('supersedes an in-flight search when a mode or type filter changes', () => {
