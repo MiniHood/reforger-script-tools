@@ -562,26 +562,40 @@ fn match_rank(
 ) -> Option<(u8, &'static str)> {
     let name = symbol.name.as_deref()?;
     let name_folded = name.to_lowercase();
+    // An identifier ending in `_` is the editor's common prefix-search shape
+    // (`SCR_`, `GC_`, and similar). Do not turn that prefix into a broad
+    // search over containing names, signatures, or types: those fields can
+    // contain the prefix while the declared symbol is unrelated to it.
+    let is_identifier_prefix = query_folded.ends_with('_')
+        && query_folded
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_');
     if name == query {
         Some((1, "exactName"))
     } else if name_folded == query_folded {
         Some((2, "caseInsensitiveName"))
     } else if name_folded.starts_with(query_folded) {
         Some((3, "namePrefix"))
-    } else if qualified_name != name && qualified_name.to_lowercase().contains(query_folded) {
+    } else if !is_identifier_prefix
+        && qualified_name != name
+        && qualified_name.to_lowercase().contains(query_folded)
+    {
         Some((4, "qualifiedName"))
     } else if name_folded.contains(query_folded) {
         Some((5, "nameSubstring"))
-    } else if signature.is_some_and(|value| value.to_lowercase().contains(query_folded)) {
+    } else if !is_identifier_prefix
+        && signature.is_some_and(|value| value.to_lowercase().contains(query_folded))
+    {
         Some((6, "signature"))
-    } else if [
-        symbol.detail.type_text.as_deref(),
-        symbol.detail.return_type_text.as_deref(),
-        symbol.detail.base_type.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .any(|value| value.to_lowercase().contains(query_folded))
+    } else if !is_identifier_prefix
+        && [
+            symbol.detail.type_text.as_deref(),
+            symbol.detail.return_type_text.as_deref(),
+            symbol.detail.base_type.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| value.to_lowercase().contains(query_folded))
     {
         Some((7, "type"))
     } else {

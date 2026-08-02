@@ -50,6 +50,46 @@ fn search_ranks_exact_names_before_other_semantic_matches() {
 }
 
 #[test]
+fn identifier_prefix_search_does_not_return_hidden_context_matches() {
+    let fixture = TempFixture::new("search-identifier-prefix");
+    let scripts = fixture.path.join("Game");
+    fs::create_dir_all(&scripts).expect("create scripts");
+    fs::write(
+        scripts.join("Search.c"),
+        "class SCR_Visible {}\nclass GC_Manager { void OnDamage(SCR_Visible hitZone) {} }\nclass GC_Fields { SCR_Visible m_Value; }\nclass SCR_Container { void Run() {} }\n",
+    )
+    .expect("write source");
+    let index = build_index(&IndexBuildConfig {
+        roots: vec![IndexSourceRoot::new(
+            &fixture.path,
+            SourceKind::GameData,
+            SOURCE_PRIORITY_GAME_DATA,
+        )],
+    })
+    .expect("index")
+    .index;
+
+    let page = search(
+        &index,
+        &line_starts(&index),
+        &IndexBuildControl::default(),
+        "gd1:test",
+        GameDataSearchRequest::new("SCR_"),
+    )
+    .expect("search succeeds");
+
+    assert_eq!(page.total, 2);
+    assert!(page
+        .results
+        .iter()
+        .all(|result| result.name.starts_with("SCR_")));
+    assert!(page
+        .results
+        .iter()
+        .all(|result| result.match_kind == "namePrefix"));
+}
+
+#[test]
 fn search_pages_a_canonical_filtered_result_set_with_a_bound_cursor() {
     let fixture = TempFixture::new("search-paging");
     let scripts = fixture.path.join("Game");

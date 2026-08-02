@@ -203,7 +203,7 @@ Use this guide to choose a tool family and establish the minimum live context. F
 "#;
 const GAME_DATA_STATUS_DESCRIPTION: &str = "Load and report the parser-owned Reforger Game Data Catalogue cache. Use this first when Game Data availability or coverage is uncertain. Returns the immutable catalogue revision, source provenance, semantic coverage and counts, cache outcome, bounded timings, limits, warnings, and recovery guidance without physical paths; it does not inspect source inputs, parse, rebuild, write the cache, or search symbols.";
 const SEARCH_GAME_DATA_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the immutable Reforger Game Data Catalogue. Results are ranked deterministically and contain opaque revision-bound symbol references plus ready-to-copy inspection and source-read inputs; this is not a source-text search.";
-const SEARCH_WORKSPACE_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the configured user add-on workspace index. Results use the same language-owned symbol references, deterministic pagination, and inspection handoffs as Game Data search; the index is built once per MCP process from --workspace-scripts roots.";
+const SEARCH_WORKSPACE_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the configured user add-on workspace index. Results use the same language-owned symbol references, deterministic pagination, and inspection handoffs as Game Data search; the index is built once per MCP process from --workspace-scripts roots. Identifier-prefix queries ending in `_` (for example, `SCR_`) match declared symbol names only, not containing names, signatures, or types.";
 const INSPECT_WORKSPACE_SYMBOL_DESCRIPTION: &str = "Inspect one opaque workspace symbol reference returned by search_workspace_symbols. Returns parser-owned declaration, documentation, member, and source-location facts for the user add-on index.";
 const LIST_WORKSPACE_SYMBOL_MEMBERS_DESCRIPTION: &str = "List direct members of one revision-bound workspace symbol with semantic-kind filters and opaque pagination.";
 const QUERY_WORKSPACE_SYMBOL_RELATIONSHIPS_DESCRIPTION: &str = "Query bounded definitions, inheritance, references, and callers for one revision-bound workspace symbol. Reference results come from the language-owned workspace index, not an MCP text scan.";
@@ -4732,6 +4732,7 @@ Never derive or retain a physical path from the status result.\n\
 - `limit` defaults to 20 and clamps to 1 through 100; cursors are opaque and limited to 2 KiB.\n\
 - Ready Game Data search, inspection, and source reads have a 5,000 ms ceiling; cold catalogue initialization is separately bounded.\n\
 - Default kinds exclude parameters, local variables, and type parameters.\n\
+- Identifier-prefix queries ending in `_` (for example, `SCR_`) match declared symbol names only; they do not return symbols that contain the prefix only in a containing name, signature, or type.\n\
 - Match kinds are `exactName`, `caseInsensitiveName`, `namePrefix`, `qualifiedName`, `nameSubstring`, `signature`, and `type`, in that fixed order.\n\
 - Results contain opaque revision-bound `symbolRef` values and copy-ready inspection and source-read inputs.\n\n\
 ### Stable failures\n\n\

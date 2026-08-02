@@ -287,6 +287,7 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
 - `limit` defaults to 20 and clamps to 1 through 100; cursors are opaque and limited to 2 KiB.
 - Ready Game Data search, inspection, and source reads have a 5,000 ms ceiling; cold catalogue initialization is separately bounded.
 - Default kinds exclude parameters, local variables, and type parameters.
+- Identifier-prefix queries ending in `_` (for example, `SCR_`) match declared symbol names only; they do not return symbols that contain the prefix only in a containing name, signature, or type.
 - Match kinds are `exactName`, `caseInsensitiveName`, `namePrefix`, `qualifiedName`, `nameSubstring`, `signature`, and `type`, in that fixed order.
 - Results contain opaque revision-bound `symbolRef` values and copy-ready inspection and source-read inputs.
 
