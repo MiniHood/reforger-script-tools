@@ -24,6 +24,7 @@ async function main() {
 		readRepeat: options.readRepeat,
 		postSearchReadRepeat: options.postSearchReadRepeat,
 		intervalMs: options.intervalMs,
+		firstSearchBudgetMs: options.firstSearchBudgetMs,
 		repeatedSearchBudgetMs: options.repeatedSearchBudgetMs,
 		repeatedReadBudgetMs: options.repeatedReadBudgetMs,
 		postSearchReadBudgetMs: options.postSearchReadBudgetMs,
@@ -104,6 +105,10 @@ async function main() {
 		report.postSearchSourceReadMs = summarize(postSearchReads);
 
 		const failures = [];
+		if (options.firstSearchBudgetMs !== undefined
+			&& report.textSearches[0].elapsedMs > options.firstSearchBudgetMs) {
+			failures.push('first-text-search');
+		}
 		if (options.repeatedReadBudgetMs !== undefined
 			&& report.repeatedSourceReadMs.median > options.repeatedReadBudgetMs) {
 			failures.push('repeated-source-read');
@@ -283,6 +288,7 @@ function parseArguments(args) {
 			case '--post-search-read-repeat': parsed.postSearchReadRepeat = positiveInteger(value(), argument); break;
 			case '--interval-ms': parsed.intervalMs = nonNegativeInteger(value(), argument); break;
 			case '--timeout-ms': parsed.timeoutMs = positiveInteger(value(), argument); break;
+			case '--first-search-budget-ms': parsed.firstSearchBudgetMs = positiveNumber(value(), argument); break;
 			case '--repeated-search-budget-ms': parsed.repeatedSearchBudgetMs = positiveNumber(value(), argument); break;
 			case '--repeated-read-budget-ms': parsed.repeatedReadBudgetMs = positiveNumber(value(), argument); break;
 			case '--post-search-read-budget-ms': parsed.postSearchReadBudgetMs = positiveNumber(value(), argument); break;
@@ -325,7 +331,7 @@ function usage(error) {
 		'Usage: node tools/pack-read-performance.mjs --server <exe> (--index-cache <file> | --addon-index-storage <dir>) --text-query <query> --text-query <query> [options]\n' +
 		'  Scope: --addon-source-inventory <json> --dependency-project <gproj> --workspace-scripts <root> --external-index-mode <all|loaded|none>\n' +
 		'  Reads: --symbol-query <query> --source-addon-guid <guid> --read-repeat <n> --post-search-read-repeat <n> --interval-ms <ms>\n' +
-		'  Verdict: --repeated-search-budget-ms <ms> --repeated-read-budget-ms <ms> --post-search-read-budget-ms <ms> --timeout-ms <ms>\n',
+		'  Verdict: --first-search-budget-ms <ms> --repeated-search-budget-ms <ms> --repeated-read-budget-ms <ms> --post-search-read-budget-ms <ms> --timeout-ms <ms>\n',
 	);
 	process.exit(error ? 2 : 0);
 }

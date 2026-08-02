@@ -74,7 +74,9 @@ navigation time.
 Explicit Game Data full-text search uses that same immutable locator registry
 as one batch: it validates each referenced source revision once, groups entries
 by PAC archive, opens each archive once without reparsing its catalogue, and
-reads selected scripts in archive offset order before scanning. Entry bounds,
+reads selected scripts in archive offset order before scanning. Independent
+add-on batches use at most four source-read workers; each worker still streams
+only the selected entries, never a complete PAC archive. Entry bounds,
 archive identity, expansion limits, and the captured compressed-payload digest
 remain verified at read time. Its bounded result statistics report source-read
 wall time separately from scan time, along with per-add-on read time and failures.

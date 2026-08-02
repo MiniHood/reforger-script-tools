@@ -217,3 +217,31 @@ handles and scratch-buffer pools as worthwhile next steps. A controlled attempt
 to reuse the corpus for bounded source reads improved their paired median by
 only 0.16 ms, so that branch was removed rather than expanding the cache's
 responsibility.
+
+### First corpus materialization
+
+Fresh MCP processes were measured against the same 8,626-source loaded scope
+to isolate the first full-text query. Seven paired runs alternated executable
+order. Valid UTF-8 now takes ownership of its decompression buffer instead of
+copying the decoded source into a second allocation. Independent add-on source
+batches are read by at most four scoped workers; each worker opens one archive
+at a time and retains only selected decoded scripts, so the potentially
+multi-gigabyte PAC files are never loaded into memory.
+
+| Measurement | Original | Accepted | Change |
+| --- | ---: | ---: | ---: |
+| First text search | 172.82 ms | **117.00 ms** | **-32.3%** |
+| First source acquisition | 157 ms | **100 ms** | **-36.3%** |
+| Text scan | 11-13 ms | 11-13 ms | unchanged |
+
+Isolating only the zero-copy UTF-8 conversion reduced the first query from
+172.82 ms to 157.81 ms and source acquisition from 157 ms to 141 ms. Four
+workers then reduced a 159.65 ms single-worker query to 118.67 ms. A direct
+two-versus-four comparison measured 128.23 ms and 117.00 ms respectively, so
+the existing four-worker ceiling earned its bounded concurrency.
+
+A diagnostic build that skipped compressed-payload SHA-256 verification saved
+about 11 ms. That prototype was removed: the digest check protects the
+revision-bound source contract, and eliminating it would trade correctness for
+latency. No persistent archive handles, buffer pool, background preload, or
+whole-pack cache was added.

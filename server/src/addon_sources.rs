@@ -2237,7 +2237,7 @@ pub fn read_virtual_source(uri: &str) -> Result<String, String> {
             || false,
         )
         .map_err(|error| error.to_string())?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok(decode_source_bytes(bytes))
 }
 
 /// Reads a virtual source document from the immutable cache that published its
@@ -2405,7 +2405,7 @@ pub fn read_cached_virtual_sources(
                     results[output_index] = Err(error.to_string());
                     continue;
                 }
-                results[output_index] = Ok(String::from_utf8_lossy(&bytes).into_owned());
+                results[output_index] = Ok(decode_source_bytes(bytes));
             }
         }
     }
@@ -2415,6 +2415,13 @@ pub fn read_cached_virtual_sources(
         revisions_validated,
         archives_opened,
     })
+}
+
+fn decode_source_bytes(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(source) => source,
+        Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
+    }
 }
 
 fn loaded_source_revision(key: &str) -> Result<Arc<PackedSourceRevision>, String> {
@@ -3635,6 +3642,25 @@ fn adjacent_manifest_sha512(pack: &Path) -> Option<String> {
 mod tests {
     use super::*;
     use crate::index_cache::IndexCacheStatus;
+
+    #[test]
+    fn valid_packed_source_reuses_its_decoded_buffer() {
+        let bytes = b"class SCR_Example {}".to_vec();
+        let buffer = bytes.as_ptr();
+
+        let source = decode_source_bytes(bytes);
+
+        assert_eq!(source, "class SCR_Example {}");
+        assert_eq!(source.as_ptr(), buffer);
+    }
+
+    #[test]
+    fn invalid_packed_source_preserves_lossy_decoding() {
+        let bytes = vec![b'a', 0xff, b'b'];
+        let expected = String::from_utf8_lossy(&bytes).into_owned();
+
+        assert_eq!(decode_source_bytes(bytes), expected);
+    }
 
     #[test]
     fn rejects_unknown_inventory_schema() {

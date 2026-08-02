@@ -40,6 +40,7 @@ use std::time::{Duration, Instant};
 pub const GAME_DATA_INITIALIZATION_DEADLINE_MS: u64 = 120_000;
 pub const MAX_STRUCTURED_RESULT_BYTES: usize = 256 * 1024;
 const MAX_CACHED_TEXT_SOURCE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_TEXT_SOURCE_READ_WORKERS: usize = 4;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum GameDataExternalIndexMode {
@@ -307,28 +308,66 @@ impl GameDataCatalogue {
                     content: Arc::<str>::from(source),
                 });
             }
-            for (guid, addon_sources) in virtual_sources {
-                let cache_path = addon_instances
-                    .iter()
-                    .find(|instance| instance.guid.eq_ignore_ascii_case(&guid))
-                    .map(|instance| instance.cache_path.as_path())
-                    .ok_or(GameDataCatalogueTextSearchError::Unavailable)?;
-                let uris = addon_sources
-                    .iter()
-                    .map(|(_, uri, _)| uri.clone())
+            let virtual_source_jobs = virtual_sources
+                .into_iter()
+                .enumerate()
+                .map(|(sequence, (guid, addon_sources))| {
+                    let cache_path = addon_instances
+                        .iter()
+                        .find(|instance| instance.guid.eq_ignore_ascii_case(&guid))
+                        .map(|instance| instance.cache_path.clone())
+                        .ok_or(GameDataCatalogueTextSearchError::Unavailable)?;
+                    Ok((sequence, guid, addon_sources, cache_path))
+                })
+                .collect::<Result<Vec<_>, GameDataCatalogueTextSearchError>>()?;
+            let worker_count = virtual_source_jobs.len().min(MAX_TEXT_SOURCE_READ_WORKERS);
+            let mut partitions = (0..worker_count).map(|_| Vec::new()).collect::<Vec<_>>();
+            for (index, job) in virtual_source_jobs.into_iter().enumerate() {
+                partitions[index % worker_count].push(job);
+            }
+            let mut completed_batches = std::thread::scope(|scope| {
+                let workers = partitions
+                    .into_iter()
+                    .map(|partition| {
+                        scope.spawn(move || {
+                            partition
+                                .into_iter()
+                                .map(|(sequence, guid, addon_sources, cache_path)| {
+                                    let uris = addon_sources
+                                        .iter()
+                                        .map(|(_, uri, _)| uri.clone())
+                                        .collect::<Vec<_>>();
+                                    let read_started = Instant::now();
+                                    let batch =
+                                        read_cached_virtual_sources(&uris, &cache_path, control);
+                                    (sequence, guid, addon_sources, read_started.elapsed(), batch)
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                    })
                     .collect::<Vec<_>>();
-                let read_started = Instant::now();
-                let batch =
-                    read_cached_virtual_sources(&uris, cache_path, control).map_err(|error| {
-                        if error == INDEX_BUILD_CANCELLED {
-                            GameDataCatalogueTextSearchError::TextSearch(TextSearchError::Cancelled)
-                        } else {
-                            GameDataCatalogueTextSearchError::Initialization(error)
-                        }
-                    })?;
+                let mut completed = Vec::new();
+                for worker in workers {
+                    let batches = worker
+                        .join()
+                        .map_err(|_| "Game Data text source reader panicked".to_string())?;
+                    completed.extend(batches);
+                }
+                Ok::<_, String>(completed)
+            })
+            .map_err(GameDataCatalogueTextSearchError::Initialization)?;
+            completed_batches.sort_by_key(|(sequence, _, _, _, _)| *sequence);
+            for (_, guid, addon_sources, read_elapsed, batch) in completed_batches {
+                let batch = batch.map_err(|error| {
+                    if error == INDEX_BUILD_CANCELLED {
+                        GameDataCatalogueTextSearchError::TextSearch(TextSearchError::Cancelled)
+                    } else {
+                        GameDataCatalogueTextSearchError::Initialization(error)
+                    }
+                })?;
                 *source_read_time_by_addon
                     .entry(guid.clone())
-                    .or_insert(Duration::ZERO) += read_started.elapsed();
+                    .or_insert(Duration::ZERO) += read_elapsed;
                 for ((relative_path, source_uri, addon_label), source) in
                     addon_sources.into_iter().zip(batch.sources.into_iter())
                 {
