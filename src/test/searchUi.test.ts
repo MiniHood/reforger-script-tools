@@ -122,7 +122,7 @@ suite('Reforger search UI MCP mapping', () => {
 	test('queues script text matches for asynchronous semantic coloring', () => {
 		assert.match(searchUiSource, /const semanticHits = previewHits\.filter\(hit => hit\.source !== 'wiki'\)/);
 		assert.match(searchUiSource, /length: Math\.min\(4, semanticHits\.length\)/);
-		assert.match(searchUiSource, /if \(hit\.kind === 'text'\)[\s\S]*?queueRawPreview\(hit\.id\);[\s\S]*?queueSemanticPreview\(rawPreview\);[\s\S]*?continue;/);
+		assert.match(searchUiSource, /const rawPreview = \{ hit, document, previewLine, preview, matchRange \};[\s\S]*?queueRawPreview\(hit\.id\);[\s\S]*?queueSemanticPreview\(rawPreview\);/);
 		assert.match(searchUiSource, /else if \(hit\.kind === 'text'\) \{\s*return undefined;/);
 		assert.match(searchUiSource, /state\.sourcePreviews\[result\.id\] \?\? \(result\.kind === 'text' \? result\.excerpt : undefined\)/);
 	});
@@ -181,7 +181,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.deepStrictEqual(sourceMatchRange('void foo()', 'FOO'), { start: 5, length: 3 });
 		assert.strictEqual(sourceMatchRange('void Bar()', 'Foo'), undefined);
 		assert.doesNotMatch(searchUiSource, /highlightText\(result\.excerpt, state\.query \+ ' ' \+ result\.title\)/);
-		assert.match(searchUiSource, /hydrateSearchPreviews\(active, client, requestId, result\.results, normalizedQuery, previewCancellation\.token\)/);
+		assert.match(searchUiSource, /startPreviewHydration\(active, client, requestId, result\.results, normalizedQuery\)/);
 		assert.match(searchUiSource, /const matchRange = sourceMatchRange\(preview, query\);/);
 	});
 
@@ -226,7 +226,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /data-mode="semantic"/);
 		assert.match(searchUiSource, /data-mode="text"/);
 		assert.match(searchUiSource, /state\.mode === 'resource' \? resourceResultTypes : resultTypes/);
-		assert.match(searchUiSource, /query\.addEventListener\('input', event => \{ state\.query = event\.target\.value; if \(state\.mode !== 'text'\) search\(true\); \}\)/);
+		assert.match(searchUiSource, /query\.addEventListener\('input', event => \{ state\.query = event\.target\.value; pendingQuerySelection = \{ start: event\.target\.selectionStart \?\? state\.query\.length, end: event\.target\.selectionEnd \?\? state\.query\.length \}; if \(state\.mode !== 'text'\) search\(true\); \}\)/);
 		assert.doesNotMatch(searchUiSource, /searchTimer|scheduleSearch/);
 		assert.match(searchUiSource, /searchMode: state\.mode/);
 		assert.match(searchClientSource, /search_workspace_text/);
@@ -296,7 +296,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /' more<\/span>'/);
 		assert.match(searchUiSource, /<button class="addon-trigger"[\s\S]*?<div class="addon-chips">/);
 		assert.match(searchUiSource, /\.addon-chips \{[^}]*margin-top: 6px;/);
-		assert.doesNotMatch(searchUiSource, /prototypeVariants/);
+		assert.match(searchUiSource, /const prototypeVariants = \[/);
 		assert.doesNotMatch(searchUiSource, /addonPrototypeSources/);
 		assert.doesNotMatch(searchUiSource, /SEARCH IN/);
 		assert.match(searchUiSource, /No search scopes selected\./);
@@ -316,6 +316,28 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchClientSource, /workspaceScopeId[\s\S]*?wikiScopeId[\s\S]*?\.\.\.addonSources/);
 		assert.match(searchClientSource, /wikiScopeId[^\n]+pinned: true/);
 		assert.match(searchUiSource, /SEARCH SCOPE<\/div>' \+ searchScope\(\) \+ '<div class="group-label">SEARCH MODE<\/div>' \+ modeButtons\(\)/);
+	});
+
+	test('keeps the original Search UI beside five development-only presentation prototypes', () => {
+		for (const key of ['original', 'focus', 'inspector', 'ledger', 'atlas', 'console']) {
+			assert.match(searchUiSource, new RegExp(`key: '${key}'`));
+		}
+		assert.match(searchUiSource, /context\.extensionMode !== vscode\.ExtensionMode\.Production/);
+		assert.match(searchUiSource, /new URLSearchParams\(window\.location\.search\)\.get\('variant'\)/);
+		assert.match(searchUiSource, /url\.searchParams\.set\('variant', value\)/);
+		assert.match(searchUiSource, /window\.history\.replaceState\(null, '', url\)/);
+		assert.match(searchUiSource, /vscode\.setState\(\{ \.\.\.\(vscode\.getState\(\) \?\? \{\}\), prototypeVariant: value \}\)/);
+		assert.match(searchUiSource, /data-variant-prev/);
+		assert.match(searchUiSource, /data-variant-next/);
+		assert.match(searchUiSource, /event\.key === 'ArrowLeft' \|\| event\.key === 'ArrowRight'/);
+		assert.match(searchUiSource, /closest\('input, textarea, select, \[contenteditable="true"\]'\)/);
+		assert.match(searchUiSource, /const pageRenderers = \{ original: \(\) => original, focus: renderFocusVariant, inspector: renderInspectorVariant, ledger: renderLedgerVariant, atlas: renderAtlasVariant, console: renderConsoleVariant \}/);
+		assert.match(searchUiSource, /const renderPage = prototypeEnabled \? pageRenderers\[state\.variant\] \?\? pageRenderers\.original : pageRenderers\.original/);
+		assert.doesNotMatch(
+			searchUiSource.match(/const setPrototypeVariant = value => \{[\s\S]*?\n\};/)?.[0] ?? '',
+			/\bsearch\(/,
+		);
+		assert.match(searchUiSource, /prototypeVariant: state\.variant/);
 	});
 
 	test('keeps opening and closing Search Scope presentation-only', () => {
@@ -464,7 +486,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /\.source-rows\.two-column \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
 		assert.match(searchUiSource, /\.page-controls \[data-result-layout\] \{ display: inline-flex; align-items: center; justify-content: center; padding: 0; line-height: 0; \}/);
 		assert.match(searchUiSource, /const pageControls = \(includeLayoutToggle = false\) =>/);
-		assert.match(searchUiSource, /return '<div class="page-controls" aria-label="Search result pages">' \+ layoutToggle \+ '<select data-page-size/);
+		assert.match(searchUiSource, /return '<div class="page-controls" aria-label="Search result pages">' \+ previewControl \+ layoutToggle \+ '<select data-page-size/);
 		assert.match(searchUiSource, /pageControls\(true\)/);
 		assert.match(searchUiSource, /data-result-layout/);
 		assert.match(searchUiSource, /aria-pressed="' \+ \(state\.resultColumns === 2\) \+ '"/);

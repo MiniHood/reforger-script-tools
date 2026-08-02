@@ -297,6 +297,7 @@
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "prototype:search-ui": "npm run compile && code --new-window --extensionDevelopmentPath=. .",
     "package": "npm run package:build && node tools/check-package-contents.mjs",
     "package:build": "npm run check-types && npm run lint && node tools/check-workbench-bridge-style.mjs && npm run mcp-api:check && node tools/build-language-server.mjs --release && node esbuild.js --production",
     "compile-tests": "tsc -p . --outDir out",
