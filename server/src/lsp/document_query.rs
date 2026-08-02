@@ -34,10 +34,7 @@ pub(super) struct DocumentSymbolProjection {
 }
 
 impl<'a> DocumentQuery<'a> {
-    pub fn new(
-        document: &'a OpenDocument,
-        external_indexes: ExternalIndexSnapshot,
-    ) -> Self {
+    pub fn new(document: &'a OpenDocument, external_indexes: ExternalIndexSnapshot) -> Self {
         let state = Self::state_for(document);
         Self {
             document,

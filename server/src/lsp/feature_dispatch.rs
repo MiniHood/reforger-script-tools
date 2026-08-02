@@ -799,8 +799,10 @@ impl FeatureDispatcher<'_> {
                             let document = query.document;
                             bytes = document.snapshot.text().len();
                             version = document.snapshot.version();
-                            let start = offset_for_position(&document.snapshot.text(), params.range.start)?;
-                            let end = offset_for_position(&document.snapshot.text(), params.range.end)?;
+                            let start =
+                                offset_for_position(&document.snapshot.text(), params.range.start)?;
+                            let end =
+                                offset_for_position(&document.snapshot.text(), params.range.end)?;
                             if start > end {
                                 outcome = "invalid_range";
                                 return None;
@@ -1095,7 +1097,7 @@ impl FeatureDispatcher<'_> {
                                     let DocumentQuery {
                                         document,
                                         external_indexes: indexes,
-                                    state,
+                                        state,
                                     } = query;
                                     bytes = document.snapshot.text().len();
                                     revision = document.snapshot.revision();
@@ -1220,7 +1222,7 @@ impl FeatureDispatcher<'_> {
                                     let DocumentQuery {
                                         document,
                                         external_indexes: indexes,
-                                    state,
+                                        state,
                                     } = query;
                                     bytes = document.snapshot.text().len();
                                     revision = document.snapshot.revision();
@@ -1313,11 +1315,9 @@ impl FeatureDispatcher<'_> {
                             let DocumentQuery {
                                 document,
                                 external_indexes: indexes,
-                            state,
+                                state,
                             } = query;
-                            if let DocumentQueryState::Cached(analysis) =
-                                state
-                            {
+                            if let DocumentQueryState::Cached(analysis) = state {
                                 if self.document_runtime.has_runtime_worker() {
                                     let uri = params.text_document.uri.clone();
                                     let position = params.position;
@@ -1376,11 +1376,9 @@ impl FeatureDispatcher<'_> {
                                     let DocumentQuery {
                                         document,
                                         external_indexes: indexes,
-                                    state,
+                                        state,
                                     } = query;
-                                    let DocumentQueryState::Cached(analysis) =
-                                        state
-                                    else {
+                                    let DocumentQueryState::Cached(analysis) = state else {
                                         return None;
                                     };
                                     bytes = document.snapshot.text().len();
@@ -1437,11 +1435,9 @@ impl FeatureDispatcher<'_> {
                             let DocumentQuery {
                                 document,
                                 external_indexes: indexes,
-                            state,
+                                state,
                             } = query;
-                            if let DocumentQueryState::Cached(analysis) =
-                                state
-                            {
+                            if let DocumentQueryState::Cached(analysis) = state {
                                 if self.document_runtime.has_runtime_worker() {
                                     let uri = params.text_document.uri.clone();
                                     let position = params.position;

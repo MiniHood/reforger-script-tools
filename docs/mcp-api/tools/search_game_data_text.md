@@ -214,6 +214,10 @@ Explicit bounded full-text search over readable Reforger Game Data source files.
           },
           "type": "object"
         },
+        "sourceReadMs": {
+          "minimum": 0,
+          "type": "integer"
+        },
         "sourceReadMsByAddon": {
           "additionalProperties": {
             "minimum": 0,
@@ -226,6 +230,7 @@ Explicit bounded full-text search over readable Reforger Game Data source files.
         "filesConsidered",
         "filesRead",
         "filesWithMatches",
+        "sourceReadMs",
         "sourceReadFailures",
         "sourceReadFailuresByAddon",
         "sourceReadMsByAddon",

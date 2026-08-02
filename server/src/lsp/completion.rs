@@ -1,10 +1,10 @@
 use crate::analysis_runtime::QueryQuality;
-use crate::callable::{
-    callable_argument_context_at_offset, callable_type_owner,
-    CallableParameter, CallableSignatureParts, CallableTarget,
-};
 #[cfg(test)]
 use crate::callable::callable_signature_parts;
+use crate::callable::{
+    callable_argument_context_at_offset, callable_type_owner, CallableParameter,
+    CallableSignatureParts, CallableTarget,
+};
 use crate::construction::{
     compatible_construction_candidates, lexical_construction_context_at_operand, ConstructionQuery,
 };
@@ -5723,18 +5723,15 @@ fn callable_completion_render(
                     | CompletionInsertContext::ContextualConstructorCall
             ) =>
         {
-            let call = candidate
-                .callable_signature_parts
-                .clone()
-                .or_else(|| {
-                    (insert_context == CompletionInsertContext::ContextualConstructorCall).then(
-                        || CallableSignatureParts {
-                            parameters: "()".to_string(),
-                            parameters_info: Vec::new(),
-                            result: None,
-                        },
-                    )
-                })?;
+            let call = candidate.callable_signature_parts.clone().or_else(|| {
+                (insert_context == CompletionInsertContext::ContextualConstructorCall).then(|| {
+                    CallableSignatureParts {
+                        parameters: "()".to_string(),
+                        parameters_info: Vec::new(),
+                        result: None,
+                    }
+                })
+            })?;
             if let Some(insert_text) = rpl_rpc_attribute_template(label, &call, false) {
                 return Some(CallableCompletionRender::from_insert(
                     call,

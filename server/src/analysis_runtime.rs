@@ -410,7 +410,6 @@ impl AnalysisTask {
     pub fn cancellation_token(&self) -> Arc<AtomicBool> {
         self.cancelled.clone()
     }
-
 }
 
 /// Deterministic result of trying to retain a task. A replacement is accepted

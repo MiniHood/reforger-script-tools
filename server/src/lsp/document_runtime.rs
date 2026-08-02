@@ -1,3 +1,5 @@
+#[cfg(test)]
+use super::file_path_identity;
 use super::request_router::{RequestCommand, RoutedRequest};
 #[cfg(test)]
 use super::semantic_tokens::LspSemanticTokenProjection;
@@ -20,8 +22,6 @@ use super::{
     MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
 };
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime, UpsertOutcome};
-#[cfg(test)]
-use super::file_path_identity;
 use serde_json::Value;
 use std::collections::BTreeMap;
 #[cfg(test)]
@@ -217,7 +217,10 @@ impl DocumentRuntime {
         uri: &str,
         external_indexes: ExternalIndexSnapshot,
     ) -> Option<DocumentQuery<'a>> {
-        Some(DocumentQuery::new(self.documents.get(uri)?, external_indexes))
+        Some(DocumentQuery::new(
+            self.documents.get(uri)?,
+            external_indexes,
+        ))
     }
 
     pub(super) fn document_path_identity(&self, uri: &str) -> Option<&str> {
@@ -314,7 +317,11 @@ impl DocumentRuntime {
                     external_generation,
                 )
         {
-            selection.rich_work = Some((uri.to_string(), document.snapshot.revision(), external_generation));
+            selection.rich_work = Some((
+                uri.to_string(),
+                document.snapshot.revision(),
+                external_generation,
+            ));
         }
         selection.token_count = projection.token_count;
         selection.parse_diagnostics = projection.parse_diagnostics;
@@ -539,11 +546,10 @@ impl DocumentRuntime {
         let request_id = self.next_server_request_id;
         self.next_server_request_id += 1;
         let snapshot = self.runtime.latest(uri).expect("accepted snapshot");
-        match self.runtime.admit(
-            TaskClass::Foreground,
-            snapshot,
-            request_id,
-        ) {
+        match self
+            .runtime
+            .admit(TaskClass::Foreground, snapshot, request_id)
+        {
             AdmissionDisposition::Enqueued { .. } => {
                 scheduler.schedule_foreground(ForegroundDocumentJob {
                     task: self
@@ -778,11 +784,10 @@ impl DocumentRuntime {
         let snapshot = document.snapshot.clone();
         let request_id = self.next_server_request_id;
         self.next_server_request_id += 1;
-        match self.runtime.admit(
-            TaskClass::Semantic,
-            snapshot,
-            request_id,
-        ) {
+        match self
+            .runtime
+            .admit(TaskClass::Semantic, snapshot, request_id)
+        {
             AdmissionDisposition::Enqueued { .. } => scheduler.schedule(OpenDocumentAnalysisJob {
                 task: self
                     .runtime
@@ -1190,11 +1195,7 @@ impl DocumentRuntime {
             .expect("open document has a runtime snapshot");
         let request_id = self.next_server_request_id;
         self.next_server_request_id += 1;
-        let task = match self.runtime.admit(
-            TaskClass::Rich,
-            snapshot,
-            request_id,
-        ) {
+        let task = match self.runtime.admit(TaskClass::Rich, snapshot, request_id) {
             AdmissionDisposition::Enqueued { .. } => self
                 .runtime
                 .take_next()
@@ -1438,11 +1439,7 @@ impl DocumentRuntime {
         let request_id = self.next_server_request_id;
         self.next_server_request_id += 1;
         let snapshot = self.runtime.latest(uri).expect("current debug snapshot");
-        match self.runtime.admit(
-            TaskClass::Rich,
-            snapshot,
-            request_id,
-        ) {
+        match self.runtime.admit(TaskClass::Rich, snapshot, request_id) {
             AdmissionDisposition::Enqueued { .. } => Ok(self
                 .runtime
                 .take_next()
@@ -1604,11 +1601,7 @@ mod tests {
         runtime
             .documents
             .insert(uri.to_string(), OpenDocument::new(snapshot.clone()));
-        let task = match runtime.runtime.admit(
-            TaskClass::Rich,
-            snapshot,
-            1,
-        ) {
+        let task = match runtime.runtime.admit(TaskClass::Rich, snapshot, 1) {
             AdmissionDisposition::Enqueued { .. } => runtime.runtime.take_next().unwrap(),
             other => panic!("unexpected admission disposition: {other:?}"),
         };

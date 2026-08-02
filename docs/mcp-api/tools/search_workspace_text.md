@@ -177,12 +177,17 @@ Explicit bounded full-text search over readable user add-on workspace script fil
         "sourceReadFailures": {
           "minimum": 0,
           "type": "integer"
+        },
+        "sourceReadMs": {
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
         "filesConsidered",
         "filesRead",
         "filesWithMatches",
+        "sourceReadMs",
         "sourceReadFailures",
         "matchesFound",
         "scanMs"

@@ -60,7 +60,6 @@ impl OpenDocument {
     /// only a foreground-safe projection until the worker installs this
     /// revision; no legacy empty-file analysis exists in this state.
     pub(crate) fn pending(snapshot: DocumentSnapshot) -> Self {
-
         Self {
             snapshot,
             syntax: None,

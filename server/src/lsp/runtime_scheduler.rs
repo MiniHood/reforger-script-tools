@@ -337,7 +337,6 @@ impl RuntimeWorkJob {
             Self::Debug(job) => job.task(),
         }
     }
-
 }
 
 impl RuntimeWorkExecutor {

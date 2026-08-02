@@ -1,8 +1,8 @@
+use crate::callable::{CallableParameter, CallableSignatureParts};
 use crate::index::{
     parameter_signature_text, CompletionMemberLookup, GlobalSymbolId, IndexedConditionalBranch,
     SymbolIndex,
 };
-use crate::callable::{CallableParameter, CallableSignatureParts};
 use crate::lexer::TextSpan;
 use crate::model::{CallableForm, SourceCategory, SourceKind, SymbolKind};
 use crate::symbol_display::{SymbolDisplay, SymbolDisplayInfo};
@@ -524,7 +524,9 @@ impl<'index> IndexQuery<'index> {
                 if !self.is_editor_completion_source(*child_id) {
                     continue;
                 }
-                if let Some(candidate) = self.editor_symbol_completion_candidate(*child_id, EditorCompletionOrigin::Unknown) {
+                if let Some(candidate) = self
+                    .editor_symbol_completion_candidate(*child_id, EditorCompletionOrigin::Unknown)
+                {
                     candidates.push(candidate);
                 }
             }

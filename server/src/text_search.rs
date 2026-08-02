@@ -608,6 +608,44 @@ mod tests {
     }
 
     #[test]
+    fn repeated_matches_retain_their_exact_excerpt_offsets() {
+        let page = search(
+            TextSearchCorpus {
+                files_considered: 1,
+                sources: vec![TextSource {
+                    relative_path: "Game/Repeated.c".to_string(),
+                    addon_guid: None,
+                    addon_label: None,
+                    source_uri: None,
+                    content: Arc::from("SCR_ SCR_"),
+                }],
+                ..TextSearchCorpus::default()
+            },
+            &IndexBuildControl::default(),
+            "ws1:test",
+            TextSearchRequest {
+                query: "SCR_".to_string(),
+                addon_guids: None,
+                options: TextSearchOptions::default(),
+                limit: Some(10),
+                cursor: None,
+            },
+        )
+        .expect("repeated text search");
+
+        assert_eq!(page.results[0].excerpt_match_start, 0);
+        assert_eq!(page.results[1].excerpt_match_start, 5);
+    }
+
+    #[test]
+    fn physical_text_sources_publish_file_editor_identities() {
+        let path = std::env::temp_dir().join("TextSource.c");
+        let uri = physical_source_uri(&path).expect("file URI");
+
+        assert_eq!(uri, Url::from_file_path(path).expect("file URI").as_str());
+    }
+
+    #[test]
     fn whole_word_and_regular_expression_options_constrain_matches() {
         let corpus = TextSearchCorpus {
             files_considered: 1,

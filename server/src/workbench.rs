@@ -1,7 +1,7 @@
 use crate::workbench_bridge::*;
 use crate::workbench_capture::{
-    self, CaptureError, CaptureRegion, CapturedWindow, WorkbenchWindowList,
-    DEFAULT_MAX_DIMENSION, MAX_MAX_DIMENSION, MIN_MAX_DIMENSION,
+    self, CaptureError, CaptureRegion, CapturedWindow, WorkbenchWindowList, DEFAULT_MAX_DIMENSION,
+    MAX_MAX_DIMENSION, MIN_MAX_DIMENSION,
 };
 use schemars::JsonSchema;
 use semver::Version;
@@ -1427,17 +1427,18 @@ impl WorkbenchController {
         }
         let bridge_changed = self.bridge_needs_maintenance(&paths.bridge_directory);
         if bridge_changed {
-            self.write_managed_files(&paths.bridge_directory).map_err(|error| {
-                self.correlate_failure_details(
-                    "integration-maintenance",
-                    "write-failed",
-                    failure(WorkbenchFailureCode::Unavailable),
-                    json!({
-                        "errorKind": format!("{:?}", error.kind()),
-                        "managedFileCount": bridge_payload().len(),
-                    }),
-                )
-            })?;
+            self.write_managed_files(&paths.bridge_directory)
+                .map_err(|error| {
+                    self.correlate_failure_details(
+                        "integration-maintenance",
+                        "write-failed",
+                        failure(WorkbenchFailureCode::Unavailable),
+                        json!({
+                            "errorKind": format!("{:?}", error.kind()),
+                            "managedFileCount": bridge_payload().len(),
+                        }),
+                    )
+                })?;
             existing_manifest = fs::read(&manifest_path)
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok());
@@ -1946,24 +1947,35 @@ impl WorkbenchController {
                 json!({"handler": "RST_WorkbenchLoadedAddonGraph", "activeBridgeVersion": raw.bridge_version, "activeProtocolVersion": raw.protocol_version}),
             ));
         }
-        let mut addons: Vec<WorkbenchLoadedAddon> = serde_json::from_str(&raw.graph_json).map_err(|_| {
-            self.correlate_failure_details(
-                "loaded_addon_graph",
-                "workbench_protocol_error",
-                failure(WorkbenchFailureCode::Protocol),
-                json!({"handler": "RST_WorkbenchLoadedAddonGraph"}),
-            )
-        })?;
+        let mut addons: Vec<WorkbenchLoadedAddon> =
+            serde_json::from_str(&raw.graph_json).map_err(|_| {
+                self.correlate_failure_details(
+                    "loaded_addon_graph",
+                    "workbench_protocol_error",
+                    failure(WorkbenchFailureCode::Protocol),
+                    json!({"handler": "RST_WorkbenchLoadedAddonGraph"}),
+                )
+            })?;
         let current_project_file = (!raw.current_project_file.is_empty())
             .then(|| PathBuf::from(&raw.current_project_file));
-        resolve_loaded_addon_roots(&mut addons, current_project_file.as_deref(), &self.paths().profile)
-            .map_err(|_| self.correlate_failure_details(
+        resolve_loaded_addon_roots(
+            &mut addons,
+            current_project_file.as_deref(),
+            &self.paths().profile,
+        )
+        .map_err(|_| {
+            self.correlate_failure_details(
                 "loaded_addon_graph",
                 "unresolved-loaded-addon-root",
                 failure(WorkbenchFailureCode::Protocol),
                 json!({"handler": "RST_WorkbenchLoadedAddonGraph"}),
-            ))?;
-        if addons.len() > 256 || addons.iter().any(|addon| !valid_loaded_addon(addon) || !addon.source_root.is_absolute()) {
+            )
+        })?;
+        if addons.len() > 256
+            || addons
+                .iter()
+                .any(|addon| !valid_loaded_addon(addon) || !addon.source_root.is_absolute())
+        {
             return Err(self.correlate_failure_details(
                 "loaded_addon_graph",
                 "workbench_protocol_error",
@@ -1972,9 +1984,10 @@ impl WorkbenchController {
             ));
         }
         let mut loaded_instances = HashSet::new();
-        if addons.iter().any(|addon| {
-            !loaded_instances.insert((addon.guid.clone(), addon.source_root.clone()))
-        }) {
+        if addons
+            .iter()
+            .any(|addon| !loaded_instances.insert((addon.guid.clone(), addon.source_root.clone())))
+        {
             return Err(self.correlate_failure_details(
                 "loaded_addon_graph",
                 "workbench_protocol_error",
@@ -3229,23 +3242,23 @@ impl WorkbenchController {
             }),
             self.options.gateway.status_deadline,
         )?;
-        let raw: RawBridgeEntityTransform = serde_json::from_value(value)
-            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        let raw: RawBridgeEntityTransform =
+            serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
         if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION {
             return Err(failure(WorkbenchFailureCode::Protocol));
         }
         let entity = parse_optional_world_selection_record(&raw.entity)
             .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
         let transform = match (raw.position.as_deref(), raw.angles.as_deref()) {
-            (Some(position), Some(angles)) if raw.scale.is_finite() => Some(
-                WorkbenchEntityTransform {
+            (Some(position), Some(angles)) if raw.scale.is_finite() => {
+                Some(WorkbenchEntityTransform {
                     position: parse_vector_record(position)
                         .map_err(|_| failure(WorkbenchFailureCode::Protocol))?,
                     angles: parse_vector_record(angles)
                         .map_err(|_| failure(WorkbenchFailureCode::Protocol))?,
                     scale: raw.scale,
-                },
-            ),
+                })
+            }
             _ => None,
         };
         Ok(WorkbenchEntityTransformResult {
@@ -4532,11 +4545,16 @@ impl WorkbenchController {
                         reload_dispatched: true,
                         runtime_generation: after.runtime_generation,
                     };
-                    self.log_event_timed("activate-scripts", "verified", started, json!({
-                        "worldSavedBeforeReload": result.world_saved_before_reload,
-                        "worldSaveStatus": result.world_save_status,
-                        "runtimeGeneration": result.runtime_generation,
-                    }));
+                    self.log_event_timed(
+                        "activate-scripts",
+                        "verified",
+                        started,
+                        json!({
+                            "worldSavedBeforeReload": result.world_saved_before_reload,
+                            "worldSaveStatus": result.world_save_status,
+                            "runtimeGeneration": result.runtime_generation,
+                        }),
+                    );
                     return Ok(result);
                 }
             }
@@ -4828,8 +4846,8 @@ impl WorkbenchController {
             .profile_directory
             .as_deref()
             .and_then(std::path::Path::parent);
-        let arguments =
-            workbench_launch_arguments(project, paths.game.as_deref(), profile_root).ok_or_else(|| {
+        let arguments = workbench_launch_arguments(project, paths.game.as_deref(), profile_root)
+            .ok_or_else(|| {
                 self.correlate_failure_details(
                     "launch",
                     "base-game-addon-directory-unavailable",
@@ -5463,16 +5481,12 @@ impl WorkbenchController {
             .clone()
             .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
             .unwrap_or_default();
-        let profile = self
-            .options
-            .profile_directory
-            .clone()
-            .unwrap_or_else(|| {
-                user.join("Documents")
-                    .join("My Games")
-                    .join("ArmaReforgerWorkbench")
-                    .join("profile")
-            });
+        let profile = self.options.profile_directory.clone().unwrap_or_else(|| {
+            user.join("Documents")
+                .join("My Games")
+                .join("ArmaReforgerWorkbench")
+                .join("profile")
+        });
         let workbench_root = profile
             .parent()
             .map(PathBuf::from)
@@ -5733,7 +5747,8 @@ impl WorkbenchGateway {
     }
 
     fn request(&self, payload: Value, deadline: Duration) -> Result<Value, WorkbenchFailure> {
-        self.request_with_timing(payload, deadline).map(|(value, _)| value)
+        self.request_with_timing(payload, deadline)
+            .map(|(value, _)| value)
     }
 
     fn request_with_timing(
@@ -7881,7 +7896,10 @@ fn resolve_loaded_addon_roots(
                 if directory.is_dir() {
                     for project in fs::read_dir(directory).map_err(|_| ())?.flatten() {
                         let project = project.path();
-                        if project.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("gproj")) {
+                        if project
+                            .extension()
+                            .is_some_and(|extension| extension.eq_ignore_ascii_case("gproj"))
+                        {
                             register_project_candidate(&mut candidates, project)?;
                         }
                     }
@@ -7904,7 +7922,10 @@ fn resolve_loaded_addon_roots(
 
 pub(crate) fn registered_project_files(profile: &Path) -> Result<Vec<PathBuf>, String> {
     let mut projects = Vec::new();
-    for entry in fs::read_dir(profile).map_err(|error| error.to_string())?.flatten() {
+    for entry in fs::read_dir(profile)
+        .map_err(|error| error.to_string())?
+        .flatten()
+    {
         let path = entry.path();
         let is_registry = path
             .file_name()
@@ -7955,12 +7976,18 @@ pub(crate) fn installed_game_addon_project_files() -> Result<Vec<PathBuf>, Strin
         };
         let addons = game.join("addons");
         let mut projects = BTreeSet::new();
-        for entry in fs::read_dir(&addons).map_err(|error| error.to_string())?.flatten() {
+        for entry in fs::read_dir(&addons)
+            .map_err(|error| error.to_string())?
+            .flatten()
+        {
             let path = entry.path();
             if !path.is_dir() {
                 continue;
             }
-            for project in fs::read_dir(&path).map_err(|error| error.to_string())?.flatten() {
+            for project in fs::read_dir(&path)
+                .map_err(|error| error.to_string())?
+                .flatten()
+            {
                 let project = project.path();
                 if project.is_file()
                     && project
@@ -8034,7 +8061,11 @@ fn project_list_file_path(line: &str) -> Option<PathBuf> {
     let value = line.trim().strip_prefix("FilePath ")?.trim();
     let value = value.strip_prefix('"')?.strip_suffix('"')?;
     let path = PathBuf::from(value);
-    (path.is_absolute() && path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("gproj"))).then_some(path)
+    (path.is_absolute()
+        && path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("gproj")))
+    .then_some(path)
 }
 
 fn register_project_candidate(
@@ -8042,15 +8073,21 @@ fn register_project_candidate(
     project: PathBuf,
 ) -> Result<(), ()> {
     let source = fs::read_to_string(&project).map_err(|_| ())?;
-    let guid = source.lines().find_map(|line| {
-        let value = line.trim().strip_prefix("GUID ")?.trim();
-        value.strip_prefix('"')?.strip_suffix('"')
-    }).ok_or(())?;
+    let guid = source
+        .lines()
+        .find_map(|line| {
+            let value = line.trim().strip_prefix("GUID ")?.trim();
+            value.strip_prefix('"')?.strip_suffix('"')
+        })
+        .ok_or(())?;
     if guid.len() != 16 || !guid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(());
     }
     let root = project.parent().ok_or(())?.to_path_buf();
-    candidates.entry(guid.to_ascii_uppercase()).or_default().insert(root);
+    candidates
+        .entry(guid.to_ascii_uppercase())
+        .or_default()
+        .insert(root);
     Ok(())
 }
 
@@ -8169,10 +8206,7 @@ fn read_all_log_lines(
 ) -> std::io::Result<(Vec<String>, bool)> {
     let all = log_lines_from_offset(path, 0)?;
     let line_truncated = line_count.is_some_and(|limit| limit < all.len());
-    Ok((
-        limit_log_lines(all, line_count, false),
-        line_truncated,
-    ))
+    Ok((limit_log_lines(all, line_count, false), line_truncated))
 }
 
 fn bounded_log_since_reload_start(
@@ -8499,14 +8533,10 @@ impl SteamAppDiscovery {
     fn into_path_and_source(self) -> (Option<PathBuf>, String) {
         match self {
             Self::Found(path) => (Some(path), "steam-registry".to_string()),
-            Self::RegistrationUnavailable => {
-                (None, "steam-registration-unavailable".to_string())
-            }
+            Self::RegistrationUnavailable => (None, "steam-registration-unavailable".to_string()),
             Self::ManifestUnavailable => (None, "steam-manifest-unavailable".to_string()),
             Self::InvalidInstallation => (None, "steam-installation-invalid".to_string()),
-            Self::AmbiguousInstallations => {
-                (None, "steam-installation-ambiguous".to_string())
-            }
+            Self::AmbiguousInstallations => (None, "steam-installation-ambiguous".to_string()),
         }
     }
 }
@@ -8516,17 +8546,11 @@ fn discover_steam_app(app_id: &str) -> SteamAppDiscovery {
 }
 
 #[cfg(test)]
-fn discover_steam_app_from_root(
-    steam_root: &std::path::Path,
-    app_id: &str,
-) -> SteamAppDiscovery {
+fn discover_steam_app_from_root(steam_root: &std::path::Path, app_id: &str) -> SteamAppDiscovery {
     discover_steam_app_from_roots(&[steam_root.to_path_buf()], app_id)
 }
 
-fn discover_steam_app_from_roots(
-    steam_roots: &[PathBuf],
-    app_id: &str,
-) -> SteamAppDiscovery {
+fn discover_steam_app_from_roots(steam_roots: &[PathBuf], app_id: &str) -> SteamAppDiscovery {
     if steam_roots.is_empty() {
         return SteamAppDiscovery::RegistrationUnavailable;
     }
@@ -8606,9 +8630,7 @@ fn steam_libraries(steam_root: &std::path::Path) -> Vec<PathBuf> {
 
 #[cfg(windows)]
 fn registered_steam_roots() -> Vec<PathBuf> {
-    use windows_sys::Win32::System::Registry::{
-        HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
-    };
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 
     let registrations = [
         (HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
@@ -8617,11 +8639,7 @@ fn registered_steam_roots() -> Vec<PathBuf> {
             r"SOFTWARE\WOW6432Node\Valve\Steam",
             "InstallPath",
         ),
-        (
-            HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\Valve\Steam",
-            "InstallPath",
-        ),
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath"),
     ];
     let mut roots = registrations
         .iter()
@@ -8648,7 +8666,10 @@ fn windows_registry_string(
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{RegGetValueW, RRF_RT_REG_SZ};
 
-    let key = key.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+    let key = key
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
     let value = value
         .encode_utf16()
         .chain(std::iter::once(0))
@@ -8684,7 +8705,10 @@ fn windows_registry_string(
     if status != ERROR_SUCCESS {
         return None;
     }
-    let length = buffer.iter().position(|unit| *unit == 0).unwrap_or(buffer.len());
+    let length = buffer
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(buffer.len());
     String::from_utf16(&buffer[..length])
         .ok()
         .filter(|text| !text.trim().is_empty())
@@ -8701,12 +8725,18 @@ fn enable_workbench_net_api() -> std::io::Result<bool> {
 
     const KEY_PATH: &str = r"Software\Bohemia Interactive\Arma Reforger Workbench\Workbench";
     const VALUE_NAME: &str = "NetAPI_Enabled";
-    let key_path = KEY_PATH.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+    let key_path = KEY_PATH
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
     let value_name = VALUE_NAME
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
-    let enabled = "1".encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+    let enabled = "1"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
 
     let mut key = null_mut();
     let status = unsafe { RegCreateKeyW(HKEY_CURRENT_USER, key_path.as_ptr(), &mut key) };
@@ -9029,7 +9059,6 @@ modded class GRAY_TEST
 "#;
 
 */
-
 
 #[cfg(test)]
 mod tests {
@@ -9426,12 +9455,14 @@ mod tests {
 
     #[test]
     fn capability_handshake_requires_the_runtime_generation_field() {
-        assert!(serde_json::from_value::<super::RawBridgeCapabilities>(json!({
-            "bridgeVersion": "1.51.0",
-            "protocolVersion": 1,
-            "capabilities": "state"
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<super::RawBridgeCapabilities>(json!({
+                "bridgeVersion": "1.51.0",
+                "protocolVersion": 1,
+                "capabilities": "state"
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -10069,10 +10100,10 @@ mod tests {
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("int returned = 0;"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("matched = matched + 1;"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("named = named + 1;"));
-        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
-            .contains("if (matched > req.offset + req.limit)"));
-        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
-            .contains("response.totalMatches = matched;"));
+        assert!(
+            super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("if (matched > req.offset + req.limit)")
+        );
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("response.totalMatches = matched;"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("response.namedMatches = named;"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("returned = returned + 1;"));
         assert!(!super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("matched++"));
@@ -11063,8 +11094,16 @@ mod tests {
             .transform_entity(
                 "0x01 {}",
                 super::WorkbenchEntityTransform {
-                    position: super::WorkbenchEntityPosition { x: 10.0, y: 20.0, z: 30.0 },
-                    angles: super::WorkbenchEntityPosition { x: 4.0, y: 5.0, z: 6.0 },
+                    position: super::WorkbenchEntityPosition {
+                        x: 10.0,
+                        y: 20.0,
+                        z: 30.0,
+                    },
+                    angles: super::WorkbenchEntityPosition {
+                        x: 4.0,
+                        y: 5.0,
+                        z: 6.0,
+                    },
                     scale: 2.0,
                 },
             )
@@ -11107,11 +11146,17 @@ mod tests {
     #[test]
     fn history_bridge_invokes_the_live_game_world_editor_route() {
         assert!(super::BRIDGE_HISTORY_SOURCE.contains("Workbench.GetModule(WorldEditor)"));
-        assert!(super::BRIDGE_HISTORY_SOURCE.contains("array<string> menuPath = {\"Edit\", \"Undo\"}"));
-        assert!(super::BRIDGE_HISTORY_SOURCE.contains("array<string> menuPath = {\"Edit\", \"Redo\"}"));
+        assert!(
+            super::BRIDGE_HISTORY_SOURCE.contains("array<string> menuPath = {\"Edit\", \"Undo\"}")
+        );
+        assert!(
+            super::BRIDGE_HISTORY_SOURCE.contains("array<string> menuPath = {\"Edit\", \"Redo\"}")
+        );
         assert!(super::BRIDGE_HISTORY_SOURCE.contains("worldEditor.ExecuteAction(menuPath, true)"));
         assert!(super::BRIDGE_HISTORY_SOURCE.contains("response.status = \"history-unavailable\""));
-        assert!(super::BRIDGE_HISTORY_SOURCE.contains("response.status = \"world-editor-unavailable\""));
+        assert!(
+            super::BRIDGE_HISTORY_SOURCE.contains("response.status = \"world-editor-unavailable\"")
+        );
     }
 
     #[test]
@@ -11327,10 +11372,10 @@ mod tests {
 
     #[test]
     fn resource_inspection_handles_resources_without_configurations() {
-        assert!(super::BRIDGE_INSPECT_RESOURCE_SOURCE
-            .contains("ref BaseContainerList configurations = meta.GetObjectArray(\"Configurations\");"));
-        assert!(super::BRIDGE_INSPECT_RESOURCE_SOURCE
-            .contains("configurations.Count() == 0"));
+        assert!(super::BRIDGE_INSPECT_RESOURCE_SOURCE.contains(
+            "ref BaseContainerList configurations = meta.GetObjectArray(\"Configurations\");"
+        ));
+        assert!(super::BRIDGE_INSPECT_RESOURCE_SOURCE.contains("configurations.Count() == 0"));
         assert!(super::BRIDGE_INSPECT_RESOURCE_SOURCE.contains("configurations.Get(0)"));
     }
 
@@ -11434,12 +11479,20 @@ mod tests {
             user_directory: Some(root.clone()),
             ..super::WorkbenchControllerOptions::default()
         });
-        let bridge_file = controller.paths().bridge_directory.join("RST_WorkbenchState.c");
-        controller.write_managed_files(&controller.paths().bridge_directory).unwrap();
+        let bridge_file = controller
+            .paths()
+            .bridge_directory
+            .join("RST_WorkbenchState.c");
+        controller
+            .write_managed_files(&controller.paths().bridge_directory)
+            .unwrap();
         fs::write(&bridge_file, "stale-state-handler").unwrap();
 
         assert_eq!(controller.state().unwrap().mode, "workbench");
-        assert_eq!(fs::read_to_string(bridge_file).unwrap(), "stale-state-handler");
+        assert_eq!(
+            fs::read_to_string(bridge_file).unwrap(),
+            "stale-state-handler"
+        );
         peer.join().unwrap();
         fs::remove_dir_all(root).unwrap();
     }
@@ -11498,8 +11551,13 @@ mod tests {
             user_directory: Some(root.clone()),
             ..super::WorkbenchControllerOptions::default()
         });
-        let bridge_file = controller.paths().bridge_directory.join("RST_WorkbenchState.c");
-        controller.write_managed_files(&controller.paths().bridge_directory).unwrap();
+        let bridge_file = controller
+            .paths()
+            .bridge_directory
+            .join("RST_WorkbenchState.c");
+        controller
+            .write_managed_files(&controller.paths().bridge_directory)
+            .unwrap();
         fs::write(&bridge_file, "stale-validation-handler").unwrap();
 
         assert!(controller.validate_scripts().unwrap().success);
@@ -12959,16 +13017,35 @@ mod tests {
                 "0x01 {}",
                 super::WorkbenchShapePointSpace::World,
                 super::WorkbenchShapeTransformOperation::RotateXz,
-                super::WorkbenchEntityPosition { x: 0.0, y: 0.0, z: 0.0 },
-                super::WorkbenchEntityPosition { x: 10.0, y: 0.0, z: 20.0 },
+                super::WorkbenchEntityPosition {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                super::WorkbenchEntityPosition {
+                    x: 10.0,
+                    y: 0.0,
+                    z: 20.0,
+                },
                 90.0,
-                super::WorkbenchEntityPosition { x: 1.0, y: 1.0, z: 1.0 },
+                super::WorkbenchEntityPosition {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
                 "",
             )
             .unwrap();
         assert_eq!(result.status, "points-transformed");
         assert_eq!(result.shape_class.as_deref(), Some("SplineShapeEntity"));
-        assert_eq!(result.points, vec![super::WorkbenchEntityPosition { x: 10.0, y: 0.0, z: 21.0 }]);
+        assert_eq!(
+            result.points,
+            vec![super::WorkbenchEntityPosition {
+                x: 10.0,
+                y: 0.0,
+                z: 21.0
+            }]
+        );
         peer.join().unwrap();
     }
 
@@ -13062,10 +13139,15 @@ mod tests {
             },
             ..super::WorkbenchControllerOptions::default()
         });
-        let result = controller.inspect_spline("0x01 {}", super::WorkbenchShapePointSpace::Local).unwrap();
+        let result = controller
+            .inspect_spline("0x01 {}", super::WorkbenchShapePointSpace::Local)
+            .unwrap();
         assert_eq!(result.status, "available");
         assert_eq!(result.anchors.len(), 2);
-        assert_eq!(result.anchors[1].tangent_mode, super::WorkbenchSplineTangentMode::Explicit);
+        assert_eq!(
+            result.anchors[1].tangent_mode,
+            super::WorkbenchSplineTangentMode::Explicit
+        );
         assert_eq!(result.anchors[1].out_tangent.x, 4.0);
         peer.join().unwrap();
     }
@@ -13111,23 +13193,49 @@ mod tests {
             .edit_spline(
                 "0x01 {}",
                 super::WorkbenchShapePointSpace::World,
-                &[super::WorkbenchSplineAnchorInput {
-                    position: super::WorkbenchEntityPosition { x: 1.0, y: 2.0, z: 3.0 },
-                    tangent_mode: super::WorkbenchSplineTangentModeInput::Auto,
-                    in_tangent: None,
-                    out_tangent: None,
-                }, super::WorkbenchSplineAnchorInput {
-                    position: super::WorkbenchEntityPosition { x: 4.0, y: 5.0, z: 6.0 },
-                    tangent_mode: super::WorkbenchSplineTangentModeInput::Explicit,
-                    in_tangent: Some(super::WorkbenchEntityPosition { x: -1.0, y: 0.0, z: 0.0 }),
-                    out_tangent: Some(super::WorkbenchEntityPosition { x: 2.0, y: 0.0, z: 1.0 }),
-                }],
+                &[
+                    super::WorkbenchSplineAnchorInput {
+                        position: super::WorkbenchEntityPosition {
+                            x: 1.0,
+                            y: 2.0,
+                            z: 3.0,
+                        },
+                        tangent_mode: super::WorkbenchSplineTangentModeInput::Auto,
+                        in_tangent: None,
+                        out_tangent: None,
+                    },
+                    super::WorkbenchSplineAnchorInput {
+                        position: super::WorkbenchEntityPosition {
+                            x: 4.0,
+                            y: 5.0,
+                            z: 6.0,
+                        },
+                        tangent_mode: super::WorkbenchSplineTangentModeInput::Explicit,
+                        in_tangent: Some(super::WorkbenchEntityPosition {
+                            x: -1.0,
+                            y: 0.0,
+                            z: 0.0,
+                        }),
+                        out_tangent: Some(super::WorkbenchEntityPosition {
+                            x: 2.0,
+                            y: 0.0,
+                            z: 1.0,
+                        }),
+                    },
+                ],
                 Some(true),
             )
             .unwrap();
         assert_eq!(result.status, "spline-updated");
         assert!(result.closed);
-        assert_eq!(result.anchors[0].position, super::WorkbenchEntityPosition { x: 1.0, y: 2.0, z: 3.0 });
+        assert_eq!(
+            result.anchors[0].position,
+            super::WorkbenchEntityPosition {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0
+            }
+        );
         peer.join().unwrap();
     }
 
@@ -13326,9 +13434,7 @@ mod tests {
         (port, peer)
     }
 
-    fn start_peer_sequence(
-        responses: Vec<(Value, Value)>,
-    ) -> (u16, thread::JoinHandle<()>) {
+    fn start_peer_sequence(responses: Vec<(Value, Value)>) -> (u16, thread::JoinHandle<()>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let peer = thread::spawn(move || {

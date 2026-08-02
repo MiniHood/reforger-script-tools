@@ -1,6 +1,6 @@
 use super::runtime_scheduler::{
-    next_runnable_work_key, next_runnable_work_key_for_lane, RuntimeWorkCapacity, RuntimeWorkJob,
-    RuntimeWorkExecutor, RuntimeWorkerLane,
+    next_runnable_work_key, next_runnable_work_key_for_lane, RuntimeWorkCapacity,
+    RuntimeWorkExecutor, RuntimeWorkJob, RuntimeWorkerLane,
 };
 use super::semantic_tokens::LspSemanticTokens;
 use super::*;

@@ -331,7 +331,6 @@ fn request_document_uri(params: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-
 fn format_paths(paths: &[PathBuf]) -> String {
     if paths.is_empty() {
         return "<none>".to_string();
@@ -1210,12 +1209,11 @@ pub fn position_for_offset(source: &str, offset: usize) -> LspPosition {
 }
 
 pub fn offset_for_position(source: &str, position: LspPosition) -> Option<usize> {
-    let offset = crate::analysis_runtime::PositionIndex::new(source).offset_for_position_recovering(
-        crate::analysis_runtime::Position {
+    let offset = crate::analysis_runtime::PositionIndex::new(source)
+        .offset_for_position_recovering(crate::analysis_runtime::Position {
             line: position.line,
             character: position.character,
-        },
-    )?;
+        })?;
     if source.as_bytes().get(offset) == Some(&b'\n')
         && offset > 0
         && source.as_bytes().get(offset - 1) == Some(&b'\r')
