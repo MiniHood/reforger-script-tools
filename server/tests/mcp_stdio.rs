@@ -144,7 +144,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
             .find(|tool| tool.get("name") == Some(&json!(name)))
             .unwrap_or_else(|| panic!("missing tool {name}"))
     };
-    assert_eq!(listed.len(), 85);
+    assert_eq!(listed.len(), 86);
     assert!(listed
         .iter()
         .all(|tool| tool.get("name") != Some(&json!("workbench_list_resources"))));
@@ -213,6 +213,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         "inspect_game_data_symbol",
         "list_game_data_symbol_members",
         "query_game_data_symbol_relationships",
+        "query_source_symbol_relationships",
         "read_game_data_source",
     ] {
         tool(name);
@@ -732,7 +733,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
             .find(|tool| tool.get("name") == Some(&json!(name)))
             .unwrap_or_else(|| panic!("missing tool {name}"))
     };
-    assert_eq!(listed.len(), 85);
+    assert_eq!(listed.len(), 86);
     let examples = tool("search_game_data_examples");
     tool("list_game_data_symbol_members");
     tool("query_game_data_symbol_relationships");
@@ -1174,6 +1175,114 @@ fn game_data_research_handoffs_reject_stale_references_and_cursors() {
         second.send(json!({"jsonrpc":"2.0","id":35,"method":"tools/call","params":{"name":"query_game_data_symbol_relationships","arguments":{"symbolRef":fresh_base_ref,"relationshipKinds":["derivedType"],"limit":1,"cursor":old_relationship_cursor}}}));
         assert_tool_error_code(&second.response(35), "stale_cursor");
     }
+}
+
+#[test]
+fn composed_relationship_tool_discovers_and_pages_cross_source_semantic_edges() {
+    let fixture = TempFixture::new("mcp_source_relationships");
+    let game_scripts = fixture.path().join("game").join("scripts");
+    let workspace_scripts = fixture.path().join("workspace").join("Scripts");
+    fs::create_dir_all(game_scripts.join("Game").join("Vehicles")).unwrap();
+    fs::create_dir_all(workspace_scripts.join("Game").join("Vehicles")).unwrap();
+    fs::write(
+        game_scripts.join("Game").join("Vehicles").join("Vehicle.c"),
+        "class Vehicle\n{\n\tvoid Move(int speed);\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        workspace_scripts
+            .join("Game")
+            .join("Vehicles")
+            .join("Car.c"),
+        "class Car : Vehicle\n{\n\toverride void Move(int speed) {}\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        workspace_scripts
+            .join("Game")
+            .join("Vehicles")
+            .join("VehicleMod.c"),
+        "modded class Vehicle\n{\n\toverride void Move(int speed) {}\n}\n",
+    )
+    .unwrap();
+    let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    let mut launch = build_game_data_cache(&game_scripts, &cache_path).arguments;
+    launch.push("--workspace-scripts".to_string());
+    launch.push(workspace_scripts.to_string_lossy().into_owned());
+    let mut client = McpClient::spawn_owned(&launch);
+    client.initialize(1);
+
+    client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Vehicle","kinds":["class"]}}}));
+    let search = client.response(2);
+    let anchor = search
+        .pointer("/result/structuredContent/results/0/symbolRef")
+        .cloned()
+        .expect("exact Game Data anchor");
+    client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query_source_symbol_relationships","arguments":{"anchorSource":"gameData","symbolRef":anchor,"includeWorkspace":true,"addonGuids":[BASE_GAME_ADDON_GUID],"relationshipKinds":["derivedType","moddedExtension"],"depth":"all","limit":1}}}));
+    let first = client.response(3);
+    assert_eq!(
+        first.pointer("/result/isError"),
+        Some(&json!(false)),
+        "{first}"
+    );
+    assert_eq!(
+        first.pointer("/result/structuredContent/total"),
+        Some(&json!(2)),
+        "{first}"
+    );
+    assert_eq!(
+        first.pointer("/result/structuredContent/results/0/source"),
+        Some(&json!("workspace"))
+    );
+    assert!(first
+        .pointer("/result/structuredContent/results/0/readSourceInput/relativePath")
+        .and_then(Value::as_str)
+        .is_some());
+    let cursor = first
+        .pointer("/result/structuredContent/nextCursor")
+        .cloned()
+        .expect("relationship next cursor");
+    client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"query_source_symbol_relationships","arguments":{"anchorSource":"gameData","symbolRef":anchor,"includeWorkspace":true,"addonGuids":[BASE_GAME_ADDON_GUID],"relationshipKinds":["derivedType","moddedExtension"],"depth":"all","limit":1,"cursor":cursor}}}));
+    let second = client.response(4);
+    assert_eq!(
+        second.pointer("/result/structuredContent/returned"),
+        Some(&json!(1)),
+        "{second}"
+    );
+    let read_input = first
+        .pointer("/result/structuredContent/results/0/readSourceInput")
+        .cloned()
+        .expect("exact workspace read handoff");
+    client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_workspace_source","arguments":read_input}}));
+    let read = client.response(7);
+    assert_eq!(
+        read.pointer("/result/isError"),
+        Some(&json!(false)),
+        "{read}"
+    );
+    assert!(read
+        .pointer("/result/structuredContent/content")
+        .and_then(Value::as_str)
+        .is_some_and(
+            |source| source.contains("class Car") || source.contains("modded class Vehicle")
+        ));
+
+    client.send(json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"query_source_symbol_relationships","arguments":{"anchorSource":"gameData","symbolRef":anchor,"includeWorkspace":false,"addonGuids":[BASE_GAME_ADDON_GUID],"relationshipKinds":["derivedType","moddedExtension"],"depth":"all","limit":1,"cursor":cursor}}}));
+    assert_tool_error_code(&client.response(8), "stale_relationship_cursor");
+
+    client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Move","kinds":["method"]}}}));
+    let method_anchor = client
+        .response(5)
+        .pointer("/result/structuredContent/results/0/symbolRef")
+        .cloned()
+        .expect("exact method anchor");
+    client.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"query_source_symbol_relationships","arguments":{"anchorSource":"gameData","symbolRef":method_anchor,"includeWorkspace":true,"addonGuids":[BASE_GAME_ADDON_GUID],"relationshipKinds":["override"],"depth":"all","limit":20}}}));
+    let overrides = client.response(6);
+    assert_eq!(
+        overrides.pointer("/result/structuredContent/total"),
+        Some(&json!(2)),
+        "{overrides}"
+    );
 }
 
 #[test]

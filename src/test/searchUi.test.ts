@@ -2,7 +2,7 @@ import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { searchLimits } from '../extensionConfig/search';
-import { addonScopeLabel, formatSearchKind, maxSearchPages, normalizeResourceSearchPage, normalizeSearchPage, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceContextPreview, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
+import { addonScopeLabel, formatSearchKind, maxSearchPages, normalizeResourceSearchPage, normalizeSearchPage, normalizeSourceRelationshipPage, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceContextPreview, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
 import { semanticPreviewForLine, semanticPreviewForLines, semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
 
 const searchUiSource = fs.readFileSync(
@@ -376,7 +376,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.doesNotMatch(searchUiSource, /atlas-lanes|atlas-lane/);
 	});
 
-	test('prototypes semantic relationship expansion without adding another result type', () => {
+	test('executes semantic relationship expansion without adding another result type', () => {
 		assert.match(searchUiSource, /state\.mode === 'semantic' \? relationControl\(\) : ''/);
 		assert.match(searchUiSource, /class="relation-picker"/);
 		assert.match(searchUiSource, /Related code/);
@@ -387,7 +387,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /Modded extensions/);
 		assert.match(searchUiSource, /data-relation-depth="direct"/);
 		assert.match(searchUiSource, /data-relation-depth="all"/);
-		assert.match(searchUiSource, /UI prototype only &mdash; results are not filtered yet\./);
+		assert.doesNotMatch(searchUiSource, /UI prototype only|results are not filtered yet/);
 		assert.match(searchUiSource, /relationIncludes: \['direct'\], relationDepth: 'direct'/);
 		assert.match(searchUiSource, /relationAnchor: null/);
 		assert.match(searchUiSource, /Choose an exact declaration/);
@@ -397,6 +397,38 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /state\.relationAnchor\?\.symbolKind === 'method'/);
 		assert.match(searchUiSource, /Your text can be broad; relationships begin from one selected symbol\./);
 		assert.doesNotMatch(searchUiSource, /resultTypes = [^\n]+Related code/);
+		assert.match(searchUiSource, /relationshipAnchor/);
+		assert.match(searchUiSource, /relationIncludes/);
+		assert.match(searchClientSource, /query_source_symbol_relationships/);
+	});
+
+	test('normalizes cross-source relationship declarations into the existing result-card contract', () => {
+		const results = normalizeSourceRelationshipPage({
+			results: [{
+				source: 'gameData',
+				addonGuid: '58D0FB3206B6F859',
+				addonLabel: 'Arma Reforger',
+				symbolRef: 'sr2:child',
+				name: 'Car',
+				kind: 'class',
+				qualifiedName: 'Car',
+				signature: 'class Car : Vehicle',
+				sourceCategory: 'game',
+				relativePath: 'Game/Vehicles/Car.c',
+				relationshipKind: 'derivedType',
+				distance: 2,
+				evidence: 'indexed class base type and exact script module',
+				declarationRange: { startLine: 4, endLine: 20 },
+				selectionRange: { startLine: 4, endLine: 4 },
+				readSourceInput: { catalogueRevision: 'gd1:test', addonGuid: '58D0FB3206B6F859', relativePath: 'Game/Vehicles/Car.c', startLine: 4 },
+			}],
+		});
+		assert.strictEqual(results.length, 1);
+		assert.strictEqual(results[0].source, 'gameData');
+		assert.strictEqual(results[0].symbolKind, 'class');
+		assert.strictEqual(results[0].relationshipKind, 'derivedType');
+		assert.strictEqual(results[0].relationshipDistance, 2);
+		assert.strictEqual(results[0].readInput.addonGuid, '58D0FB3206B6F859');
 	});
 
 	test('keeps opening and closing Search Scope presentation-only', () => {
@@ -404,7 +436,8 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /const scopeSelectionChanged =/);
 		assert.match(searchUiSource, /const scopeRevisionChanged =/);
 		assert.match(searchUiSource, /const scopeSearchChanged = scopeSelectionChanged \|\| scopeRevisionChanged/);
-		assert.match(searchUiSource, /if \(message\.refreshSearch === true && scopeSearchChanged && state\.query\.trim\(\)\) search\(true\)/);
+		assert.match(searchUiSource, /if \(message\.refreshSearch === true && scopeSearchChanged && \(state\.query\.trim\(\) \|\| state\.relationAnchor\)\) search\(true\)/);
+		assert.match(searchClientSource, /this\.lastScopeRevision !== scopeRevision[\s\S]*?this\.searchPageCaches\.clear\(\)/);
 		assert.match(searchUiSource, /affectsConfiguration[\s\S]*?refreshSearchScope\(context, active\)/);
 		assert.match(searchUiSource, /\[data-scope-open\][\s\S]*?state\.scopeOpen = !state\.scopeOpen; state\.relationOpen = false; render\(false\)/);
 		assert.doesNotMatch(searchUiSource, /render\(false\); if \(state\.query\.trim\(\)\) search\(true\); return;/);

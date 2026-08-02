@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { arch, cpus, hostname, platform, release, totalmem } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { performance } from 'node:perf_hooks';
@@ -13,6 +14,9 @@ const GAME_DATA_INITIALIZATION_BUDGET_MS = 120_000;
 const SEMANTIC_BUDGET_MS = 5_000;
 const TEXT_SEARCH_BUDGET_MS = 30_000;
 const WIKI_BUDGET_MS = 5_000;
+const RELATIONSHIP_FIRST_BUDGET_MS = 1_000;
+const RELATIONSHIP_ONE_LEVEL_MEDIAN_BUDGET_MS = 100;
+const RELATIONSHIP_BROAD_P95_BUDGET_MS = 500;
 
 async function runReport(configuration) {
 	const client = new McpClient(
@@ -26,8 +30,11 @@ async function runReport(configuration) {
 	let toolsList;
 	let processToInitializeMs = 0;
 	let concurrency = { operation: undefined, probes: [] };
+	const memory = [];
+	let corpus = {};
 	try {
 		initialize = await measure(() => client.initialize());
+		captureWorkingSet(client, memory, 'after-initialize');
 		processToInitializeMs = client.processElapsedMs();
 		const listed = await measure(() => client.listTools());
 		toolsList = {
@@ -40,8 +47,9 @@ async function runReport(configuration) {
 				.filter(name => typeof name === 'string' && !name.startsWith('workbench_')),
 		);
 		listedToolCount = toolNames.size;
-		const runner = new ScenarioRunner(client, toolNames, operations, configuration);
+		const runner = new ScenarioRunner(client, toolNames, operations, configuration, memory);
 		await runScenarios(runner);
+		corpus = runner.corpus;
 		for (const name of toolNames) {
 			if (!runner.seen.has(name)) {
 				runner.skip(name, 'No report scenario exists for this newly listed non-Workbench tool.');
@@ -53,7 +61,7 @@ async function runReport(configuration) {
 			name: error.phase ?? 'runner',
 			family: 'Protocol',
 			status: 'runner-error',
-			reason: sanitizeMessage(error.message),
+			reason: sanitizeMessage(`${error.message}${client.stderrTail ? `; stderr: ${client.stderrTail}` : ''}`),
 			firstMs: 0,
 			warm: emptyDistribution(),
 			responseBytes: 0,
@@ -73,14 +81,17 @@ async function runReport(configuration) {
 		0,
 	);
 	const concurrencyFailures = concurrency.probes.reduce((total, probe) => total + probe.failed, 0);
-	const failed = correctnessFailures + concurrencyFailures + coldProcess.failed + (configuration.enforceBudgets ? overBudget : 0);
+	const relationshipGates = evaluateRelationshipGates(operations);
+	const failed = correctnessFailures + concurrencyFailures + coldProcess.failed
+		+ (configuration.enforceBudgets ? overBudget + relationshipGates.filter(gate => gate.status === 'fail').length : 0);
 	const verdict = failed > 0 ? 'fail' : skipped > 0 ? 'partial' : 'pass';
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		generatedAt: new Date().toISOString(),
 		scope: 'non-workbench',
 		server: resolve(configuration.server),
 		configuration: {
+			commit: configuration.commit,
 			samples: configuration.samples,
 			concurrencyLevels: configuration.concurrencyLevels,
 			timeoutMs: configuration.timeoutMs,
@@ -88,8 +99,17 @@ async function runReport(configuration) {
 			enforceBudgets: configuration.enforceBudgets,
 			coldSamples: configuration.coldSamples,
 			workspaceRootCount: configuration.workspaceScripts.length,
+			workspaceRoots: configuration.workspaceScripts.map(root => resolve(root)),
 			dependencyProjectCount: configuration.dependencyProjects.length,
 			externalIndexMode: configuration.externalIndexMode,
+		},
+		host: {
+			hostname: hostname(),
+			platform: platform(),
+			release: release(),
+			architecture: arch(),
+			logicalCpuCount: cpus().length,
+			totalMemoryBytes: totalmem(),
 		},
 		protocol: {
 			initializeMs: round(initialize?.elapsedMs ?? 0),
@@ -100,20 +120,105 @@ async function runReport(configuration) {
 		},
 		coverage: { listed: listedToolCount, exercised, skipped, failed, overBudget },
 		operations,
+		corpus,
+		memory,
+		relationshipGates,
 		concurrency,
 		coldProcess,
 		verdict,
 	};
 }
 
+async function measurePairedRuns(configuration) {
+	if (!configuration.pairedBaselineServer) return undefined;
+	const cold = { baselineInitialize: [], candidateInitialize: [], baselineStatus: [], candidateStatus: [] };
+	for (let pair = 0; pair < configuration.coldSamples; pair += 1) {
+		const order = pair % 2 === 0 ? ['baseline', 'candidate'] : ['candidate', 'baseline'];
+		for (const label of order) {
+			const server = label === 'baseline' ? configuration.pairedBaselineServer : configuration.server;
+			const client = new McpClient(resolve(server), serverArguments(configuration), configuration.timeoutMs);
+			try {
+				await client.initialize();
+				cold[`${label}Initialize`].push(client.processElapsedMs());
+				const status = await measure(() => client.callTool('game_data_status', {}));
+				cold[`${label}Status`].push(status.elapsedMs);
+			} finally {
+				await client.close();
+			}
+		}
+	}
+	const clients = {
+		baseline: new McpClient(resolve(configuration.pairedBaselineServer), serverArguments(configuration), configuration.timeoutMs),
+		candidate: new McpClient(resolve(configuration.server), serverArguments(configuration), configuration.timeoutMs),
+	};
+	const scenarios = [
+		{ name: 'search_game_data_symbols', argumentsValue: { query: configuration.gameSymbolQuery, limit: 20 } },
+		{ name: 'search_workspace_symbols', argumentsValue: { query: configuration.workspaceSymbolQuery, limit: 20 } },
+	];
+	const records = new Map(scenarios.map(scenario => [scenario.name, { baseline: [], candidate: [], fingerprints: { baseline: [], candidate: [] } }]));
+	try {
+		for (const client of Object.values(clients)) {
+			await client.initialize();
+			await client.callTool('game_data_status', {});
+			for (const scenario of scenarios) await client.callTool(scenario.name, scenario.argumentsValue);
+		}
+		for (let sample = 0; sample < configuration.samples; sample += 1) {
+			const order = sample % 2 === 0 ? ['baseline', 'candidate'] : ['candidate', 'baseline'];
+			for (const scenario of scenarios) {
+				for (const label of order) {
+					const measured = await measure(() => clients[label].callTool(scenario.name, scenario.argumentsValue));
+					const record = records.get(scenario.name);
+					record[label].push(measured.elapsedMs);
+					record.fingerprints[label].push(resultFingerprint(measured.value));
+				}
+			}
+		}
+	} finally {
+		await Promise.all(Object.values(clients).map(client => client.close()));
+	}
+	const coldDistributions = Object.fromEntries(Object.entries(cold).map(([name, values]) => [name, distribution(values)]));
+	const coldMedianBudgetMs = Math.max(coldDistributions.baselineInitialize.medianMs + 5, coldDistributions.baselineInitialize.medianMs * 1.1);
+	const coldP95BudgetMs = Math.max(coldDistributions.baselineInitialize.p95Ms + 10, coldDistributions.baselineInitialize.p95Ms * 1.2);
+	return {
+		method: 'Alternating baseline/candidate order per cold pair and warm sample; one uncounted warm-up per operation.',
+		cold: coldDistributions,
+		coldGate: {
+			medianBudgetMs: round(coldMedianBudgetMs),
+			p95BudgetMs: round(coldP95BudgetMs),
+			status: coldDistributions.candidateInitialize.medianMs <= coldMedianBudgetMs
+				&& coldDistributions.candidateInitialize.p95Ms <= coldP95BudgetMs ? 'pass' : 'fail',
+		},
+		operations: scenarios.map(scenario => {
+			const record = records.get(scenario.name);
+			const baseline = distribution(record.baseline);
+			const candidate = distribution(record.candidate);
+			const medianBudgetMs = Math.max(baseline.medianMs + 5, baseline.medianMs * 1.1);
+			const p95BudgetMs = Math.max(baseline.p95Ms + 10, baseline.p95Ms * 1.2);
+			const fingerprintsMatch = [...record.fingerprints.baseline, ...record.fingerprints.candidate]
+				.every(value => value === record.fingerprints.baseline[0]);
+			return {
+				name: scenario.name,
+				baseline,
+				candidate,
+				medianBudgetMs: round(medianBudgetMs),
+				p95BudgetMs: round(p95BudgetMs),
+				fingerprintsMatch,
+				status: fingerprintsMatch && candidate.medianMs <= medianBudgetMs && candidate.p95Ms <= p95BudgetMs ? 'pass' : 'fail',
+			};
+		}),
+	};
+}
+
 class ScenarioRunner {
-	constructor(client, toolNames, operations, configuration) {
+	constructor(client, toolNames, operations, configuration, memory) {
 		this.client = client;
 		this.toolNames = toolNames;
 		this.operations = operations;
 		this.configuration = configuration;
 		this.seen = new Set();
 		this.concurrencyCandidate = undefined;
+		this.memory = memory;
+		this.corpus = {};
 	}
 
 	async exercise(name, argumentsValue, settings = {}) {
@@ -122,6 +227,7 @@ class ScenarioRunner {
 			return undefined;
 		}
 		const first = await measure(() => this.client.callTool(name, argumentsValue));
+		if (settings.memoryAfterFirst) captureWorkingSet(this.client, this.memory, settings.memoryAfterFirst);
 		const firstSummary = summarizeResult(first.value);
 		if (firstSummary.isError && (settings.unavailableCodes ?? []).includes(firstSummary.code)) {
 			this.operations.push({
@@ -136,6 +242,7 @@ class ScenarioRunner {
 		const fingerprints = [resultFingerprint(first.value)];
 		const responseSizes = [responseBytes(first.value)];
 		let last = first.value;
+		await this.client.callTool(name, argumentsValue);
 		for (let iteration = 0; iteration < this.configuration.samples; iteration += 1) {
 			const sample = await measure(() => this.client.callTool(name, argumentsValue));
 			warmSamples.push(sample.elapsedMs);
@@ -143,6 +250,7 @@ class ScenarioRunner {
 			responseSizes.push(responseBytes(sample.value));
 			last = sample.value;
 		}
+		if (settings.memoryAfterWarm) captureWorkingSet(this.client, this.memory, settings.memoryAfterWarm);
 		const summary = summarizeResult(last);
 		const budgetMs = operationBudget(name);
 		const stable = fingerprints.every(fingerprint => fingerprint === fingerprints[0]);
@@ -168,7 +276,7 @@ class ScenarioRunner {
 			...summary.public,
 		};
 		this.operations.push(operation);
-		if (!summary.isError && !this.concurrencyCandidate && isConcurrencyCandidate(name)) {
+		if (!summary.isError && isConcurrencyCandidate(name)) {
 			this.concurrencyCandidate = { name, argumentsValue };
 		}
 		return firstSummary.structured;
@@ -177,7 +285,13 @@ class ScenarioRunner {
 	async variant(name, argumentsValue, scenario) {
 		const operation = this.operations.find(candidate => candidate.name === name);
 		if (!operation || ['skipped', 'missing'].includes(operation.status)) return undefined;
-		const sample = await measure(() => this.client.callTool(name, argumentsValue));
+		const samples = [];
+		let sample;
+		await this.client.callTool(name, argumentsValue);
+		for (let iteration = 0; iteration < Math.max(1, this.configuration.samples); iteration += 1) {
+			sample = await measure(() => this.client.callTool(name, argumentsValue));
+			samples.push(sample.elapsedMs);
+		}
 		const summary = summarizeResult(sample.value);
 		const budgetMs = operationBudget(name);
 		const status = summary.isError ? 'tool-error' : sample.elapsedMs > budgetMs ? 'over-budget' : 'pass';
@@ -185,6 +299,7 @@ class ScenarioRunner {
 			scenario,
 			status,
 			elapsedMs: round(sample.elapsedMs),
+			warm: distribution(samples),
 			responseBytes: responseBytes(sample.value),
 			fingerprint: resultFingerprint(sample.value),
 			reason: summary.isError ? toolErrorReason(summary.code) : undefined,
@@ -194,6 +309,20 @@ class ScenarioRunner {
 			operation.status = status;
 		}
 		return summary.structured;
+	}
+
+	async cancellation(name, argumentsValue) {
+		const operation = this.operations.find(candidate => candidate.name === name);
+		if (!operation || ['skipped', 'missing'].includes(operation.status)) return;
+		const sample = await measure(() => this.client.cancelTool(name, argumentsValue));
+		operation.variants.push({
+			scenario: 'cancellation',
+			status: 'pass',
+			elapsedMs: round(sample.elapsedMs),
+			warm: distribution([sample.elapsedMs]),
+			responseBytes: 0,
+			cancellationOutcome: sample.value,
+		});
 	}
 
 	skip(name, reason) {
@@ -236,15 +365,29 @@ class ScenarioRunner {
 }
 
 async function runScenarios(runner) {
-	const gameStatus = await runner.exercise('game_data_status', {});
+	const gameStatus = await runner.exercise('game_data_status', {}, {
+		memoryAfterFirst: 'after-catalogue-readiness',
+	});
 	const gameAvailable = gameStatus?.available === true;
+	runner.corpus.gameData = gameStatus ? {
+		catalogueRevision: gameStatus.catalogueRevision,
+		scopeRevision: gameStatus.scopeRevision,
+		scopeAuthority: gameStatus.scopeAuthority,
+		counts: gameStatus.counts,
+		coverage: gameStatus.coverage,
+		addons: Array.isArray(gameStatus.addons) ? gameStatus.addons.map(addon => ({
+			addonGuid: addon.addonGuid,
+			available: addon.available,
+			scriptCount: addon.scriptCount,
+		})) : [],
+	} : undefined;
 	let gameSearch;
 	let gameExamples;
 	if (gameAvailable) {
 		gameSearch = await runner.exercise('search_game_data_symbols', {
 			query: runner.configuration.gameSymbolQuery,
 			limit: 20,
-		});
+		}, { memoryAfterFirst: 'after-ordinary-semantic-search' });
 		const gameText = await runner.exercise('search_game_data_text', {
 			query: runner.configuration.textQuery,
 			limit: 20,
@@ -253,7 +396,7 @@ async function runScenarios(runner) {
 		gameExamples = await runner.exercise('search_game_data_examples', {
 			topic: runner.configuration.exampleTopic,
 			limit: 20,
-		});
+		}, { unavailableCodes: ['source_evidence_unavailable'] });
 	} else {
 		runner.skipMany([
 			'search_game_data_symbols',
@@ -265,7 +408,11 @@ async function runScenarios(runner) {
 	if (gameResult?.symbolRef) {
 		await runner.exercise('inspect_game_data_symbol', { symbolRef: gameResult.symbolRef });
 		await runner.exercise('list_game_data_symbol_members', { symbolRef: gameResult.symbolRef, limit: 20 });
-		await runner.exercise('query_game_data_symbol_relationships', { symbolRef: gameResult.symbolRef, limit: 20 });
+		await runner.exercise('query_game_data_symbol_relationships', {
+			symbolRef: gameResult.symbolRef,
+			relationshipKinds: ['directBase', 'derivedType'],
+			limit: 20,
+		}, { unavailableCodes: ['source_evidence_unavailable'] });
 	} else {
 		runner.skipMany([
 			'inspect_game_data_symbol',
@@ -296,6 +443,10 @@ async function runScenarios(runner) {
 	);
 	if (workspaceText !== undefined) await runTextVariants(runner, 'search_workspace_text', workspaceText);
 	const workspaceResult = firstResult(workspaceSearch);
+	runner.corpus.workspace = workspaceSearch ? {
+		catalogueRevision: workspaceSearch.catalogueRevision,
+		rootCount: runner.configuration.workspaceScripts.length,
+	} : undefined;
 	if (workspaceResult?.symbolRef) {
 		await runner.exercise('inspect_workspace_symbol', { symbolRef: workspaceResult.symbolRef });
 		await runner.exercise('list_workspace_symbol_members', { symbolRef: workspaceResult.symbolRef, limit: 20 });
@@ -311,6 +462,99 @@ async function runScenarios(runner) {
 		await runner.exercise('read_workspace_source', workspaceResult.readSourceInput);
 	} else {
 		runner.skip('read_workspace_source', workspaceAvailable ? 'The configured workspace symbol query returned no source-read handoff.' : 'Workspace source is unavailable.');
+	}
+
+	const relationshipAnchor = gameResult?.symbolRef
+		? { anchorSource: 'gameData', symbolRef: gameResult.symbolRef }
+		: workspaceResult?.symbolRef
+			? { anchorSource: 'workspace', symbolRef: workspaceResult.symbolRef }
+			: undefined;
+	if (relationshipAnchor) {
+		const addonGuids = Array.isArray(gameStatus?.addons)
+			? gameStatus.addons
+				.filter(addon => addon?.available !== false && typeof addon?.addonGuid === 'string')
+				.map(addon => addon.addonGuid)
+				.sort()
+			: [];
+		const relationshipBase = {
+			...relationshipAnchor,
+			includeWorkspace: workspaceAvailable,
+			addonGuids,
+			depth: 'one',
+			limit: 20,
+		};
+		await runner.exercise('query_source_symbol_relationships', {
+			...relationshipBase,
+			relationshipKinds: ['direct'],
+		}, {
+			memoryAfterFirst: 'after-first-relationship-projection',
+			memoryAfterWarm: 'after-repeated-relationship-query',
+		});
+		await runner.variant('query_source_symbol_relationships', {
+			...relationshipBase,
+			relationshipKinds: ['directBase', 'derivedType'],
+		}, 'one-level-hierarchy');
+		await runner.variant('query_source_symbol_relationships', {
+			...relationshipBase,
+			depth: 'all',
+			relationshipKinds: ['directBase', 'derivedType'],
+		}, 'all-level-hierarchy');
+		const fanout = await runner.variant('query_source_symbol_relationships', {
+			...relationshipBase,
+			depth: 'all',
+			limit: 1,
+			relationshipKinds: ['derivedType'],
+		}, 'broad-descendant-fanout');
+		if (fanout?.nextCursor) {
+			await runner.variant('query_source_symbol_relationships', {
+				...relationshipBase,
+				depth: 'all',
+				limit: 1,
+				relationshipKinds: ['derivedType'],
+				cursor: fanout.nextCursor,
+			}, 'later-page-retrieval');
+		}
+		await runner.variant('query_source_symbol_relationships', {
+			...relationshipBase,
+			relationshipKinds: ['moddedExtension'],
+		}, 'modded-extensions');
+		await runner.variant('query_source_symbol_relationships', {
+			...relationshipBase,
+			includeWorkspace: false,
+			relationshipKinds: ['direct'],
+		}, 'scope-change');
+		await runner.cancellation('query_source_symbol_relationships', {
+			...relationshipBase,
+			depth: 'all',
+			limit: 100,
+			relationshipKinds: ['derivedType', 'moddedExtension'],
+		});
+		if (gameAvailable) {
+			const methodSearch = await runner.variant('search_game_data_symbols', {
+				query: runner.configuration.relationshipMethodQuery,
+				kinds: ['method'],
+				limit: 20,
+			}, 'relationship-method-discovery');
+			const method = firstResult(methodSearch);
+			if (method?.symbolRef) {
+				const methodBase = {
+					...relationshipBase,
+					anchorSource: 'gameData',
+					symbolRef: method.symbolRef,
+					depth: 'all',
+				};
+				await runner.variant('query_source_symbol_relationships', {
+					...methodBase,
+					relationshipKinds: ['overriddenDeclaration'],
+				}, 'base-implementations');
+				await runner.variant('query_source_symbol_relationships', {
+					...methodBase,
+					relationshipKinds: ['override'],
+				}, 'overrides');
+			}
+		}
+	} else {
+		runner.skip('query_source_symbol_relationships', 'No exact workspace or Game Data anchor was returned by discovery.');
 	}
 
 	const wikiStatus = await runner.exercise('official_wiki_status', {});
@@ -426,13 +670,36 @@ class McpClient {
 		return this.request('tools/call', { name, arguments: argumentsValue }, name);
 	}
 
+	async cancelTool(name, argumentsValue) {
+		const pending = this.beginRequest('tools/call', { name, arguments: argumentsValue }, name);
+		this.send({
+			jsonrpc: '2.0',
+			method: 'notifications/cancelled',
+			params: { requestId: pending.id, reason: 'performance cancellation probe' },
+		});
+		const outcome = await Promise.race([
+			pending.promise.then(value => value?.isError === true ? 'cancelled-response' : 'completed-before-cancel'),
+			new Promise(resolve => setTimeout(() => resolve('no-stale-response'), 250)),
+		]);
+		if (outcome === 'no-stale-response') this.abandon(pending.id);
+		return outcome;
+	}
+
 	processElapsedMs() {
 		return performance.now() - this.processStartedAt;
 	}
 
+	processId() {
+		return this.child.pid;
+	}
+
 	request(method, params, phase) {
+		return this.beginRequest(method, params, phase).promise;
+	}
+
+	beginRequest(method, params, phase) {
 		const id = this.nextId++;
-		return new Promise((resolveRequest, reject) => {
+		const promise = new Promise((resolveRequest, reject) => {
 			const timer = setTimeout(() => {
 				this.pending.delete(id);
 				reject(Object.assign(new Error(`MCP request exceeded ${this.timeoutMs} ms.`), { phase }));
@@ -440,6 +707,14 @@ class McpClient {
 			this.pending.set(id, { resolveRequest, reject, timer, phase });
 			this.send({ jsonrpc: '2.0', id, method, params });
 		});
+		return { id, promise };
+	}
+
+	abandon(id) {
+		const pending = this.pending.get(id);
+		if (!pending) return;
+		clearTimeout(pending.timer);
+		this.pending.delete(id);
 	}
 
 	send(message) {
@@ -507,6 +782,8 @@ function parseArguments(args) {
 		regexQuery: '\\bclass\\s+[A-Za-z_][A-Za-z0-9_]*',
 		wikiQuery: 'replication',
 		exampleTopic: 'replication',
+		relationshipMethodQuery: 'OnActivate',
+		commit: currentCommit(),
 		requireAll: false,
 		enforceBudgets: false,
 	};
@@ -540,6 +817,12 @@ function parseArguments(args) {
 			case '--regex-query': parsed.regexQuery = value(); break;
 			case '--wiki-query': parsed.wikiQuery = value(); break;
 			case '--example-topic': parsed.exampleTopic = value(); break;
+			case '--relationship-method-query': parsed.relationshipMethodQuery = value(); break;
+			case '--commit': parsed.commit = value(); break;
+			case '--baseline-report': parsed.baselineReport = value(); break;
+			case '--paired-baseline-server': parsed.pairedBaselineServer = value(); break;
+			case '--comparison-json-out': parsed.comparisonJsonOut = value(); break;
+			case '--comparison-markdown-out': parsed.comparisonMarkdownOut = value(); break;
 			case '--require-all': parsed.requireAll = true; break;
 			case '--enforce-budgets': parsed.enforceBudgets = true; break;
 			case '--help': usage(); break;
@@ -588,6 +871,7 @@ function resultFingerprint(result) {
 
 function redactContent(value, key = '') {
 	if (['content', 'excerpt', 'lineText', 'text'].includes(key)) return '<redacted>';
+	if (key === 'stats') return '<volatile-diagnostics>';
 	if (/(?:ms|timings)$/i.test(key)) return '<volatile>';
 	if (Array.isArray(value)) return value.map(item => redactContent(item));
 	if (value && typeof value === 'object') {
@@ -609,6 +893,56 @@ function operationBudget(name) {
 	if (name.includes('_text')) return TEXT_SEARCH_BUDGET_MS;
 	if (name.includes('official_wiki')) return WIKI_BUDGET_MS;
 	return SEMANTIC_BUDGET_MS;
+}
+
+function evaluateRelationshipGates(operations) {
+	const operation = operations.find(candidate => candidate.name === 'query_source_symbol_relationships');
+	if (!operation || ['missing', 'skipped'].includes(operation.status)) return [];
+	const gates = [
+		thresholdGate('first-lazy', operation.firstMs, RELATIONSHIP_FIRST_BUDGET_MS, 'max'),
+		thresholdGate('cached-direct', operation.warm.medianMs, RELATIONSHIP_ONE_LEVEL_MEDIAN_BUDGET_MS, 'median'),
+	];
+	for (const scenario of ['one-level-hierarchy', 'all-level-hierarchy', 'broad-descendant-fanout']) {
+		const variant = operation.variants?.find(candidate => candidate.scenario === scenario);
+		if (variant) gates.push(thresholdGate(scenario, variant.warm.p95Ms, RELATIONSHIP_BROAD_P95_BUDGET_MS, 'p95'));
+	}
+	return gates;
+}
+
+function thresholdGate(name, actualMs, budgetMs, statistic) {
+	return { name, statistic, actualMs: round(actualMs), budgetMs, status: actualMs <= budgetMs ? 'pass' : 'fail' };
+}
+
+function captureWorkingSet(client, destination, stage) {
+	const pid = client.processId();
+	if (!Number.isInteger(pid)) return;
+	try {
+		let workingSetBytes;
+		if (process.platform === 'win32') {
+			const output = execFileSync('powershell.exe', [
+				'-NoProfile',
+				'-NonInteractive',
+				'-Command',
+				`(Get-Process -Id ${pid} -ErrorAction Stop).WorkingSet64`,
+			], { encoding: 'utf8', windowsHide: true, timeout: 5_000 });
+			workingSetBytes = Number.parseInt(output.trim(), 10);
+		} else {
+			const status = readFileSync(`/proc/${pid}/status`, 'utf8');
+			const match = /^VmRSS:\s+(\d+)\s+kB$/m.exec(status);
+			workingSetBytes = match ? Number.parseInt(match[1], 10) * 1024 : undefined;
+		}
+		if (Number.isFinite(workingSetBytes)) destination.push({ stage, workingSetBytes });
+	} catch (error) {
+		destination.push({ stage, unavailable: sanitizeMessage(error.message) });
+	}
+}
+
+function currentCommit() {
+	try {
+		return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true }).trim();
+	} catch {
+		return 'unknown';
+	}
 }
 
 function toolFamily(name) {
@@ -677,6 +1011,16 @@ function renderMarkdown(report) {
 		`- Initialize: ${formatMs(report.protocol.initializeMs)}`,
 		`- Process start to initialize: ${formatMs(report.protocol.processToInitializeMs)}`,
 		`- tools/list: ${formatMs(report.protocol.toolsListMs)}`,
+		`- Commit: ${report.configuration.commit}`,
+		'',
+		'## Controlled Inputs',
+		'',
+		`- Host: ${report.host.hostname}; ${report.host.platform} ${report.host.release}; ${report.host.architecture}; ${report.host.logicalCpuCount} logical CPUs; ${report.host.totalMemoryBytes} bytes RAM`,
+		`- Workspace roots: ${report.configuration.workspaceRoots.join(', ') || 'None'}`,
+		`- Game Data revision: ${report.corpus.gameData?.catalogueRevision ?? 'Unavailable'}`,
+		`- Game Data scope revision / authority: ${report.corpus.gameData?.scopeRevision ?? 'Unavailable'} / ${report.corpus.gameData?.scopeAuthority ?? 'Unavailable'}`,
+		`- Workspace revision: ${report.corpus.workspace?.catalogueRevision ?? 'Unavailable'}`,
+		`- Selected add-ons: ${(report.corpus.gameData?.addons ?? []).map(addon => addon.addonGuid).join(', ') || 'None'}`,
 		'',
 		'## API Scorecard',
 		'',
@@ -691,10 +1035,23 @@ function renderMarkdown(report) {
 	if (variants.length === 0) {
 		lines.push('No additional handoff or search variants were available.');
 	} else {
-		lines.push('| Tool | Scenario | Status | Elapsed | Bytes | Returned | Total |', '| --- | --- | --- | ---: | ---: | ---: | ---: |');
+		lines.push('| Tool | Scenario | Status | Last | Median | P95 | Bytes | Returned | Total |', '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |');
 		for (const variant of variants) {
-			lines.push(`| ${escapeMarkdown(variant.tool)} | ${escapeMarkdown(variant.scenario)} | ${escapeMarkdown(variant.status)} | ${formatMs(variant.elapsedMs)} | ${variant.responseBytes} | ${variant.returned ?? ''} | ${variant.total ?? ''} |`);
+			lines.push(`| ${escapeMarkdown(variant.tool)} | ${escapeMarkdown(variant.scenario)} | ${escapeMarkdown(variant.status)} | ${formatMs(variant.elapsedMs)} | ${formatMs(variant.warm?.medianMs)} | ${formatMs(variant.warm?.p95Ms)} | ${variant.responseBytes} | ${variant.returned ?? ''} | ${variant.total ?? ''} |`);
 		}
+	}
+	lines.push('', '## Relationship Gates', '');
+	if (report.relationshipGates.length === 0) {
+		lines.push('The composed relationship tool was unavailable in this binary.');
+	} else {
+		lines.push('| Scenario | Statistic | Actual | Budget | Status |', '| --- | --- | ---: | ---: | --- |');
+		for (const gate of report.relationshipGates) {
+			lines.push(`| ${gate.name} | ${gate.statistic} | ${formatMs(gate.actualMs)} | ${formatMs(gate.budgetMs)} | ${gate.status} |`);
+		}
+	}
+	lines.push('', '## Process Working Set', '', '| Stage | Bytes | MiB |', '| --- | ---: | ---: |');
+	for (const sample of report.memory) {
+		lines.push(`| ${sample.stage} | ${sample.workingSetBytes ?? 'Unavailable'} | ${sample.workingSetBytes ? round(sample.workingSetBytes / 1024 / 1024) : ''} |`);
 	}
 	lines.push('', '## Coverage Notes', '');
 	const incomplete = report.operations.filter(operation => operation.reason);
@@ -791,6 +1148,151 @@ function boundedConcurrencyLevels(value, argument) {
 	return [...new Set(levels)].sort((left, right) => left - right);
 }
 
+function compareReports(baseline, candidate) {
+	const operations = [];
+	const baselineByName = new Map((baseline.operations ?? []).map(operation => [operation.name, operation]));
+	for (const current of candidate.operations ?? []) {
+		if (current.name === 'query_source_symbol_relationships') continue;
+		const before = baselineByName.get(current.name);
+		if (!before || !['pass', 'over-budget'].includes(before.status) || !['pass', 'over-budget'].includes(current.status)) continue;
+		const medianBudgetMs = Math.max(before.warm.medianMs + 5, before.warm.medianMs * 1.1);
+		const p95BudgetMs = Math.max(before.warm.p95Ms + 10, before.warm.p95Ms * 1.2);
+		const correctnessMatch = before.fingerprint === current.fingerprint
+			&& before.returned === current.returned
+			&& before.total === current.total;
+		operations.push({
+			name: current.name,
+			baselineMedianMs: before.warm.medianMs,
+			candidateMedianMs: current.warm.medianMs,
+			medianBudgetMs: round(medianBudgetMs),
+			baselineP95Ms: before.warm.p95Ms,
+			candidateP95Ms: current.warm.p95Ms,
+			p95BudgetMs: round(p95BudgetMs),
+			baselineBytes: before.responseBytes,
+			candidateBytes: current.responseBytes,
+			correctnessMatch,
+			status: correctnessMatch && current.warm.medianMs <= medianBudgetMs && current.warm.p95Ms <= p95BudgetMs
+				? 'pass'
+				: 'fail',
+		});
+	}
+	const baselinePreUse = workingSetAt(baseline, 'after-ordinary-semantic-search');
+	const candidatePreUse = workingSetAt(candidate, 'after-ordinary-semantic-search');
+	const preUseBudgetBytes = baselinePreUse === undefined
+		? undefined
+		: Math.max(baselinePreUse + 32 * 1024 * 1024, baselinePreUse * 1.1);
+	const memory = {
+		baselinePreUseBytes: baselinePreUse,
+		candidatePreUseBytes: candidatePreUse,
+		preUseBudgetBytes: preUseBudgetBytes === undefined ? undefined : Math.round(preUseBudgetBytes),
+		firstProjectionBytes: workingSetAt(candidate, 'after-first-relationship-projection'),
+		repeatedRelationshipBytes: workingSetAt(candidate, 'after-repeated-relationship-query'),
+		status: baselinePreUse === undefined || candidatePreUse === undefined
+			? 'unavailable'
+			: candidatePreUse <= preUseBudgetBytes ? 'pass' : 'fail',
+	};
+	const corpusMatch = JSON.stringify(baseline.configuration?.workspaceRoots ?? []) === JSON.stringify(candidate.configuration?.workspaceRoots ?? [])
+		&& JSON.stringify((baseline.corpus?.gameData?.addons ?? []).map(addon => addon.addonGuid))
+			=== JSON.stringify((candidate.corpus?.gameData?.addons ?? []).map(addon => addon.addonGuid));
+	const failed = operations.filter(operation => operation.status === 'fail').length
+		+ candidate.relationshipGates.filter(gate => gate.status === 'fail').length
+		+ (candidate.paired?.operations ?? []).filter(operation => operation.status === 'fail').length
+		+ (candidate.paired?.coldGate?.status === 'fail' ? 1 : 0)
+		+ (memory.status === 'fail' ? 1 : 0)
+		+ (corpusMatch ? 0 : 1);
+	return {
+		schemaVersion: 1,
+		generatedAt: new Date().toISOString(),
+		baseline: { commit: baseline.configuration?.commit ?? 'unknown', reportGeneratedAt: baseline.generatedAt },
+		candidate: { commit: candidate.configuration?.commit ?? 'unknown', reportGeneratedAt: candidate.generatedAt },
+		method: {
+			warmSamples: candidate.configuration.samples,
+			coldSamples: candidate.configuration.coldSamples,
+			medianGate: 'max(baseline + 5 ms, baseline * 1.10)',
+			p95Gate: 'max(baseline + 10 ms, baseline * 1.20)',
+		},
+		corpusMatch,
+		operations,
+		newRelationshipGates: candidate.relationshipGates,
+		paired: candidate.paired,
+		memory,
+		verdict: failed === 0 ? 'pass' : 'fail',
+	};
+}
+
+function workingSetAt(report, stage) {
+	const sample = (report.memory ?? []).find(candidate => candidate.stage === stage);
+	return Number.isFinite(sample?.workingSetBytes) ? sample.workingSetBytes : undefined;
+}
+
+function renderComparisonMarkdown(comparison) {
+	const lines = [
+		'# MCP Runtime Performance Comparison',
+		'',
+		`- Baseline commit: ${comparison.baseline.commit}`,
+		`- Candidate commit: ${comparison.candidate.commit}`,
+		`- Controlled corpus match: ${comparison.corpusMatch ? 'yes' : 'no'}`,
+		`- Verdict: **${comparison.verdict}**`,
+		'',
+		'## Existing Operations',
+		'',
+		'| Tool | Baseline median | Candidate median | Median gate | Baseline P95 | Candidate P95 | P95 gate | Fingerprint/counts | Status |',
+		'| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |',
+	];
+	for (const operation of comparison.operations) {
+		lines.push(`| ${operation.name} | ${formatMs(operation.baselineMedianMs)} | ${formatMs(operation.candidateMedianMs)} | ${formatMs(operation.medianBudgetMs)} | ${formatMs(operation.baselineP95Ms)} | ${formatMs(operation.candidateP95Ms)} | ${formatMs(operation.p95BudgetMs)} | ${operation.correctnessMatch ? 'match' : 'mismatch'} | ${operation.status} |`);
+	}
+	if (comparison.paired) {
+		lines.push(
+			'',
+			'## Alternating Paired Samples',
+			'',
+			comparison.paired.method,
+			'',
+			'| Tool | Baseline median | Candidate median | Baseline P95 | Candidate P95 | Fingerprints | Status |',
+			'| --- | ---: | ---: | ---: | ---: | --- | --- |',
+		);
+		for (const operation of comparison.paired.operations) {
+			lines.push(`| ${operation.name} | ${formatMs(operation.baseline.medianMs)} | ${formatMs(operation.candidate.medianMs)} | ${formatMs(operation.baseline.p95Ms)} | ${formatMs(operation.candidate.p95Ms)} | ${operation.fingerprintsMatch ? 'match' : 'mismatch'} | ${operation.status} |`);
+		}
+		lines.push(
+			'',
+			`- Alternating cold pairs: ${comparison.paired.cold.baselineInitialize.count}`,
+			`- Baseline process-to-initialize median / P95: ${formatMs(comparison.paired.cold.baselineInitialize.medianMs)} / ${formatMs(comparison.paired.cold.baselineInitialize.p95Ms)}`,
+			`- Candidate process-to-initialize median / P95: ${formatMs(comparison.paired.cold.candidateInitialize.medianMs)} / ${formatMs(comparison.paired.cold.candidateInitialize.p95Ms)}`,
+			`- Cold process gate: ${comparison.paired.coldGate.status} (median ceiling ${formatMs(comparison.paired.coldGate.medianBudgetMs)}, P95 ceiling ${formatMs(comparison.paired.coldGate.p95BudgetMs)})`,
+		);
+	}
+	lines.push(
+		'',
+		'## New Relationship Operations',
+		'',
+		'| Scenario | Statistic | Candidate | Gate | Status |',
+		'| --- | --- | ---: | ---: | --- |',
+	);
+	for (const gate of comparison.newRelationshipGates) {
+		lines.push(`| ${gate.name} | ${gate.statistic} | ${formatMs(gate.actualMs)} | ${formatMs(gate.budgetMs)} | ${gate.status} |`);
+	}
+	lines.push(
+		'',
+		'## Working Set',
+		'',
+		`- Baseline before Related Code: ${formatMiB(comparison.memory.baselinePreUseBytes)}`,
+		`- Candidate before Related Code: ${formatMiB(comparison.memory.candidatePreUseBytes)}`,
+		`- Pre-use gate: ${formatMiB(comparison.memory.preUseBudgetBytes)} (${comparison.memory.status})`,
+		`- Candidate after first projection: ${formatMiB(comparison.memory.firstProjectionBytes)}`,
+		`- Candidate after repeated query: ${formatMiB(comparison.memory.repeatedRelationshipBytes)}`,
+		'',
+		'Local wall-clock and working-set observations are comparative evidence for this host, not portable guarantees.',
+		'',
+	);
+	return `${lines.join('\n')}\n`;
+}
+
+function formatMiB(value) {
+	return Number.isFinite(value) ? `${round(value / 1024 / 1024)} MiB` : 'Unavailable';
+}
+
 function usage(error) {
 	if (error) process.stderr.write(`${error}\n\n`);
 	process.stderr.write(
@@ -800,16 +1302,28 @@ function usage(error) {
 		'  Sampling: --samples <n> --cold-samples <n> --concurrency-levels <1,4,8> --timeout-ms <ms>\n' +
 		'  Gates: --require-all --enforce-budgets\n' +
 		'  Queries: --game-symbol-query <text> --workspace-symbol-query <text> --text-query <text> --broad-text-query <text>\n' +
-		'           --regex-query <pattern> --wiki-query <text> --example-topic <text>\n' +
-		'  Output: --json-out <path> --markdown-out <path>\n',
+		'           --regex-query <pattern> --wiki-query <text> --example-topic <text> --relationship-method-query <text>\n' +
+		'  Identity: --commit <sha>\n' +
+		'  Output: --json-out <path> --markdown-out <path>\n' +
+		'          --baseline-report <json> --paired-baseline-server <executable>\n' +
+		'          --comparison-json-out <path> --comparison-markdown-out <path>\n',
 	);
 	process.exit(error ? 2 : 0);
 }
 
 const options = parseArguments(process.argv.slice(2));
 const report = await runReport(options);
+report.paired = await measurePairedRuns(options);
 writeReport(options.jsonOut, `${JSON.stringify(report, null, 2)}\n`);
 writeReport(options.markdownOut, renderMarkdown(report));
+if (options.baselineReport) {
+	const baseline = JSON.parse(readFileSync(resolve(options.baselineReport), 'utf8'));
+	const comparison = compareReports(baseline, report);
+	const jsonPath = options.comparisonJsonOut ?? 'tools/reports/mcp-runtime-performance.comparison.json';
+	const markdownPath = options.comparisonMarkdownOut ?? 'tools/reports/mcp-runtime-performance.comparison.md';
+	writeReport(jsonPath, `${JSON.stringify(comparison, null, 2)}\n`);
+	writeReport(markdownPath, renderComparisonMarkdown(comparison));
+}
 process.stdout.write(
 	`MCP runtime report: ${report.verdict}; ${report.coverage.exercised}/${report.coverage.listed} non-Workbench tools exercised.\n` +
 	`JSON: ${options.jsonOut}\nMarkdown: ${options.markdownOut}\n`,

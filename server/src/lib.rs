@@ -29,6 +29,7 @@ pub mod resolver;
 pub mod scope;
 pub(crate) mod search_limits;
 pub mod semantic_file;
+pub mod source_relationships;
 pub mod symbol_display;
 pub mod syntax;
 pub mod text_search;

@@ -22,6 +22,9 @@ use crate::index_build::{IndexBuildControl, INDEX_BUILD_CANCELLED};
 use crate::index_cache::IndexCacheTimings;
 use crate::index_cache::{RuntimeIndexSummary, SourceFingerprint};
 use crate::model::SymbolKind;
+use crate::source_relationships::{
+    SourceAuthority, SourceRelationshipQuery, SourceRelationshipSnapshot,
+};
 use crate::text_search::{
     page as page_text, physical_source_uri, scan as scan_text, TextSearchCorpus, TextSearchError,
     TextSearchOptions, TextSearchPage, TextSearchRequest, TextSearchResultSet, TextSource,
@@ -65,6 +68,7 @@ pub struct GameDataCatalogue {
     text_search_cache:
         Mutex<BTreeMap<(String, String, TextSearchOptions, Vec<String>), Arc<TextSearchResultSet>>>,
     text_source_cache: Mutex<Option<CachedTextSources>>,
+    relationships: SourceRelationshipQuery,
     initialized: AtomicBool,
     #[cfg(all(feature = "test-hooks", debug_assertions))]
     panic_once: std::sync::atomic::AtomicBool,
@@ -100,6 +104,7 @@ impl GameDataCatalogue {
             state: Mutex::new(None),
             text_search_cache: Mutex::new(BTreeMap::new()),
             text_source_cache: Mutex::new(None),
+            relationships: SourceRelationshipQuery::default(),
             initialized: AtomicBool::new(false),
             #[cfg(all(feature = "test-hooks", debug_assertions))]
             panic_once: std::sync::atomic::AtomicBool::new(
@@ -485,8 +490,11 @@ impl GameDataCatalogue {
         request: GameDataRelationshipRequest,
     ) -> Result<GameDataRelationshipPage, GameDataCatalogueResearchError> {
         let _ = request;
-        self.research_snapshot(control)?;
-        Err(GameDataCatalogueResearchError::SourceEvidenceUnavailable)
+        let snapshot = self.relationship_snapshot(control)?;
+        self.relationships
+            .query_restricted_legacy(control, snapshot, request)
+            .map_err(GameDataCatalogueResearchError::Research)?
+            .ok_or(GameDataCatalogueResearchError::SourceEvidenceUnavailable)
     }
 
     pub fn read_source(
@@ -611,6 +619,45 @@ impl GameDataCatalogue {
             snapshot.source_line_starts.clone(),
             snapshot.addon_map.clone(),
         ))
+    }
+
+    pub(crate) fn relationship_snapshot(
+        &self,
+        control: &IndexBuildControl,
+    ) -> Result<SourceRelationshipSnapshot, GameDataCatalogueResearchError> {
+        self.before_operation(control)
+            .map_err(GameDataCatalogueResearchError::Initialization)?;
+        let status = self
+            .status(control)
+            .map_err(GameDataCatalogueResearchError::Initialization)?;
+        let revision = status
+            .catalogue_revision
+            .ok_or(GameDataCatalogueResearchError::Unavailable)?;
+        let order_authoritative = status.scope_authority.as_deref() == Some("workbench-loaded");
+        let state = self
+            .lock_state(control)
+            .map_err(GameDataCatalogueResearchError::Initialization)?;
+        let snapshot = state
+            .as_ref()
+            .ok_or(GameDataCatalogueResearchError::Unavailable)?;
+        Ok(SourceRelationshipSnapshot {
+            authority: SourceAuthority::GameData,
+            revision,
+            index: snapshot
+                .index
+                .clone()
+                .ok_or(GameDataCatalogueResearchError::Unavailable)?,
+            starts: snapshot.source_line_starts.clone(),
+            addon_map: snapshot.addon_map.clone(),
+            addon_order: Arc::new(
+                snapshot
+                    .addon_instances
+                    .iter()
+                    .map(|instance| instance.guid.clone())
+                    .collect(),
+            ),
+            addon_order_authoritative: order_authoritative,
+        })
     }
 
     fn lock_state(

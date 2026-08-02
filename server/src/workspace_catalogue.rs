@@ -15,6 +15,9 @@ use crate::index_build::{
     build_index_with_control, IndexBuildConfig, IndexBuildControl, IndexSourceRoot,
 };
 use crate::model::{SourceKind, SOURCE_PRIORITY_WORKSPACE};
+use crate::source_relationships::{
+    SourceAuthority, SourceRelationshipQuery, SourceRelationshipSnapshot,
+};
 use crate::text_search::{
     page as page_text, physical_source_uri, scan as scan_text, TextSearchCorpus, TextSearchError,
     TextSearchOptions, TextSearchPage, TextSearchRequest, TextSearchResultSet, TextSource,
@@ -36,6 +39,7 @@ pub struct WorkspaceCatalogue {
     snapshot: Mutex<Option<Arc<WorkspaceSnapshot>>>,
     text_search_cache:
         Mutex<BTreeMap<(String, String, TextSearchOptions), Arc<TextSearchResultSet>>>,
+    relationships: SourceRelationshipQuery,
 }
 
 #[derive(Debug)]
@@ -62,6 +66,7 @@ impl WorkspaceCatalogue {
             config,
             snapshot: Mutex::new(None),
             text_search_cache: Mutex::new(BTreeMap::new()),
+            relationships: SourceRelationshipQuery::default(),
         }
     }
 
@@ -208,6 +213,14 @@ impl WorkspaceCatalogue {
         control: &IndexBuildControl,
         request: GameDataRelationshipRequest,
     ) -> Result<GameDataRelationshipPage, WorkspaceCatalogueError> {
+        let relationship_snapshot = self.relationship_snapshot(control)?;
+        if let Some(page) = self
+            .relationships
+            .query_restricted_legacy(control, relationship_snapshot, request.clone())
+            .map_err(WorkspaceCatalogueError::Research)?
+        {
+            return Ok(page);
+        }
         let snapshot = self.snapshot(control)?;
         query_relationships(
             &snapshot.index,
@@ -218,6 +231,22 @@ impl WorkspaceCatalogue {
             request,
         )
         .map_err(WorkspaceCatalogueError::Research)
+    }
+
+    pub(crate) fn relationship_snapshot(
+        &self,
+        control: &IndexBuildControl,
+    ) -> Result<SourceRelationshipSnapshot, WorkspaceCatalogueError> {
+        let snapshot = self.snapshot(control)?;
+        Ok(SourceRelationshipSnapshot {
+            authority: SourceAuthority::Workspace,
+            revision: snapshot.revision.clone(),
+            index: snapshot.index.clone(),
+            starts: snapshot.starts.clone(),
+            addon_map: Arc::new(GameDataAddonMap::new()),
+            addon_order: Arc::new(Vec::new()),
+            addon_order_authoritative: true,
+        })
     }
 
     fn snapshot(

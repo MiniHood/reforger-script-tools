@@ -109,6 +109,35 @@ symbol references include that GUID, and Game Data source reads require the
 returned GUID for every handoff so path uniqueness is never assumed. Layered
 queries iterate the immutable child
 indexes directly rather than relying on an eagerly flattened symbol allocation.
+
+Exact Source Relationship queries compose one captured Workspace generation
+with one captured Game Data generation. Broad symbol search remains the
+discovery path; a relationship request begins only from the returned opaque,
+revision-bound Symbol Reference and its source authority. The catalogues expose
+minimal immutable snapshots to `source_relationships`; they do not expose
+storage, synchronization, physical-path, or mutation responsibilities.
+
+The relationship owner lazily builds one compact projection keyed by the
+complete Workspace/Game Data revision tuple. It retains class and method
+identity plus proven structural edges, not source strings or cloned symbol
+records. Explicit inheritance, `modded` overlays, and callable overrides remain
+different edges. Modded classes require the same script-module identity;
+overrides require the exact callable shape and a proven inheritance or modded
+owner chain. Ambiguous edges are omitted with a warning. Loaded Workbench
+add-on order may support overlay evidence; provisional dependency order never
+claims an authoritative sequence.
+
+One-level queries return immediate neighbors. All-level queries use bounded,
+cancellable breadth-first traversal with cycle detection. Resolution uses the
+whole captured graph, then the selected Workspace/add-on scope and result-kind
+filter are applied to emitted declarations, so a hidden intermediate cannot
+break a proven edge. Results retain source authority, add-on identity, exact
+Symbol Reference, ranges, relationship evidence and distance, and a matching
+source-read handoff. Ordering, page limits, totals, and cursors are deterministic;
+the opaque cursor is bound to both source revisions, anchor, scope, relationship
+kinds, result kinds, and depth. Restricted legacy structural relationship tools
+delegate to this owner rather than maintaining a parallel implementation.
+
 Within the same semantic match-quality tier, original declarations rank before
 `modded` or `override` declarations and before members declared inside those
 overlays. Remaining ties use the stable symbol identity and source ordering.

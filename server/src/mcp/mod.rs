@@ -22,6 +22,10 @@ use crate::official_wiki::{
     OfficialWikiReadRequest, OfficialWikiSearchError, OfficialWikiSearchPage,
     OfficialWikiSearchRequest, OfficialWikiStatus,
 };
+use crate::source_relationships::{
+    SourceAuthority, SourceRelationshipError, SourceRelationshipPage, SourceRelationshipQuery,
+    SourceRelationshipRequest,
+};
 use crate::text_search::{TextSearchError, TextSearchOptions, TextSearchPage, TextSearchRequest};
 use crate::workbench::{
     WorkbenchBridgeInstallResult, WorkbenchComponentResult, WorkbenchController,
@@ -80,6 +84,7 @@ pub const INSPECT_GAME_DATA_SYMBOL_TOOL_NAME: &str = "inspect_game_data_symbol";
 pub const LIST_GAME_DATA_SYMBOL_MEMBERS_TOOL_NAME: &str = "list_game_data_symbol_members";
 pub const QUERY_GAME_DATA_SYMBOL_RELATIONSHIPS_TOOL_NAME: &str =
     "query_game_data_symbol_relationships";
+pub const QUERY_SOURCE_SYMBOL_RELATIONSHIPS_TOOL_NAME: &str = "query_source_symbol_relationships";
 pub const READ_GAME_DATA_SOURCE_TOOL_NAME: &str = "read_game_data_source";
 pub const READ_WORKSPACE_SOURCE_TOOL_NAME: &str = "read_workspace_source";
 pub const OFFICIAL_WIKI_STATUS_TOOL_NAME: &str = "official_wiki_status";
@@ -215,6 +220,7 @@ const QUERY_WORKSPACE_SYMBOL_RELATIONSHIPS_DESCRIPTION: &str = "Query bounded de
 const INSPECT_GAME_DATA_SYMBOL_DESCRIPTION: &str = "Inspect one opaque Game Data symbol reference returned by search. Returns only semantic facts owned by the immutable catalogue.";
 const LIST_GAME_DATA_SYMBOL_MEMBERS_DESCRIPTION: &str = "List every direct member of one revision-bound Game Data symbol with semantic-kind filters and opaque pagination. Use this after inspection when its compact member preview is truncated.";
 const QUERY_GAME_DATA_SYMBOL_RELATIONSHIPS_DESCRIPTION: &str = "Query parser-published bounded semantic relationships for one revision-bound Game Data symbol. This operation is unavailable until the parser-owned cache publishes relationship facts; it never scans Game Data source from MCP.";
+const QUERY_SOURCE_SYMBOL_RELATIONSHIPS_DESCRIPTION: &str = "Query exact inheritance, modded-class, and method-override relationships across the immutable workspace and selected Game Data scope. Copy anchorSource and symbolRef from semantic search; identities and relationships remain Rust-owned.";
 const READ_GAME_DATA_SOURCE_DESCRIPTION: &str =
     "Read bounded verbatim source evidence from an exact logical Game Data path returned by Game Data tools. The source is resolved from the immutable catalogue revision and never exposes a physical path.";
 const READ_WORKSPACE_SOURCE_DESCRIPTION: &str =
@@ -1118,6 +1124,23 @@ struct McpGameDataRelationshipInput {
     #[schemars(length(max = 2048))]
     cursor: Option<String>,
 }
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpSourceRelationshipInput {
+    anchor_source: SourceAuthority,
+    #[schemars(length(min = 1, max = 2048))]
+    symbol_ref: String,
+    include_workspace: bool,
+    addon_guids: Vec<String>,
+    #[schemars(length(min = 1))]
+    relationship_kinds: Vec<String>,
+    kinds: Option<Vec<String>>,
+    depth: String,
+    limit: Option<usize>,
+    #[schemars(length(max = 4096))]
+    cursor: Option<String>,
+}
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct McpGameDataSourceInput {
@@ -1226,6 +1249,7 @@ pub struct ReforgerMcpServer {
     official_wiki: Arc<OfficialWikiCorpus>,
     workbench: Arc<WorkbenchController>,
     workspace: Arc<WorkspaceCatalogue>,
+    source_relationships: Arc<SourceRelationshipQuery>,
     admission: Arc<Semaphore>,
 }
 
@@ -1241,6 +1265,7 @@ impl ReforgerMcpServer {
             workspace: Arc::new(WorkspaceCatalogue::new(WorkspaceCatalogueConfig {
                 roots: options.workspace_scripts,
             })),
+            source_relationships: Arc::new(SourceRelationshipQuery::default()),
             admission: Arc::new(Semaphore::new(MAX_CONCURRENT_TOOL_CALLS)),
         }
     }
@@ -1549,6 +1574,90 @@ impl ReforgerMcpServer {
         }
     }
 
+    async fn query_source_symbol_relationships(
+        &self,
+        request: SourceRelationshipRequest,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let permit = self.acquire_request_admission(&context).await?;
+        let workspace = self.workspace.clone();
+        let game_data = self.game_data.clone();
+        let relationships = self.source_relationships.clone();
+        let cold = !game_data.is_initialized();
+        let control = IndexBuildControl::default();
+        let worker_control = control.clone();
+        let mut worker = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let workspace_snapshot = if request.include_workspace
+                || request.anchor_source == SourceAuthority::Workspace
+            {
+                match workspace.relationship_snapshot(&worker_control) {
+                    Ok(snapshot) => Some(snapshot),
+                    Err(WorkspaceCatalogueError::Unavailable) => None,
+                    Err(WorkspaceCatalogueError::Initialization(error)) => {
+                        return Err(SourceRelationshipOperationError::Initialization(error));
+                    }
+                    Err(error) => {
+                        return Err(SourceRelationshipOperationError::Initialization(format!(
+                            "workspace relationship snapshot failed: {error:?}"
+                        )));
+                    }
+                }
+            } else {
+                None
+            };
+            let game_data_snapshot = if request.anchor_source == SourceAuthority::GameData
+                || !request.addon_guids.is_empty()
+            {
+                match game_data.relationship_snapshot(&worker_control) {
+                    Ok(snapshot) => Some(snapshot),
+                    Err(GameDataCatalogueResearchError::Unavailable) => None,
+                    Err(GameDataCatalogueResearchError::Initialization(error)) => {
+                        return Err(SourceRelationshipOperationError::Initialization(error));
+                    }
+                    Err(error) => {
+                        return Err(SourceRelationshipOperationError::Initialization(format!(
+                            "Game Data relationship snapshot failed: {error:?}"
+                        )));
+                    }
+                }
+            } else {
+                None
+            };
+            relationships
+                .query(
+                    &worker_control,
+                    workspace_snapshot,
+                    game_data_snapshot,
+                    request,
+                )
+                .map_err(SourceRelationshipOperationError::Query)
+        });
+        let deadline = tokio::time::sleep(Duration::from_millis(if cold {
+            initialization_deadline_ms()
+        } else {
+            ready_game_data_operation_deadline_ms()
+        }));
+        tokio::pin!(deadline);
+        let result = tokio::select! {
+            biased;
+            _ = context.ct.cancelled() => { cancel_research_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
+            _ = &mut deadline => { cancel_research_worker(&control, &mut worker).await; return Ok(if cold { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); },
+            result = &mut worker => result.map_err(|_| McpError::internal_error("Source relationship worker failed", None))?,
+        };
+        match result {
+            Ok(page) => typed_success(&page),
+            Err(SourceRelationshipOperationError::Initialization(error)) => Ok(tool_error(
+                "source_relationships_unavailable",
+                &format!("The selected semantic sources could not be initialized for relationship exploration: {error}"),
+                "Return to semantic discovery, check Game Data/workspace status, and retry with a current exact anchor.",
+            )),
+            Err(SourceRelationshipOperationError::Query(error)) => {
+                Ok(source_relationship_error(error))
+            }
+        }
+    }
+
     async fn inspect_game_data_symbol(
         &self,
         symbol_ref: String,
@@ -1790,9 +1899,9 @@ async fn cancel_inspection_worker<T>(
     let _ = tokio::time::timeout(Duration::from_millis(CANCELLATION_JOIN_GRACE_MS), worker).await;
 }
 
-async fn cancel_research_worker<T>(
+async fn cancel_research_worker<T, E>(
     control: &IndexBuildControl,
-    worker: &mut tokio::task::JoinHandle<Result<T, GameDataCatalogueResearchError>>,
+    worker: &mut tokio::task::JoinHandle<Result<T, E>>,
 ) {
     control.cancel();
     let _ = tokio::time::timeout(Duration::from_millis(CANCELLATION_JOIN_GRACE_MS), worker).await;
@@ -1841,6 +1950,52 @@ fn workspace_error(error: WorkspaceCatalogueError) -> CallToolResult {
             GameDataResearchError::Inspection(error) => inspection_error(error),
             GameDataResearchError::Cancelled => unreachable!(),
         },
+    }
+}
+
+#[derive(Debug)]
+enum SourceRelationshipOperationError {
+    Initialization(String),
+    Query(SourceRelationshipError),
+}
+
+fn source_relationship_error(error: SourceRelationshipError) -> CallToolResult {
+    match error {
+        SourceRelationshipError::InvalidRequest(message) => tool_error(
+            "invalid_source_relationship_request",
+            &message,
+            "Use one or more supported relationshipKinds and depth one or all.",
+        ),
+        SourceRelationshipError::InvalidAnchor => tool_error(
+            "invalid_relationship_anchor",
+            "The relationship anchor is not a valid exact semantic Symbol Reference.",
+            "Return to semantic discovery and choose an exact result as the anchor.",
+        ),
+        SourceRelationshipError::StaleAnchor => tool_error(
+            "stale_relationship_anchor",
+            "The relationship anchor belongs to an older semantic catalogue revision.",
+            "Clear Related Code, rerun semantic discovery, and choose the refreshed exact result.",
+        ),
+        SourceRelationshipError::InvalidCursor => tool_error(
+            "invalid_relationship_cursor",
+            "The relationship cursor is malformed.",
+            "Restart relationship paging without a cursor.",
+        ),
+        SourceRelationshipError::StaleCursor => tool_error(
+            "stale_relationship_cursor",
+            "The relationship cursor does not match the current anchor, scope, kinds, or depth.",
+            "Restart relationship paging from the first page.",
+        ),
+        SourceRelationshipError::SourceUnavailable(source) => tool_error(
+            "source_relationships_unavailable",
+            &format!("The {source:?} source selected by the exact anchor is unavailable."),
+            "Return to semantic discovery, restore that source in Search Scope, and select a current anchor.",
+        ),
+        SourceRelationshipError::Cancelled => tool_error(
+            "request_cancelled",
+            "The source relationship query was cancelled.",
+            "Retry with a narrower relationship scope if needed.",
+        ),
     }
 }
 
@@ -2232,6 +2387,7 @@ impl ReforgerMcpServer {
             inspect_workspace_symbol_tool(),
             list_workspace_symbol_members_tool(),
             query_workspace_symbol_relationships_tool(),
+            query_source_symbol_relationships_tool(),
             search_game_data_examples_tool(),
             inspect_game_data_symbol_tool(),
             list_game_data_symbol_members_tool(),
@@ -2418,6 +2574,39 @@ impl ReforgerMcpServer {
                     GameDataRelationshipRequest {
                         symbol_ref: input.symbol_ref,
                         relationship_kinds: input.relationship_kinds,
+                        limit: input.limit,
+                        cursor: input.cursor,
+                    },
+                    context,
+                )
+                .await;
+        }
+        if request.name == QUERY_SOURCE_SYMBOL_RELATIONSHIPS_TOOL_NAME {
+            if request.task.is_some() {
+                return Err(McpError::invalid_params(
+                    "query_source_symbol_relationships does not support task execution",
+                    None,
+                ));
+            }
+            let input = serde_json::from_value::<McpSourceRelationshipInput>(Value::Object(
+                request.arguments.unwrap_or_default(),
+            ))
+            .map_err(|error| {
+                McpError::invalid_params(
+                    format!("Invalid query_source_symbol_relationships arguments: {error}"),
+                    None,
+                )
+            })?;
+            return self
+                .query_source_symbol_relationships(
+                    SourceRelationshipRequest {
+                        anchor_source: input.anchor_source,
+                        symbol_ref: input.symbol_ref,
+                        include_workspace: input.include_workspace,
+                        addon_guids: input.addon_guids,
+                        relationship_kinds: input.relationship_kinds,
+                        result_kinds: input.kinds.unwrap_or_default(),
+                        depth: input.depth,
                         limit: input.limit,
                         cursor: input.cursor,
                     },
@@ -4488,6 +4677,10 @@ fn api_reference_summary(name: &str) -> (&'static str, &'static str) {
             "Game Data",
             "Trace references and definitions in user add-on code.",
         ),
+        "query_source_symbol_relationships" => (
+            "Game Data",
+            "Trace exact relationships across workspace and selected Game Data.",
+        ),
         "read_workspace_source" => (
             "Game Data",
             "Read bounded source evidence returned by workspace tools.",
@@ -4912,6 +5105,7 @@ fn render_combined_api_reference() -> String {
     let example_tool = descriptor(SEARCH_GAME_DATA_EXAMPLES_TOOL_NAME);
     let member_tool = descriptor(LIST_GAME_DATA_SYMBOL_MEMBERS_TOOL_NAME);
     let relationship_tool = descriptor(QUERY_GAME_DATA_SYMBOL_RELATIONSHIPS_TOOL_NAME);
+    let source_relationship_tool = descriptor(QUERY_SOURCE_SYMBOL_RELATIONSHIPS_TOOL_NAME);
     let inspect_tool = descriptor(INSPECT_GAME_DATA_SYMBOL_TOOL_NAME);
     let read_tool = descriptor(READ_GAME_DATA_SOURCE_TOOL_NAME);
     let wiki_tool = descriptor(OFFICIAL_WIKI_STATUS_TOOL_NAME);
@@ -5057,6 +5251,31 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
             guidance,
         ));
     }
+    let source_relationship_input =
+        serde_json::to_string_pretty(source_relationship_tool.input_schema.as_ref())
+            .expect("source relationship input schema serializes");
+    let source_relationship_output = serde_json::to_string_pretty(
+        source_relationship_tool
+            .output_schema
+            .as_deref()
+            .expect("source relationship output schema"),
+    )
+    .expect("source relationship output schema serializes");
+    let source_relationship_annotations = serde_json::to_string_pretty(
+        source_relationship_tool
+            .annotations
+            .as_ref()
+            .expect("source relationship annotations"),
+    )
+    .expect("source relationship annotations serialize");
+    reference.push_str(&format!(
+        "\n## `{}`\n\n{}\n\n### Annotations\n\n```json\n{}\n```\n\n### Input schema\n\n```json\n{}\n```\n\n### Output schema\n\n```json\n{}\n```\n\n### Limits and semantics\n\n- Copy `anchorSource` and `symbolRef` from one exact Workspace or Game Data semantic-search result. The opaque reference is never decoded by the caller.\n- `relationshipKinds` accepts `direct`, `directBase`, `derivedType`, `moddedExtension`, `overriddenDeclaration`, and `override`; `depth` is `one` or `all`. `kinds` filters emitted symbol kinds without changing relationship resolution.\n- `includeWorkspace` and `addonGuids` control emitted declarations. Resolution still uses the complete captured semantic graph, so an excluded intermediate does not break a proven edge.\n- Results are deterministic, capped at 5,000 traversed declarations and 100 records per page, cancellable, and subject to the ready-operation five-second deadline. Cycles and ambiguous omitted edges are reported as warnings.\n- The opaque cursor is bound to both source revisions, exact anchor, output scope, relationship kinds, result kinds, and depth.\n\n### Stable failures\n\n- `invalid_source_relationship_request`: correct the relationship kinds, depth, or filters.\n- `invalid_relationship_anchor` or `stale_relationship_anchor`: return to broad semantic discovery and select a current exact declaration.\n- `invalid_relationship_cursor` or `stale_relationship_cursor`: restart paging from page one.\n- `source_relationships_unavailable`: restore the anchor source and select a current anchor.\n- `request_cancelled` or `deadline_exceeded`: retry or narrow the selected relationships.\n\n### Result handoff\n\nPreserve each result's source authority and add-on GUID. Copy `readSourceInput` unchanged to `read_workspace_source` or `read_game_data_source` according to `source`.\n",
+        source_relationship_tool.name,
+        source_relationship_tool.description.as_deref().unwrap_or_default(),
+        source_relationship_annotations,
+        source_relationship_input,
+        source_relationship_output,
+    ));
     reference.push_str(&format!(
         "\n## `{}`\n\n{}\n\n### Input schema\n\n```json\n{}\n```\n\n### Output schema\n\n```json\n{}\n```\n\n`symbolRef` is opaque, revision-bound, copied unchanged from search, and limited to 2 KiB. Invalid or stale references return `invalid_symbol_ref` or `stale_symbol_ref`; repeat search after restarting the MCP process. The result contains only indexed semantic facts, up to 50 direct members, and a copy-ready `readSourceInput`. Ready Game Data inspection has a 5,000 ms ceiling.\n\n## `{}`\n\n{}\n\n### Input schema\n\n```json\n{}\n```\n\n### Output schema\n\n```json\n{}\n```\n\n`startLine` is one-based and defaults to 1. `lineCount` defaults to 200 and clamps to 500. Content is capped at 128 KiB on complete-line boundaries; a truncated result contains `nextStartLine`. Ready Game Data source reads have a 5,000 ms ceiling. `game_data_changed` requires an MCP process restart.\n",
         inspect_tool.name,
@@ -5486,6 +5705,27 @@ fn query_workspace_symbol_relationships_tool() -> Tool {
     );
     if let Some(output_schema) = tool.output_schema.as_mut() {
         strip_workspace_addon_identity(Arc::make_mut(output_schema));
+    }
+    tool
+}
+
+fn query_source_symbol_relationships_tool() -> Tool {
+    let mut tool = Tool::new(
+        QUERY_SOURCE_SYMBOL_RELATIONSHIPS_TOOL_NAME,
+        QUERY_SOURCE_SYMBOL_RELATIONSHIPS_DESCRIPTION,
+        empty_object_schema(),
+    )
+    .with_title("Query source symbol relationships")
+    .with_input_schema::<McpSourceRelationshipInput>()
+    .with_output_schema::<SourceRelationshipPage>()
+    .with_annotations(
+        ToolAnnotations::with_title("Query source symbol relationships")
+            .read_only(true)
+            .open_world(false),
+    );
+    strip_rust_numeric_formats(Arc::make_mut(&mut tool.input_schema));
+    if let Some(output_schema) = tool.output_schema.as_mut() {
+        strip_rust_numeric_formats(Arc::make_mut(output_schema));
     }
     tool
 }
@@ -6621,12 +6861,12 @@ fn tool_failure(
 mod tests {
     use super::{
         capture_tool_result, game_data_status_tool, inspect_game_data_symbol_tool,
-        read_game_data_source_tool, read_workspace_source_tool, regular_polygon_points,
-        render_api_contracts, render_api_reference, search_game_data_symbols_tool,
-        search_workspace_symbols_tool, search_workspace_text_tool, tool_error,
-        workbench_add_component_tool, workbench_capture_window_tool,
-        workbench_convert_shape_points_tool, workbench_create_prefab_tool,
-        workbench_duplicate_entity_tool, workbench_edit_spline_tool,
+        query_source_symbol_relationships_tool, read_game_data_source_tool,
+        read_workspace_source_tool, regular_polygon_points, render_api_contracts,
+        render_api_reference, search_game_data_symbols_tool, search_workspace_symbols_tool,
+        search_workspace_text_tool, tool_error, workbench_add_component_tool,
+        workbench_capture_window_tool, workbench_convert_shape_points_tool,
+        workbench_create_prefab_tool, workbench_duplicate_entity_tool, workbench_edit_spline_tool,
         workbench_inspect_component_tool, workbench_inspect_prefab_component_tool,
         workbench_inspect_prefab_context_tool, workbench_inspect_spline_tool,
         workbench_install_bridge_tool, workbench_layer_state_tool, workbench_list_components_tool,
@@ -6645,7 +6885,8 @@ mod tests {
         workbench_trace_tool, workbench_transform_shape_points_tool,
         workbench_validate_scripts_tool, workbench_viewport_context_tool,
         workbench_world_selection_summary_tool, ReforgerMcpServer, DEADLINE_EXCEEDED_CODE,
-        GAME_DATA_STATUS_TOOL_NAME, RESPONSE_TOO_LARGE_CODE, WORKBENCH_ADD_COMPONENT_TOOL_NAME,
+        GAME_DATA_STATUS_TOOL_NAME, QUERY_SOURCE_SYMBOL_RELATIONSHIPS_TOOL_NAME,
+        RESPONSE_TOO_LARGE_CODE, WORKBENCH_ADD_COMPONENT_TOOL_NAME,
         WORKBENCH_CAPTURE_WINDOW_TOOL_NAME, WORKBENCH_CONVERT_SHAPE_POINTS_TOOL_NAME,
         WORKBENCH_CREATE_PREFAB_TOOL_NAME, WORKBENCH_DUPLICATE_ENTITY_TOOL_NAME,
         WORKBENCH_EDIT_SPLINE_TOOL_NAME, WORKBENCH_INSPECT_COMPONENT_TOOL_NAME,
@@ -6713,6 +6954,41 @@ mod tests {
                 contract.contains(&output_schema),
                 "{name} output schema drifted"
             );
+        }
+    }
+
+    #[test]
+    fn composed_source_relationship_tool_exposes_exact_anchor_scope_depth_and_paging() {
+        let tool = query_source_symbol_relationships_tool();
+        assert_eq!(tool.name, QUERY_SOURCE_SYMBOL_RELATIONSHIPS_TOOL_NAME);
+        let input = serde_json::to_value(&tool.input_schema)
+            .unwrap()
+            .to_string();
+        for property in [
+            "anchorSource",
+            "symbolRef",
+            "includeWorkspace",
+            "addonGuids",
+            "relationshipKinds",
+            "kinds",
+            "depth",
+            "limit",
+            "cursor",
+        ] {
+            assert!(input.contains(property), "missing {property}");
+        }
+        let output = serde_json::to_value(tool.output_schema.unwrap())
+            .unwrap()
+            .to_string();
+        for property in [
+            "relationshipRevision",
+            "relationshipKind",
+            "distance",
+            "readSourceInput",
+            "nextCursor",
+            "warnings",
+        ] {
+            assert!(output.contains(property), "missing {property}");
         }
     }
 

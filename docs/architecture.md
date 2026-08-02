@@ -186,6 +186,16 @@ from the complete document; Official Wiki text remains Markdown evidence and
 does not enter that semantic pipeline. Workspace remains a separate live
 source, while Official Wiki is eligible only for explicit text search in the
 editor UI.
+Semantic Related Code remains inside that existing Search page and result
+pipeline. TypeScript preserves the exact discovery result as an anchor and
+transports scope, relationship kinds, depth, result kinds, page size, and cursor
+to the Rust `query_source_symbol_relationships` operation. Rust alone composes
+the captured Workspace and selected Game Data semantic facts. Returned
+declarations reuse the established add-on/source grouping, packed grid,
+semantic type rails, Auto or manual preview context, paging, and exact opening
+handoffs. Changing mode or removing the anchor's source clears the editor's
+relationship state; changed catalogue scope clears cached pages so a stale
+anchor is rejected rather than mixed with a newer generation.
 The Search page's resource mode is separate from those indexed-source modes:
 it queries Workbench's registered-resource catalogue by native terms and fixed
 resource kinds, then opens the exact canonical `ResourceName` through

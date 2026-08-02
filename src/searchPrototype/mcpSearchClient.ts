@@ -156,6 +156,32 @@ export interface SearchHit {
 	symbolRef?: string;
 	qualifiedName?: string;
 	signature?: string;
+	relationshipKind?: SearchRelationshipKind;
+	relationshipDistance?: number;
+	relationshipEvidence?: string;
+}
+
+export type SearchRelationshipKind =
+	| 'direct'
+	| 'directBase'
+	| 'derivedType'
+	| 'moddedExtension'
+	| 'overriddenDeclaration'
+	| 'override';
+
+export interface SearchRelationshipAnchor {
+	source: 'workspace' | 'gameData';
+	symbolRef: string;
+}
+
+export interface SearchRelationshipRequest {
+	anchor: SearchRelationshipAnchor;
+	selectedScopeIds: string[];
+	relationshipKinds: SearchRelationshipKind[];
+	depth: 'one' | 'all';
+	pageSize: number;
+	page: number;
+	symbolKinds?: readonly SearchSymbolKind[];
 }
 
 export interface SearchResponse {
@@ -454,6 +480,7 @@ export class McpSearchClient {
 	private readonly pending = new Map<number, PendingRequest>();
 	private initialized: Promise<void> | undefined;
 	private readonly searchPageCaches = new Map<string, Map<number, CachedSearchPage>>();
+	private lastScopeRevision: string | undefined;
 
 	public constructor(private readonly options: McpSearchClientOptions) {}
 
@@ -564,6 +591,11 @@ export class McpSearchClient {
 		const startedAt = performance.now();
 		await this.start();
 		const status = asRecord(await this.callTool('game_data_status', {}));
+		const scopeRevision = asOptionalString(status.scopeRevision);
+		if (this.lastScopeRevision && scopeRevision && this.lastScopeRevision !== scopeRevision) {
+			this.searchPageCaches.clear();
+		}
+		this.lastScopeRevision = scopeRevision;
 		const addons = Array.isArray(status.addons) ? status.addons : [];
 		const unavailableScopeIds = addons.flatMap(value => {
 			const addon = asRecord(value);
@@ -589,7 +621,7 @@ export class McpSearchClient {
 			}];
 		});
 		return {
-			scopeRevision: asOptionalString(status.scopeRevision),
+			scopeRevision,
 			scopeAuthority: asOptionalString(status.scopeAuthority),
 			discoveryMs: performance.now() - startedAt,
 			unavailableScopeIds,
@@ -598,6 +630,97 @@ export class McpSearchClient {
 				{ id: wikiScopeId, label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true },
 				...addonSources,
 			],
+		};
+	}
+
+	public async searchRelationships(request: SearchRelationshipRequest): Promise<SearchResponse> {
+		const trace = createSearchPerformanceTrace();
+		await this.start();
+		trace.startupMs = performance.now() - trace.startedAt;
+		const pageSize = Math.min(100, Math.max(1, Math.floor(request.pageSize) || 25));
+		const requestedPage = Math.min(maxSearchPages, Math.max(1, Math.floor(request.page) || 1));
+		const selectedScopeIds = [...new Set(request.selectedScopeIds)];
+		const addonGuids = selectedScopeIds
+			.filter(value => /^[0-9a-f]{16}$/i.test(value))
+			.map(value => value.toUpperCase())
+			.sort();
+		const includeWorkspace = selectedScopeIds.includes(workspaceScopeId);
+		const cacheKey = [
+			'relationship', request.anchor.source, request.anchor.symbolRef, includeWorkspace,
+			addonGuids.join(','), [...request.relationshipKinds].sort().join(','), request.depth,
+			request.symbolKinds?.join(',') ?? '', pageSize,
+		].join('\u0000');
+		let pages = this.searchPageCaches.get(cacheKey);
+		if (!pages) {
+			if (this.searchPageCaches.size >= maxSearchPageCaches) {
+				const oldest = this.searchPageCaches.keys().next().value;
+				if (oldest !== undefined) {
+					this.searchPageCaches.delete(oldest);
+				}
+			}
+			pages = new Map<number, CachedSearchPage>();
+			this.searchPageCaches.set(cacheKey, pages);
+		}
+		const sourceTrace = sourcePerformanceFor(trace, request.anchor.source);
+		const initialStartedAt = performance.now();
+		for (let pageNumber = 1; pageNumber <= requestedPage; pageNumber += 1) {
+			if (pages.has(pageNumber)) {
+				sourceTrace.cacheHits += 1;
+				continue;
+			}
+			const previous = pageNumber > 1 ? pages.get(pageNumber - 1) : undefined;
+			if (pageNumber > 1 && !previous?.nextCursor) {
+				break;
+			}
+			const remoteStartedAt = performance.now();
+			const value = asRecord(await this.callTool('query_source_symbol_relationships', {
+				anchorSource: request.anchor.source,
+				symbolRef: request.anchor.symbolRef,
+				includeWorkspace,
+				addonGuids,
+				relationshipKinds: request.relationshipKinds,
+				depth: request.depth,
+				limit: pageSize,
+				...(request.symbolKinds?.length ? { kinds: request.symbolKinds } : {}),
+				...(previous?.nextCursor ? { cursor: previous.nextCursor } : {}),
+			}));
+			const results = normalizeSourceRelationshipPage(value);
+			pages.set(pageNumber, {
+				results,
+				total: asNumber(value.total, results.length),
+				truncated: value.truncated === true,
+				...(asOptionalString(value.nextCursor) ? { nextCursor: asOptionalString(value.nextCursor) } : {}),
+				stats: {
+					relationshipRevision: value.relationshipRevision,
+					warnings: Array.isArray(value.warnings) ? value.warnings : [],
+				},
+			});
+			sourceTrace.remoteRequests += 1;
+			sourceTrace.remoteMs += performance.now() - remoteStartedAt;
+			recordVisitedPage(sourceTrace, pageNumber);
+		}
+		trace.initialSearchMs = performance.now() - initialStartedAt;
+		const normalizedPage = pages.has(requestedPage) ? requestedPage : 1;
+		const page = pages.get(normalizedPage) ?? { results: [], total: 0, truncated: false };
+		const warnings = page.stats && Array.isArray(page.stats.warnings)
+			? page.stats.warnings.filter((warning): warning is string => typeof warning === 'string')
+			: [];
+		const totalBySource: Partial<Record<SearchSource, number>> = {};
+		for (const result of page.results) {
+			totalBySource[result.source] = (totalBySource[result.source] ?? 0) + 1;
+		}
+		return {
+			results: page.results,
+			warnings,
+			total: page.total,
+			truncated: page.truncated,
+			totalBySource,
+			page: normalizedPage,
+			pageSize,
+			performance: {
+				...finishSearchPerformance(trace, requestedPage, pageSize, [request.anchor.source], 'semantic', defaultTextSearchOptions, selectedScopeIds, addonGuids),
+				paginationMode: 'cursor',
+			},
 		};
 	}
 
@@ -664,6 +787,7 @@ export class McpSearchClient {
 		this.process = undefined;
 		this.initialized = undefined;
 		this.searchPageCaches.clear();
+		this.lastScopeRevision = undefined;
 		const error = new Error('The Reforger search session was closed.');
 		for (const request of this.pending.values()) {
 			request.reject(error);
@@ -756,6 +880,7 @@ export class McpSearchClient {
 			this.process = undefined;
 			this.initialized = undefined;
 			this.searchPageCaches.clear();
+			this.lastScopeRevision = undefined;
 			this.failPending(new Error('The Reforger search server stopped.'));
 		});
 		child.stdin.on('error', error => this.failPending(error));
@@ -1085,6 +1210,37 @@ export function normalizeResourceSearchPage(value: unknown): SearchHit[] {
 			...(asOptionalString(hit.addonId) ? { addonLabel: asOptionalString(hit.addonId) } : {}),
 		}];
 	});
+}
+
+export function normalizeSourceRelationshipPage(value: unknown): SearchHit[] {
+	const results = asRecord(value).results;
+	if (!Array.isArray(results)) {
+		return [];
+	}
+	return results.flatMap((entry, index) => {
+		const hit = asRecord(entry);
+		const sourceValue = asString(hit.source, '');
+		if (sourceValue !== 'workspace' && sourceValue !== 'gameData') {
+			return [];
+		}
+		const relationshipKind = asString(hit.relationshipKind, '');
+		if (!isSearchRelationshipKind(relationshipKind)) {
+			return [];
+		}
+		return normalizeSymbolHit(sourceValue, {
+			...hit,
+			matchKind: relationshipKind,
+		}, index).map(result => ({
+			...result,
+			relationshipKind,
+			relationshipDistance: Math.max(0, asNumber(hit.distance, 0)),
+			relationshipEvidence: asOptionalString(hit.evidence),
+		}));
+	});
+}
+
+function isSearchRelationshipKind(value: string): value is SearchRelationshipKind {
+	return ['direct', 'directBase', 'derivedType', 'moddedExtension', 'overriddenDeclaration', 'override'].includes(value);
 }
 
 export function formatSearchKind(kind: string): string {
