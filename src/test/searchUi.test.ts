@@ -535,6 +535,14 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /@media \(max-width: 980px\) \{ \.atlas-results\.two-column \{ column-count: 1; \} \}/);
 	});
 
+	test('separates matches with compact type-tinted card surfaces', () => {
+		assert.match(searchUiSource, /\.atlas-group \.atlas-results \{[^}]*background: var\(--bg\);/);
+		assert.match(searchUiSource, /\.atlas-card \{[^}]*padding: 12px 12px 8px;/);
+		assert.match(searchUiSource, /\.atlas-card \{[^}]*background: var\(--panel\);[^}]*background: color-mix\(in srgb, var\(--result-accent\) 7%, var\(--panel\)\);/);
+		assert.match(searchUiSource, /\.atlas-card:hover \{[^}]*background: color-mix\(in srgb, var\(--result-accent\) 12%, var\(--panel\)\);/);
+		assert.match(searchUiSource, /\.atlas-card:hover, \.atlas-card\.selected \{[^}]*border-left-color: var\(--result-accent\);/);
+	});
+
 	test('publishes raw previews before semantic coloring completes', () => {
 		const rawPhase = searchUiSource.indexOf('const flushRawPreviews = (): void =>');
 		const rawMessage = searchUiSource.indexOf("type: 'previews',", rawPhase);

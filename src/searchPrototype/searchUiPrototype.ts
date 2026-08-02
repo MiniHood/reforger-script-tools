@@ -1105,8 +1105,8 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .atlas-results { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 12px; align-items: start; }
 .atlas-results.two-column { display: block; column-count: 2; column-gap: 10px; }
 .atlas-results.two-column .atlas-card { display: inline-block; width: 100%; margin: 0 0 10px; break-inside: avoid; }
-.atlas-group .atlas-results { margin: 0; padding: 10px; }
-.atlas-card { --result-accent: var(--accent); min-width: 0; padding: 12px; border: 1px solid var(--border); border-left: 3px solid var(--result-accent); background: var(--panel); cursor: pointer; user-select: text; }
+.atlas-group .atlas-results { margin: 0; padding: 10px; background: var(--bg); }
+.atlas-card { --result-accent: var(--accent); min-width: 0; padding: 12px 12px 8px; border: 1px solid var(--vscode-widget-border, var(--border)); border-left: 3px solid var(--result-accent); background: var(--panel); background: color-mix(in srgb, var(--result-accent) 7%, var(--panel)); box-shadow: 0 2px 8px rgba(0, 0, 0, .16); cursor: pointer; user-select: text; }
 .atlas-card.result-class { --result-accent: #40b5ac; }
 .atlas-card.result-function { --result-accent: #f3ad58; }
 .atlas-card.result-field { --result-accent: var(--vscode-symbolIcon-fieldForeground, #9cdcfe); }
@@ -1114,7 +1114,9 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .atlas-card.result-string { --result-accent: #c178dd; }
 .atlas-card.result-resource { --result-accent: var(--vscode-symbolIcon-fileForeground, var(--accent)); }
 .atlas-card.result-documentation { --result-accent: var(--vscode-symbolIcon-keyForeground, var(--accent)); }
-.atlas-card:hover, .atlas-card.selected { border-color: var(--accent); }
+.atlas-card:hover { background: color-mix(in srgb, var(--result-accent) 12%, var(--panel)); }
+.atlas-card:hover, .atlas-card.selected { border-color: var(--accent); border-left-color: var(--result-accent); }
+.atlas-card.selected { background: color-mix(in srgb, var(--result-accent) 15%, var(--panel)); box-shadow: 0 0 0 1px var(--accent), 0 4px 14px rgba(0, 0, 0, .2); }
 .atlas-card:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 .atlas-card-head { display: flex; justify-content: space-between; gap: 10px; }
 .atlas-card .result-path { max-width: none; margin: 4px 0 0; text-align: left; }
