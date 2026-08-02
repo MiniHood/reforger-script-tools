@@ -4,6 +4,7 @@ use crate::model::{SourceCategory, SymbolKind};
 use crate::symbol_display::documentation_display;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use url::Url;
@@ -82,6 +83,7 @@ pub struct GameDataSearchPage {
     pub applied_filters: AppliedFilters,
     pub returned: usize,
     pub total: usize,
+    pub truncated: bool,
     pub totals_by_addon: BTreeMap<String, usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
@@ -179,6 +181,27 @@ struct Candidate {
     position: usize,
     addon_guid: Option<String>,
     addon_label: Option<String>,
+}
+
+fn compare_candidates(left: &Candidate, right: &Candidate) -> Ordering {
+    (
+        left.rank,
+        &left.qualified_name,
+        &left.kind,
+        &left.path,
+        &left.addon_guid,
+        left.position,
+        left.id,
+    )
+        .cmp(&(
+            right.rank,
+            &right.qualified_name,
+            &right.kind,
+            &right.path,
+            &right.addon_guid,
+            right.position,
+            right.id,
+        ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -405,24 +428,13 @@ fn search_with_scope(
     control
         .check()
         .map_err(|_| GameDataSearchError::Cancelled)?;
-    candidates.sort_by(|left, right| {
-        (
-            left.rank,
-            &left.qualified_name,
-            &left.kind,
-            &left.path,
-            &left.addon_guid,
-            left.position,
-        )
-            .cmp(&(
-                right.rank,
-                &right.qualified_name,
-                &right.kind,
-                &right.path,
-                &right.addon_guid,
-                right.position,
-            ))
-    });
+    let truncated = candidates.len() > crate::search_limits::MAX_SEARCH_RESULTS;
+    if truncated {
+        candidates
+            .select_nth_unstable_by(crate::search_limits::MAX_SEARCH_RESULTS, compare_candidates);
+        candidates.truncate(crate::search_limits::MAX_SEARCH_RESULTS);
+    }
+    candidates.sort_by(compare_candidates);
     let total = candidates.len();
     let mut totals_by_addon = BTreeMap::new();
     for candidate in &candidates {
@@ -474,6 +486,7 @@ fn search_with_scope(
         },
         returned,
         total,
+        truncated,
         totals_by_addon,
         next_cursor,
         results,

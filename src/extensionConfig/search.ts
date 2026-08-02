@@ -8,4 +8,5 @@ export const searchContext = {
 
 export const searchLimits = {
 	maxPages: 100,
+	maxResults: 10_000,
 } as const;

@@ -304,7 +304,7 @@ Explicit bounded full-text search over readable Reforger Game Data source files.
 - Set `matchCase` for exact capitalization, `matchWholeWord` to require non-identifier boundaries around each match, and `useRegex` to interpret `query` as a Rust-regex pattern. Options may be combined.
 - `limit` defaults to 20 and clamps to 1 through 100. Continue with the opaque revision- and option-bound `cursor`; cursors are limited to 2 KiB and cannot be constructed by callers.
 - The scan is explicit and on demand. It includes comments, strings, expressions, and local-variable uses, and reports deterministic logical paths and exact one-based line/character ranges.
-- Results are capped at 100,000 retained matches, 16 KiB per line excerpt, and 256 KiB per page. Zero-length regular-expression matches are omitted. `stats` reports files considered/read, files with matches, source-read failures, matches found, and scan time; `truncated` means the retained result bound was reached.
+- Results are capped at 10,000 retained matches, 16 KiB per line excerpt, and 256 KiB per page. The scan stops after proving one additional match exists. Zero-length regular-expression matches are omitted. `stats` reports files considered/read, files with matches, source-read failures, matches found before stopping, and scan time; `truncated` means more than 10,000 matches exist.
 - The operation is cancellable and has a bounded 30,000 ms ready-catalogue deadline.
 
 ### Stable failures

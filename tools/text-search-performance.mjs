@@ -20,6 +20,7 @@ async function main() {
 	const report = {
 		schemaVersion: 2,
 		source: options.source,
+		mode: options.mode,
 		queryCharacters: [...options.query].length,
 		limit: options.limit,
 		matchCase: options.matchCase,
@@ -47,14 +48,16 @@ async function main() {
 		}
 
 		const toolName = options.source === 'game-data'
-			? 'search_game_data_text'
-			: 'search_workspace_text';
+			? options.mode === 'text' ? 'search_game_data_text' : 'search_game_data_symbols'
+			: options.mode === 'text' ? 'search_workspace_text' : 'search_workspace_symbols';
 		const search = await measure(() => client.callTool(toolName, {
 			query: options.query,
 			limit: options.limit,
-			matchCase: options.matchCase,
-			matchWholeWord: options.matchWholeWord,
-			useRegex: options.useRegex,
+			...(options.mode === 'text' ? {
+				matchCase: options.matchCase,
+				matchWholeWord: options.matchWholeWord,
+				useRegex: options.useRegex,
+			} : {}),
 		}, options.timeoutMs));
 		report.searchMs = round(search.elapsedMs);
 		report.search = summarizeToolResult(search.value);
@@ -226,6 +229,7 @@ function parseArguments(args) {
 	const parsed = {
 		workspaceScripts: [],
 		dependencyProjects: [],
+		mode: 'text',
 		externalIndexMode: 'loaded',
 		limit: 25,
 		budgetMs: 5000,
@@ -251,6 +255,7 @@ function parseArguments(args) {
 			case '--external-index-mode': parsed.externalIndexMode = value(); break;
 			case '--workspace-scripts': parsed.workspaceScripts.push(value()); break;
 			case '--query': parsed.query = value(); break;
+			case '--mode': parsed.mode = value(); break;
 			case '--limit': parsed.limit = positiveInteger(value(), argument); break;
 			case '--budget-ms': parsed.budgetMs = positiveInteger(value(), argument); break;
 			case '--timeout-ms': parsed.timeoutMs = positiveInteger(value(), argument); break;
@@ -265,6 +270,10 @@ function parseArguments(args) {
 		usage('--server, --source, and --query are required.');
 	}
 	if (parsed.limit > 100) usage('--limit must be between 1 and 100.');
+	if (!['text', 'semantic'].includes(parsed.mode)) usage('--mode must be text or semantic.');
+	if (parsed.mode === 'semantic' && (parsed.matchCase || parsed.matchWholeWord || parsed.useRegex)) {
+		usage('Text matching options cannot be combined with --mode semantic.');
+	}
 	if (!['all', 'loaded', 'none'].includes(parsed.externalIndexMode)) {
 		usage('--external-index-mode must be all, loaded, or none.');
 	}
@@ -286,11 +295,11 @@ function positiveInteger(value, argument) {
 function usage(error) {
 	if (error) process.stderr.write(`${error}\n\n`);
 	process.stderr.write(
-		'Usage: node tools/text-search-performance.mjs --server <exe> --source <workspace|game-data> --query <literal> [options]\n' +
+		'Usage: node tools/text-search-performance.mjs --server <exe> --source <workspace|game-data> --query <query> [options]\n' +
 		'  Workspace: --workspace-scripts <root> (repeatable)\n' +
 		'  Game Data: --index-cache <symbols.bin>, or --addon-index-storage <directory> with current scope inputs\n' +
 		'  Current scope: --addon-source-inventory <json> --dependency-project <gproj> (repeatable) --external-index-mode <all|loaded|none>\n' +
-		'  Options: --limit <1-100> --budget-ms <ms> --timeout-ms <ms> --match-case --match-whole-word --regex\n',
+		'  Options: --mode <text|semantic> --limit <1-100> --budget-ms <ms> --timeout-ms <ms> --match-case --match-whole-word --regex\n',
 	);
 	process.exit(error ? 2 : 0);
 }

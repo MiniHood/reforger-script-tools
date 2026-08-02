@@ -502,6 +502,46 @@ fn search_documentation_summaries_use_shared_comment_rendering() {
     assert_eq!(summary("EmptyDocumented"), None);
 }
 
+#[test]
+fn broad_semantic_search_retains_only_the_best_reachable_results() {
+    let fixture = TempFixture::new("bounded-semantic-search");
+    let scripts = fixture.path.join("Game");
+    fs::create_dir_all(&scripts).expect("create scripts");
+    let source = (0..10_001)
+        .map(|index| format!("class Common{index:05} {{}}\n"))
+        .collect::<String>();
+    fs::write(scripts.join("Broad.c"), source).expect("write source");
+    let index = build_index(&IndexBuildConfig {
+        roots: vec![IndexSourceRoot::new(
+            &fixture.path,
+            SourceKind::GameData,
+            SOURCE_PRIORITY_GAME_DATA,
+        )],
+    })
+    .expect("index")
+    .index;
+    let lines = line_starts(&index);
+    let mut request = GameDataSearchRequest::new("Common");
+    request.limit = Some(100);
+    request.offset = Some(9_900);
+
+    let page = search(
+        &index,
+        &lines,
+        &IndexBuildControl::default(),
+        "gd1:broad",
+        request,
+    )
+    .expect("bounded broad semantic search");
+
+    assert_eq!(page.total, 10_000);
+    assert!(page.truncated);
+    assert_eq!(page.returned, 100);
+    assert_eq!(page.results[0].name, "Common09900");
+    assert_eq!(page.results[99].name, "Common09999");
+    assert!(page.next_cursor.is_none());
+}
+
 fn line_starts(
     index: &reforger_language_server::index::SymbolIndex,
 ) -> BTreeMap<reforger_language_server::index::SourceFileId, SourceLineStarts> {

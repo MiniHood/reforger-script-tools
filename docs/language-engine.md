@@ -81,7 +81,11 @@ script. The matcher uses case-insensitive literal substrings by default and
 accepts explicit match-case, whole-word, and regular-expression options. Those
 options and the selected add-on GUIDs are part of both the bounded result-cache
 identity and opaque paging cursor, so pages from different matching modes or
-scopes cannot be combined. Semantic Game Data search follows the same scope
+scopes cannot be combined. Search exposes at most 10,000 results. Text search
+stops after detecting match 10,001; semantic search must examine every symbol
+to preserve ranking, but selects and sorts only the best 10,000 candidates.
+Both result shapes report truncation rather than presenting the bound as an
+exact total. Semantic Game Data search follows the same scope
 identity: candidates are filtered by loaded add-on GUID before ranking, opaque
 symbol references include that GUID, and Game Data source reads require the
 returned GUID for every handoff so path uniqueness is never assumed. Layered

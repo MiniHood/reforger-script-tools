@@ -13,7 +13,6 @@ pub const DEFAULT_LIMIT: usize = 20;
 pub const MAX_LIMIT: usize = 100;
 pub const MAX_QUERY_CHARS: usize = 256;
 pub const MAX_CURSOR_BYTES: usize = 2048;
-const MAX_TEXT_MATCHES: usize = 100_000;
 const MAX_RESULT_BYTES: usize = 256 * 1024;
 const MAX_EXCERPT_BYTES: usize = 16 * 1024;
 
@@ -182,11 +181,12 @@ pub fn scan(
     let mut files_read: usize = 0;
     let mut files_with_matches: usize = 0;
     let mut matches_found: usize = 0;
-    for source in &corpus.sources {
+    let mut truncated = false;
+    'sources: for source in &corpus.sources {
         control.check().map_err(|_| TextSearchError::Cancelled)?;
         files_read += 1;
         let mut starts = None;
-        let mut source_match_count = 0;
+        let mut source_has_matches = false;
         for matched in matcher.regex.find_iter(&source.content) {
             control.check().map_err(|_| TextSearchError::Cancelled)?;
             if matched.is_empty()
@@ -196,24 +196,24 @@ pub fn scan(
                 continue;
             }
             matches_found = matches_found.saturating_add(1);
-            source_match_count += 1;
-            if hits.len() < MAX_TEXT_MATCHES {
-                let starts = starts.get_or_insert_with(|| line_starts(&source.content));
-                hits.push(project_hit(
-                    source,
-                    starts,
-                    catalogue_revision,
-                    matched.start(),
-                    matched.end(),
-                ));
+            if !source_has_matches {
+                files_with_matches += 1;
+                source_has_matches = true;
             }
-        }
-        if source_match_count > 0 {
-            files_with_matches += 1;
+            if hits.len() == crate::search_limits::MAX_SEARCH_RESULTS {
+                truncated = true;
+                break 'sources;
+            }
+            let starts = starts.get_or_insert_with(|| line_starts(&source.content));
+            hits.push(project_hit(
+                source,
+                starts,
+                catalogue_revision,
+                matched.start(),
+                matched.end(),
+            ));
         }
     }
-    let total = hits.len();
-    let truncated = matches_found > total;
     Ok(TextSearchResultSet {
         catalogue_revision: catalogue_revision.to_string(),
         query,

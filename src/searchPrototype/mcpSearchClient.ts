@@ -101,6 +101,7 @@ export interface SearchResponse {
 	results: SearchHit[];
 	warnings: string[];
 	total: number;
+	truncated: boolean;
 	totalBySource: Partial<Record<SearchSource, number>>;
 	page: number;
 	pageSize: number;
@@ -280,6 +281,7 @@ interface RecordValue {
 interface CachedSearchPage {
 	results: SearchHit[];
 	total: number;
+	truncated: boolean;
 	nextCursor?: string;
 	stats?: Record<string, unknown>;
 	addonTotals?: Record<string, number>;
@@ -402,7 +404,7 @@ export class McpSearchClient {
 			? sources.filter(source => source !== 'wiki')
 			: sources;
 		if (searchableSources.length === 0) {
-			return { results: [], warnings: [], total: 0, totalBySource: {}, page: 1, pageSize: normalizedPageSize, performance: finishSearchPerformance(trace, 1, normalizedPageSize, [], mode, textOptions, normalizedScopes, addonGuids) };
+			return { results: [], warnings: [], total: 0, truncated: false, totalBySource: {}, page: 1, pageSize: normalizedPageSize, performance: finishSearchPerformance(trace, 1, normalizedPageSize, [], mode, textOptions, normalizedScopes, addonGuids) };
 		}
 		const initialSearchStartedAt = performance.now();
 		const responses = await Promise.all(searchableSources.map(async source => {
@@ -428,11 +430,18 @@ export class McpSearchClient {
 		if (responses.every(response => response.value === undefined) && warnings.length === responses.length) {
 			throw new Error(warnings.join(' '));
 		}
-		const total = responses.reduce((sum, response) => sum + (response.value?.total ?? 0), 0);
+		const reportedTotal = responses.reduce((sum, response) => sum + (response.value?.total ?? 0), 0);
+		const total = Math.min(searchLimits.maxResults, reportedTotal);
+		const truncated = reportedTotal > total || responses.some(response => response.value?.truncated === true);
 		const totalBySource: Partial<Record<SearchSource, number>> = {};
+		const accessibleTotals = new Map<SearchSource, number>();
+		let remainingResults = searchLimits.maxResults;
 		for (const response of responses) {
 			if (response.value) {
-				totalBySource[response.source] = response.value.total;
+				const accessibleTotal = Math.min(response.value.total, remainingResults);
+				totalBySource[response.source] = accessibleTotal;
+				accessibleTotals.set(response.source, accessibleTotal);
+				remainingResults -= accessibleTotal;
 			}
 		}
 		const totalPages = Math.max(1, Math.ceil(total / normalizedPageSize));
@@ -444,7 +453,7 @@ export class McpSearchClient {
 		const mergeStartedAt = performance.now();
 		trace.rangeSearchStartedAt = performance.now();
 		for (const response of responses) {
-			const sourceTotal = response.value?.total ?? 0;
+			const sourceTotal = accessibleTotals.get(response.source) ?? 0;
 			const sourceStart = Math.max(0, pageStart - sourceOffset);
 			const sourceEnd = Math.min(sourceTotal, pageEnd - sourceOffset);
 			if (response.value && sourceStart < sourceEnd) {
@@ -458,6 +467,7 @@ export class McpSearchClient {
 			results,
 			warnings,
 			total,
+			truncated,
 			totalBySource,
 			page: normalizedPage,
 			pageSize: normalizedPageSize,
@@ -722,6 +732,7 @@ export class McpSearchClient {
 		const currentPage: CachedSearchPage = {
 			results,
 			total: asNumber(value.total, results.length),
+			truncated: value.truncated === true,
 			...(typeof value.nextCursor === 'string' && value.nextCursor.length > 0
 				? { nextCursor: value.nextCursor }
 				: {}),
