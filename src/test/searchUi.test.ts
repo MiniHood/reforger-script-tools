@@ -2,8 +2,8 @@ import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { searchLimits } from '../extensionConfig/search';
-import { addonScopeLabel, formatSearchKind, maxSearchPages, normalizeResourceSearchPage, normalizeSearchPage, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
-import { semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
+import { addonScopeLabel, formatSearchKind, maxSearchPages, normalizeResourceSearchPage, normalizeSearchPage, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceContextPreview, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
+import { semanticPreviewForLine, semanticPreviewForLines, semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
 
 const searchUiSource = fs.readFileSync(
 	path.join(__dirname, '../../src/searchPrototype/searchUiPrototype.ts'),
@@ -159,6 +159,16 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.strictEqual(sourceLinePreview({ content: 'only line', startLine: 0, endLine: 0 }, 1), 'only line');
 	});
 
+	test('renders a configurable source context around the selected preview line', () => {
+		const document = { content: 'one\n  two\n\nthree\nfour\nfive', startLine: 1, endLine: 6 };
+		assert.strictEqual(sourceContextPreview(document, 4, 1), 'three');
+		assert.strictEqual(sourceContextPreview(document, 4, 2), '  two\n\nthree\nfour\nfive');
+		assert.match(searchUiSource, /data-preview-context type="number" min="1" max="249" value="' \+ previewContextLines/);
+		assert.match(searchUiSource, /type: 'previewContext', contextLines: previewContextLines/);
+		assert.match(searchUiSource, /clearTimeout\(previewContextTimer\);[\s\S]*?setTimeout\(\(\) => vscode\.postMessage\(\{ type: 'previewContext'/);
+		assert.match(searchUiSource, /previewContextLines: numberField\(snapshot\.previewContextLines\)/);
+	});
+
 	test('anchors previews to the declaration and removes comments', () => {
 		const document = { content: '// field documentation\n    SCR_Field value; // trailing note\n', startLine: 10, endLine: 11 };
 		assert.strictEqual(sourcePreviewLine(document, 10, 'SCR_Field'), 11);
@@ -180,6 +190,15 @@ suite('Reforger search UI MCP mapping', () => {
 			0, 4, 5, 0, 0,
 			1, 0, 8, 7, 0,
 		], 1), [{ start: 0, length: 8, role: 'enumMember' }]);
+	});
+
+	test('keeps semantic token offsets across a multi-line preview', () => {
+		assert.match(searchUiSource, /semanticPreviewForLines\(/);
+		assert.match(searchUiSource, /active\.previewContextLines === 1[\s\S]*?semanticPreviewForLine/);
+		assert.match(searchUiSource, /line - active\.previewContextLines/);
+		assert.match(searchUiSource, /line \+ active\.previewContextLines/);
+		assert.strictEqual(typeof semanticPreviewForLine, 'function');
+		assert.strictEqual(typeof semanticPreviewForLines, 'function');
 	});
 
 	test('defines useful symbol kind filters without a documentation duplicate', () => {
@@ -230,6 +249,13 @@ suite('Reforger search UI MCP mapping', () => {
 	test('preserves a query selection when an asynchronous search response rerenders the page', () => {
 		assert.match(searchUiSource, /function render\(focusQuery = false\)/);
 		assert.match(searchUiSource, /\nrender\(true\);\n<\/script>/);
+		assert.match(searchUiSource, /pendingQuerySelection = \{ start: event\.target\.selectionStart \?\? state\.query\.length, end: event\.target\.selectionEnd \?\? state\.query\.length \}/);
+		assert.match(searchUiSource, /else if \(pendingQuerySelection\) \{ query\.focus\(\); query\.setSelectionRange\(pendingQuerySelection\.start, pendingQuerySelection\.end\); pendingQuerySelection = undefined; \}/);
+		assert.match(searchUiSource, /query\.focus\(\);\s+query\.setSelectionRange\(query\.value\.length, query\.value\.length\);\s+query\.setRangeText\(event\.key/);
+	});
+
+	test('removes the result-limit status after a search completes', () => {
+		assert.match(searchUiSource, /state\.status !== 'loading'[\s\S]*?\.source-header > div:first-child > \.muted'\)\?\.remove\(\)/);
 	});
 
 	test('focuses and preserves the selection of the selected-source filter', () => {
@@ -520,6 +546,8 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /Math\.min\(sourcePreviewWorkerCount, previewHits\.length\)/);
 		assert.match(searchUiSource, /const previewUpdateBatchSize = 4;/);
 		assert.match(searchUiSource, /pendingRawPreviewIds\.length >= previewUpdateBatchSize/);
+		assert.match(searchUiSource, /pendingSemanticPreviewIds\.length >= previewUpdateBatchSize/);
+		assert.match(searchUiSource, /previews: Object\.fromEntries\(ids\.map\(id => \[id, semanticPreviews\[id\]\]\)\)/);
 		assert.doesNotMatch(searchUiSource, /setTimeout\(\(\) => search\(true\), \d+\)/);
 		assert.match(searchClientSource, /export const maxSearchPages = searchLimits\.maxPages;/);
 		assert.match(searchClientSource, /paginationMode: 'offset'/);

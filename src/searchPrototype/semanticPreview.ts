@@ -79,3 +79,37 @@ export function semanticPreviewForLine(
 		enabled: palette.enabled,
 	};
 }
+
+/** Builds a palette-aware preview across an inclusive range of document lines. */
+export function semanticPreviewForLines(
+	document: vscode.TextDocument,
+	semanticTokens: vscode.SemanticTokens,
+	startLine: number,
+	endLine: number,
+	preserveComments = false,
+): SemanticPreview | undefined {
+	const first = Math.max(0, startLine);
+	const last = Math.min(document.lineCount - 1, endLine);
+	if (first > last) {
+		return undefined;
+	}
+	let offset = 0;
+	const textLines: string[] = [];
+	const tokens: SemanticPreviewToken[] = [];
+	for (let line = first; line <= last; line += 1) {
+		const documentLine = document.lineAt(line).text;
+		const sourceText = preserveComments ? documentLine : stripSourceComments(documentLine);
+		const text = sourceText.trimEnd();
+		textLines.push(text);
+		tokens.push(...semanticTokenSpansForLine(semanticTokens.data, line)
+			.map(token => ({ ...token, start: offset + token.start }))
+			.map(token => ({ ...token, length: Math.min(token.length, offset + text.length - token.start) }))
+			.filter(token => token.start >= offset && token.length > 0 && token.start < offset + text.length));
+		offset += text.length + 1;
+	}
+	if (tokens.length === 0) {
+		return undefined;
+	}
+	const palette = hoverSemanticPaletteForDocument(document);
+	return { text: textLines.join('\n'), tokens, foregrounds: palette.foregrounds, enabled: palette.enabled };
+}

@@ -226,6 +226,26 @@ export function sourceLinePreview(
 	return stripSourceComments(lines[lineIndex] ?? lines[0] ?? '').trimStart().trimEnd();
 }
 
+export function sourceContextPreview(
+	document: SearchDocument,
+	line: number | undefined,
+	contextLines: number,
+	needle?: string,
+): string {
+	const lines = document.content.split(/\r?\n/);
+	const startLine = document.startLine > 0 ? document.startLine : line ?? 1;
+	const selectedLine = sourcePreviewLine(document, line, needle);
+	if (contextLines <= 1) {
+		const lineIndex = Math.max(0, selectedLine - startLine);
+		return stripSourceComments(lines[lineIndex] ?? lines[0] ?? '').trimStart().trimEnd();
+	}
+	const selectedIndex = Math.max(0, selectedLine - startLine);
+	const context = Math.max(1, Math.min(249, Math.floor(contextLines)));
+	const first = Math.max(0, selectedIndex - context);
+	const last = Math.min(lines.length, selectedIndex + context + 1);
+	return lines.slice(first, last).map(value => stripSourceComments(value).trimEnd()).join('\n');
+}
+
 /** Removes comments while preserving quoted strings. */
 export function stripSourceComments(value: string): string {
 	let result = '';
@@ -563,12 +583,18 @@ export class McpSearchClient {
 		};
 	}
 
-	public async read(hit: SearchHit): Promise<SearchDocument> {
+	public async read(hit: SearchHit, contextLines = 0): Promise<SearchDocument> {
 		await this.start();
 		const tool = hit.source === 'wiki' ? 'read_official_wiki' : hit.source === 'gameData'
 			? 'read_game_data_source'
 			: 'read_workspace_source';
-		const value = await this.callTool(tool, hit.readInput);
+		const selectedLine = hit.selectionStartLine;
+		const context = Math.max(1, Math.min(249, Math.floor(contextLines)));
+		const radius = context === 1 ? 0 : context;
+		const input = selectedLine === undefined || context === 0
+			? hit.readInput
+			: { ...hit.readInput, startLine: Math.max(1, selectedLine - radius), lineCount: radius * 2 + 1 };
+		const value = await this.callTool(tool, input);
 		const record = asRecord(value);
 		return {
 			content: asString(record.content, 'The source read returned no content.'),

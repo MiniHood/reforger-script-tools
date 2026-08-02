@@ -12,7 +12,7 @@ import { provideLanguageServerSemanticTokens } from '../languageClient/languageC
 import { discoverWorkspaceProjectFiles, discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
 import { resolveLanguageServerPath } from '../languageClient/serverPath';
 import { readExternalIndexMode } from '../mcp/mcpConfiguration';
-import { semanticPreviewForLine, type SemanticPreview } from './semanticPreview';
+import { semanticPreviewForLine, semanticPreviewForLines, type SemanticPreview } from './semanticPreview';
 import {
 	McpSearchClient,
 	type SearchMode,
@@ -20,6 +20,7 @@ import {
 	searchKindFilters,
 	searchResourceKindFilters,
 	resourceKindsFor,
+	sourceContextPreview,
 	sourceLinePreview,
 	sourcePreviewLine,
 	sourceMatchRange,
@@ -46,6 +47,8 @@ interface ActiveSearch {
 	semanticDocuments: Map<string, Promise<SemanticSourceDocument | undefined>>;
 	previewCancellation: vscode.CancellationTokenSource | undefined;
 	searchInFlight: boolean;
+	previewContextLines: number;
+	latestQuery: string;
 	scopeRefresh: Promise<void> | undefined;
 	disposed: boolean;
 }
@@ -107,6 +110,8 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 		semanticDocuments: new Map(),
 		previewCancellation: undefined,
 		searchInFlight: false,
+		previewContextLines: 1,
+		latestQuery: '',
 		scopeRefresh: undefined,
 		disposed: false,
 	};
@@ -206,6 +211,15 @@ async function handleMessage(
 		logSearchSnapshot(message.snapshot);
 		return;
 	}
+	if (message.type === 'previewContext') {
+		const contextLines = Math.max(1, Math.min(249, Math.floor(numberField(message.contextLines) ?? 1)));
+		active.previewContextLines = contextLines;
+		if (active.latestResults.size > 0) {
+			const client = await getClient(context, active);
+			void startPreviewHydration(active, client, active.requestSequence, [...active.latestResults.values()], active.latestQuery);
+		}
+		return;
+	}
 	if (message.type === 'search' && typeof message.query === 'string') {
 		if (!isSearchKindValue(message.resultType) && !isSearchResourceKindValue(message.resultType)) {
 			return;
@@ -300,6 +314,7 @@ function logSearchSnapshot(value: unknown): void {
 		requestId: numberField(snapshot.requestId),
 		page: numberField(snapshot.page),
 		pageSize: numberField(snapshot.pageSize),
+		previewContextLines: numberField(snapshot.previewContextLines),
 		total: numberField(snapshot.total),
 		totalBySource: jsonField(snapshotTotalsBySource(snapshot.totalBySource)),
 		totalPages: numberField(snapshot.totalPages),
@@ -339,6 +354,7 @@ async function runSearch(
 	active.previewCancellation?.dispose();
 	active.previewCancellation = undefined;
 	const normalizedQuery = mode === 'text' ? query : query.trim();
+	active.latestQuery = normalizedQuery;
 	const requestId = ++active.requestSequence;
 	const startedAt = Date.now();
 	diagnostic('searchUi.searchStarted', {
@@ -398,15 +414,7 @@ async function runSearch(
 			pageSize: result.pageSize,
 			performance: result.performance,
 		});
-		const previewCancellation = new vscode.CancellationTokenSource();
-		active.previewCancellation = previewCancellation;
-		void hydrateSearchPreviews(active, client, requestId, result.results, normalizedQuery, previewCancellation.token)
-			.finally(() => {
-				if (active.previewCancellation === previewCancellation) {
-					active.previewCancellation = undefined;
-				}
-				previewCancellation.dispose();
-			});
+		void startPreviewHydration(active, client, requestId, result.results, normalizedQuery);
 	} catch (error) {
 		if (!active.disposed && requestId === active.requestSequence) {
 			diagnostic('searchUi.searchFailed', {
@@ -427,6 +435,20 @@ async function runSearch(
 	}
 }
 
+function startPreviewHydration(active: ActiveSearch, client: McpSearchClient, requestId: number, hits: SearchHit[], query: string): Promise<void> {
+	active.previewCancellation?.cancel();
+	active.previewCancellation?.dispose();
+	const previewCancellation = new vscode.CancellationTokenSource();
+	active.previewCancellation = previewCancellation;
+	return hydrateSearchPreviews(active, client, requestId, hits, query, active.previewContextLines, previewCancellation.token)
+		.finally(() => {
+			if (active.previewCancellation === previewCancellation) {
+				active.previewCancellation = undefined;
+			}
+			previewCancellation.dispose();
+		});
+}
+
 function cancelInFlightSearch(active: ActiveSearch): void {
 	if (!active.searchInFlight) {
 		return;
@@ -445,6 +467,7 @@ async function hydrateSearchPreviews(
 	requestId: number,
 	hits: SearchHit[],
 	query: string,
+	contextLines: number,
 	cancellationToken: vscode.CancellationToken,
 ): Promise<void> {
 	const symbolHits = hits.filter(hit => hit.kind === 'symbol');
@@ -470,6 +493,7 @@ async function hydrateSearchPreviews(
 	let nextIndex = 0;
 	let firstRawMs: number | undefined;
 	const pendingRawPreviewIds: string[] = [];
+	const pendingSemanticPreviewIds: string[] = [];
 	const flushRawPreviews = (): void => {
 		if (pendingRawPreviewIds.length === 0 || active.disposed || requestId !== active.requestSequence) {
 			return;
@@ -503,15 +527,16 @@ async function hydrateSearchPreviews(
 			flushRawPreviews();
 		}
 	};
-	const postSemanticUpdate = (id: string, preview: SemanticPreview): void => {
-		if (active.disposed || cancellationToken.isCancellationRequested || requestId !== active.requestSequence) {
+	const flushSemanticPreviews = (): void => {
+		if (pendingSemanticPreviewIds.length === 0 || active.disposed || cancellationToken.isCancellationRequested || requestId !== active.requestSequence) {
 			return;
 		}
+		const ids = pendingSemanticPreviewIds.splice(0, pendingSemanticPreviewIds.length);
 		firstSemanticMs ??= Date.now() - startedAt;
 		active.panel.webview.postMessage({
 			type: 'semanticPreviews',
 			requestId,
-			previews: { [id]: preview },
+			previews: Object.fromEntries(ids.map(id => [id, semanticPreviews[id]])),
 			performance: {
 				phase: 'semantic',
 				totalMs: Date.now() - startedAt,
@@ -526,6 +551,12 @@ async function hydrateSearchPreviews(
 				semanticCount: Object.keys(semanticPreviews).length,
 			},
 		});
+	};
+	const postSemanticUpdate = (id: string): void => {
+		pendingSemanticPreviewIds.push(id);
+		if (pendingSemanticPreviewIds.length >= previewUpdateBatchSize) {
+			flushSemanticPreviews();
+		}
 	};
 	const hydrateSemanticPreview = async (rawPreview: RawPreview): Promise<void> => {
 		if (active.disposed || cancellationToken.isCancellationRequested || requestId !== active.requestSequence) {
@@ -542,12 +573,15 @@ async function hydrateSearchPreviews(
 			let semanticPreview: SemanticPreview | undefined;
 			if (semanticDocument) {
 				const line = Math.max(0, previewLine - semanticDocument.startLine);
-				semanticPreview = semanticPreviewForLine(
-					semanticDocument.document,
-					semanticDocument.semanticTokens,
-					line,
-					hit.kind === 'text',
-				);
+				semanticPreview = active.previewContextLines === 1
+					? semanticPreviewForLine(semanticDocument.document, semanticDocument.semanticTokens, line, hit.kind === 'text')
+					: semanticPreviewForLines(
+						semanticDocument.document,
+						semanticDocument.semanticTokens,
+						Math.max(0, line - active.previewContextLines),
+						Math.min(semanticDocument.document.lineCount - 1, line + active.previewContextLines),
+						hit.kind === 'text',
+					);
 				if (semanticPreview) {
 					semanticPreviews[hit.id] = semanticPreview;
 					if (hit.kind === 'symbol' && semanticPreview.text === preview) {
@@ -556,7 +590,7 @@ async function hydrateSearchPreviews(
 							matchRanges[hit.id] = semanticMatchRange;
 						}
 					}
-					postSemanticUpdate(hit.id, semanticPreview);
+					postSemanticUpdate(hit.id);
 				}
 			}
 			const displayedMatchRange = matchRanges[hit.id];
@@ -620,33 +654,15 @@ async function hydrateSearchPreviews(
 		while (nextIndex < previewHits.length && !active.disposed && requestId === active.requestSequence) {
 			const hit = previewHits[nextIndex++];
 			try {
-				if (hit.kind === 'text') {
-					const preview = hit.excerpt;
-					const matchStart = hit.textMatchStart ?? sourceMatchRange(preview, query)?.start ?? 0;
-					const matchRange = { start: matchStart, length: hit.textMatchLength ?? query.length };
-					previews[hit.id] = preview;
-					matchRanges[hit.id] = matchRange;
-					const rawPreview = {
-						hit,
-						document: { content: preview, startLine: hit.selectionStartLine ?? 1, endLine: hit.selectionEndLine ?? hit.selectionStartLine ?? 1 },
-						previewLine: hit.selectionStartLine ?? 1,
-						preview,
-						matchRange,
-					};
-					rawPreviews.set(hit.id, rawPreview);
-					queueRawPreview(hit.id);
-					queueSemanticPreview(rawPreview);
-					continue;
-				}
 				const readStartedAt = performance.now();
-				const document = await client.read(hit);
+				const document = await client.read(hit, contextLines);
 				const hitReadMs = performance.now() - readStartedAt;
 				readMs += hitReadMs;
 				if (hit.addonGuid) {
 					readMsByAddon[hit.addonGuid] = (readMsByAddon[hit.addonGuid] ?? 0) + hitReadMs;
 				}
 				const previewLine = sourcePreviewLine(document, hit.selectionStartLine, hit.title);
-				const preview = sourceLinePreview(document, previewLine, hit.title);
+				const preview = sourceContextPreview(document, previewLine, contextLines, hit.title);
 				previews[hit.id] = preview;
 				const matchRange = sourceMatchRange(preview, query);
 				if (matchRange) {
@@ -692,6 +708,7 @@ async function hydrateSearchPreviews(
 	if (active.disposed || requestId !== active.requestSequence) {
 		return;
 	}
+	flushSemanticPreviews();
 	const previewPerformance = {
 		phase: 'complete',
 		totalMs: Date.now() - startedAt,
@@ -1058,7 +1075,10 @@ window.__reforgerSearchVscode.postMessage({ type: 'webviewReady', width: window.
 </script>
 <script nonce="${nonce}">
 const vscode = window.__reforgerSearchVscode;
-const state = { query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, type: 'all', resultColumns: 1, results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, truncated: false, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, scopeOpen: false, scopeFilter: '', scopeRevision: '', scopeAuthority: '', scopeDiscoveryMs: 0, unavailableScopeIds: [], scopeSources: [{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true }, { id: 'wiki', label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true }], selectedScopeIds: ['workspace', 'wiki'], selectionTouched: false, removedScopeIds: [], uiPerformance: { renderCount: 0, lastRenderMs: 0, searchStartedAt: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
+const state = { query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, type: 'all', resultColumns: 1, results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, truncated: false, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, scopeOpen: false, scopeFilter: '', scopeRevision: '', scopeAuthority: '', scopeDiscoveryMs: 0, unavailableScopeIds: [], scopeSources: [{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true }, { id: 'wiki', label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true }], selectedScopeIds: ['workspace', 'wiki'], selectionTouched: false, removedScopeIds: [], uiPerformance: { renderCount: 0, lastRenderMs: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
+let pendingQuerySelection;
+let previewContextLines = 1;
+let previewContextTimer;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const sourceLabel = result => result.addonLabel ?? (result.source === 'wiki' ? 'Official Wiki' : result.source === 'workspace' ? 'Workspace' : result.source === 'workbench' ? 'Workbench' : 'Game Data');
 const visibleResults = () => state.results;
@@ -1099,7 +1119,8 @@ const pageControls = (includeLayoutToggle = false) => {
   const pageTotal = totalPages();
   const sizes = pageSizeOptions.map(size => '<option value="' + size + '"' + (state.pageSize === size ? ' selected' : '') + '>' + size + ' results</option>').join('');
   const layoutToggle = includeLayoutToggle ? '<button type="button" data-result-layout class="' + (state.resultColumns === 2 ? 'active' : '') + '" aria-label="Toggle two-column result grid" aria-pressed="' + (state.resultColumns === 2) + '" title="Toggle two-column result grid"><span class="layout-toggle" aria-hidden="true"><span></span><span></span><span></span><span></span></span></button>' : '';
-  return '<div class="page-controls" aria-label="Search result pages">' + layoutToggle + '<select data-page-size aria-label="Total results per page"' + (state.status === 'loading' ? ' disabled' : '') + '>' + sizes + '</select><span class="page-status"><span class="muted">Page</span><input data-page-input type="number" min="1" max="' + pageTotal + '" value="' + state.page + '" aria-label="Current result page"' + (navigationDisabled ? ' disabled' : '') + '><span class="muted">of ' + pageTotal + '</span></span><span class="page-arrows"><button type="button" data-page-prev' + (navigationDisabled || state.page <= 1 ? ' disabled' : '') + ' aria-label="Previous page">‹</button><button type="button" data-page-next' + (navigationDisabled || state.page >= pageTotal ? ' disabled' : '') + ' aria-label="Next page">›</button></span></div>';
+  const previewControl = includeLayoutToggle ? '<label class="muted">Context <input data-preview-context type="number" min="1" max="249" value="' + previewContextLines + '" aria-label="Preview context lines"></label>' : '';
+  return '<div class="page-controls" aria-label="Search result pages">' + previewControl + layoutToggle + '<select data-page-size aria-label="Total results per page"' + (state.status === 'loading' ? ' disabled' : '') + '>' + sizes + '</select><span class="page-status"><span class="muted">Page</span><input data-page-input type="number" min="1" max="' + pageTotal + '" value="' + state.page + '" aria-label="Current result page"' + (navigationDisabled ? ' disabled' : '') + '><span class="muted">of ' + pageTotal + '</span></span><span class="page-arrows"><button type="button" data-page-prev' + (navigationDisabled || state.page <= 1 ? ' disabled' : '') + ' aria-label="Previous page">‹</button><button type="button" data-page-next' + (navigationDisabled || state.page >= pageTotal ? ' disabled' : '') + ' aria-label="Next page">›</button></span></div>';
 };
 const inlineMarkdown = value => value
   .replace(/\\\\([*_])/g, '$1')
@@ -1228,6 +1249,7 @@ const captureSearchSnapshot = () => vscode.postMessage({ type: 'debugSnapshot', 
   requestId: state.requestId,
   page: state.page,
   pageSize: state.pageSize,
+  previewContextLines,
   total: state.total,
   totalBySource: state.totalBySource,
   totalPages: totalPages(),
@@ -1286,10 +1308,14 @@ function render(focusQuery = false) {
   const warnings = state.warnings.map(warning => '<div class="warning">' + esc(warning) + '</div>').join('');
   const bottomPager = state.query.trim() && totalMatches() > 0 ? '<div class="page-bottom">' + pageControls() + '</div>' : '';
   document.getElementById('app').innerHTML = '<div class="shell"><div class="eyebrow">Source browser · live MCP search</div><h1>Find usage in Reforger</h1><div class="toolbar"><input id="query" value="' + esc(state.query) + '" placeholder="Search a symbol, concept, or phrase..." aria-label="Search query">' + textSearchOptions() + '</div><div class="layout"><aside class="source-rail"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '<div class="group-label">SEARCH MODE</div>' + modeButtons() + (state.mode === 'text' ? '' : '<div class="group-label">RESULT TYPE</div>' + typeButtons()) + '</aside><section><div class="source-header"><div><h2>' + totalMatchesLabel() + ' matches</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Showing up to ' + state.pageSize + ' total results') + '</span></div>' + pageControls(true) + '</div><div class="status">' + (state.status === 'error' ? 'Search failed' : '') + '</div>' + warnings + body + bottomPager + '</section></div></div>';
+	if (state.status !== 'loading') {
+		document.querySelector('.source-header > div:first-child > .muted')?.remove();
+	}
   const query = document.getElementById('query');
   const focusSearchQuery = () => { query.focus(); query.setSelectionRange(state.query.length, state.query.length); };
   if (focusQuery) focusSearchQuery();
-  query.addEventListener('input', event => { state.query = event.target.value; if (state.mode !== 'text') search(true); });
+  else if (pendingQuerySelection) { query.focus(); query.setSelectionRange(pendingQuerySelection.start, pendingQuerySelection.end); pendingQuerySelection = undefined; }
+  query.addEventListener('input', event => { state.query = event.target.value; pendingQuerySelection = { start: event.target.selectionStart ?? state.query.length, end: event.target.selectionEnd ?? state.query.length }; if (state.mode !== 'text') search(true); });
   query.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); search(true); } });
   document.querySelectorAll('[data-text-option]').forEach(element => element.addEventListener('change', () => { state[element.dataset.textOption] = element.checked; search(true); }));
   document.querySelectorAll('[data-mode]').forEach(element => element.addEventListener('click', () => { state.mode = element.dataset.mode === 'text' ? 'text' : element.dataset.mode === 'resource' ? 'resource' : 'semantic'; state.type = 'all'; state.page = 1; render(false); search(true); }));
@@ -1301,6 +1327,7 @@ function render(focusQuery = false) {
   document.querySelectorAll('[data-page-prev]').forEach(element => element.addEventListener('click', () => requestPage(state.page - 1)));
   document.querySelectorAll('[data-page-next]').forEach(element => element.addEventListener('click', () => requestPage(state.page + 1)));
   document.querySelectorAll('[data-page-size]').forEach(element => element.addEventListener('change', event => { state.pageSize = Number(event.target.value); search(true); }));
+  document.querySelectorAll('[data-preview-context]').forEach(element => element.addEventListener('input', event => { previewContextLines = Math.max(1, Math.min(249, Number.parseInt(event.target.value, 10) || 1)); event.target.value = previewContextLines; clearTimeout(previewContextTimer); previewContextTimer = setTimeout(() => vscode.postMessage({ type: 'previewContext', contextLines: previewContextLines }), 180); }));
   document.querySelectorAll('[data-result-layout]').forEach(element => element.addEventListener('click', () => { state.resultColumns = state.resultColumns === 2 ? 1 : 2; render(false); }));
   document.querySelectorAll('[data-page-input]').forEach(element => {
     element.addEventListener('change', event => requestPage(event.target.value));
@@ -1319,6 +1346,7 @@ document.addEventListener('keydown', event => {
   if (document.activeElement !== document.body || event.ctrlKey || event.altKey || event.metaKey || event.isComposing || event.key.length !== 1) return;
   const query = document.getElementById('query');
   query.focus();
+  query.setSelectionRange(query.value.length, query.value.length);
   query.setRangeText(event.key, query.selectionStart, query.selectionEnd, 'end');
   query.dispatchEvent(new Event('input', { bubbles: true }));
   event.preventDefault();
