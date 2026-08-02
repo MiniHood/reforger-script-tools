@@ -7,6 +7,7 @@ import { diagnosticsDefaults } from '../extensionConfig/diagnostics';
 import { gameDataCommands } from '../extensionConfig/gameData';
 import { languageClientCommands } from '../extensionConfig/languageClient';
 import { mcpCommands } from '../extensionConfig/mcp';
+import { searchCommands } from '../extensionConfig/search';
 import {
 	workbenchCommands,
 	workbenchConfig,
@@ -1519,6 +1520,29 @@ suite('extension activation', () => {
 		assert.ok(extension, 'development extension is discoverable');
 		const defaults = extension.packageJSON.contributes.configurationDefaults as Record<string, Record<string, unknown>>;
 		assert.strictEqual(defaults['[enforce]']['editor.acceptSuggestionOnEnter'], 'off');
+	});
+
+	test('exposes Reforger Script Search through the Command Palette and Ctrl+Alt+F', () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		const commands = extension.packageJSON.contributes.commands as Array<{
+			command: string;
+			title: string;
+			category?: string;
+		}>;
+		const command = commands.find(candidate => candidate.command === searchCommands.open);
+		assert.deepStrictEqual(command, {
+			command: searchCommands.open,
+			title: 'Search',
+			category: 'Reforger Script Tools',
+		});
+		const keybindings = extension.packageJSON.contributes.keybindings as Array<{
+			command: string;
+			key?: string;
+		}>;
+		assert.ok(keybindings.some(binding => binding.command === searchCommands.open && binding.key === 'ctrl+alt+f'));
 	});
 
 	test('routes Enter only outside native editing modes', () => {

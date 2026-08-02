@@ -141,7 +141,7 @@
       },
       {
         "command": "reforger-sript-tools.searchUi",
-        "title": "Reforger: Search",
+        "title": "Search",
         "category": "Reforger Script Tools"
       }
     ],
@@ -223,6 +223,10 @@
       }
     },
     "keybindings": [
+      {
+        "command": "reforger-sript-tools.searchUi",
+        "key": "ctrl+alt+f"
+      },
       {
         "command": "reforger-sript-tools.debug.hoverAtCursor",
         "key": "ctrl+f1",

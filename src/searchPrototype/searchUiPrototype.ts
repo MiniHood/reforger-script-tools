@@ -90,7 +90,7 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 
 	const panel = vscode.window.createWebviewPanel(
 		'reforgerSearchUi',
-		'Reforger Search',
+		'Reforger Script Search',
 		vscode.ViewColumn.One,
 		{
 			enableScripts: true,
