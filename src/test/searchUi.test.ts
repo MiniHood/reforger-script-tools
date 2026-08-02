@@ -166,6 +166,9 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /readFailuresByAddon/);
 		assert.match(searchUiSource, /unavailableScopeIds/);
 		assert.match(searchClientSource, /unavailableScopeIds/);
+		assert.doesNotMatch(searchUiSource, /\.addon-choice\.workspace/);
+		assert.match(searchUiSource, /source\.pinned && !filtered\[index \+ 1\]\?\.pinned/);
+		assert.match(searchUiSource, /pinned-boundary/);
 	});
 
 	test('maps symbol search handoffs into source-browser rows', () => {

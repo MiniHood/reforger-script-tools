@@ -842,7 +842,7 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .addon-choice { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 6px; min-height: 29px; color: var(--fg); cursor: pointer; }
 .addon-choice input { margin: 0; accent-color: var(--accent); }
 .addon-choice small { color: var(--muted); font-size: 10px; }
-.addon-choice.workspace { margin-bottom: 5px; padding-bottom: 5px; border-bottom: 1px solid var(--border); }
+.addon-choice.pinned-boundary { margin-bottom: 5px; padding-bottom: 5px; border-bottom: 1px solid var(--border); }
 .scope-actions { display: flex; justify-content: flex-end; margin-bottom: 5px; }
 .scope-actions button { width: auto; margin: 0; padding: 4px 6px; color: var(--accent); font-size: 10px; }
 .addon-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
@@ -913,7 +913,8 @@ const scopeChoices = () => {
   const eligible = eligibleScopeSources();
   const allSelected = eligible.length > 0 && eligible.every(source => state.selectedScopeIds.includes(source.id));
   const filter = state.scopeFilter.trim().toLowerCase();
-  const choices = eligible.filter(source => !filter || source.label.toLowerCase().includes(filter)).map(source => '<label class="addon-choice' + (source.kind === 'workspace' ? ' workspace' : '') + '"><input type="checkbox" data-scope-choice="' + esc(source.id) + '"' + (state.selectedScopeIds.includes(source.id) ? ' checked' : '') + '><span>' + esc(source.label) + '</span><small>' + esc(source.detail) + '</small></label>').join('');
+  const filtered = eligible.filter(source => !filter || source.label.toLowerCase().includes(filter));
+  const choices = filtered.map((source, index) => '<label class="addon-choice' + (source.pinned && !filtered[index + 1]?.pinned ? ' pinned-boundary' : '') + '"><input type="checkbox" data-scope-choice="' + esc(source.id) + '"' + (state.selectedScopeIds.includes(source.id) ? ' checked' : '') + '><span>' + esc(source.label) + '</span><small>' + esc(source.detail) + '</small></label>').join('');
   return '<div class="addon-menu"><input class="addon-filter" data-scope-filter value="' + esc(state.scopeFilter) + '" placeholder="Filter add-ons..." aria-label="Filter search scopes"><div class="scope-actions"><button type="button" data-scope-refresh' + (state.status === 'loading' ? ' disabled' : '') + '>Refresh</button><button type="button" data-scope-all>' + (allSelected ? 'Unselect all' : 'Select all') + '</button></div>' + choices + '</div>';
 };
 const searchScope = () => {
