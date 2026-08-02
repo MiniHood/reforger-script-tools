@@ -12,7 +12,7 @@ use crate::model::{
     source_category_for_path, SourceFileMetadata, SourceKind, VirtualSourceIdentity,
     SOURCE_PRIORITY_GAME_DATA,
 };
-use crate::pack::{PakArchive, PakEntry, PakSelection};
+use crate::pack::{PakArchive, PakEntry, PakReader, PakSelection};
 use crate::workbench::{installed_game_addon_project_files, registered_project_files};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -2227,10 +2227,8 @@ pub fn read_virtual_source(uri: &str) -> Result<String, String> {
         .source_entry(logical_path)
         .ok_or_else(|| format!("Pack source does not exist: {logical_path}"))?;
     let entry = &source_entry.entry;
-    let archive = PakArchive::inspect(entry.archive_path()).map_err(|error| error.to_string())?;
     let mut bytes = Vec::with_capacity(entry.original_length() as usize);
-    archive
-        .reader()
+    PakReader::open(entry.archive_path())
         .map_err(|error| error.to_string())?
         .read_verified_to_with_cancel(
             entry,
@@ -2272,7 +2270,7 @@ pub fn read_cached_virtual_source(uri: &str, cache_path: &Path) -> Result<String
 pub struct CachedVirtualSourceBatch {
     pub sources: Vec<Result<String, String>>,
     pub revisions_validated: usize,
-    pub archives_inspected: usize,
+    pub archives_opened: usize,
 }
 
 #[derive(Debug)]
@@ -2347,7 +2345,7 @@ pub fn read_cached_virtual_sources(
 
     let cache_root = cache_path.parent().unwrap_or_else(|| Path::new("."));
     let mut revisions_validated = 0;
-    let mut archives_inspected = 0;
+    let mut archives_opened = 0;
     for (key, request) in revisions {
         control.check()?;
         register_cached_source_revision_root(&request.guid, &request.revision, cache_root);
@@ -2385,23 +2383,14 @@ pub fn read_cached_virtual_sources(
 
         for (archive_path, mut entries) in archives {
             control.check()?;
-            let archive =
-                match PakArchive::inspect_with_cancel(&archive_path, || control.is_cancelled()) {
-                    Ok(archive) => archive,
-                    Err(error) => {
-                        control.check()?;
-                        set_archive_source_errors(&mut results, &entries, &error.to_string());
-                        continue;
-                    }
-                };
-            archives_inspected += 1;
-            let mut reader = match archive.reader() {
+            let mut reader = match PakReader::open(&archive_path) {
                 Ok(reader) => reader,
                 Err(error) => {
                     set_archive_source_errors(&mut results, &entries, &error.to_string());
                     continue;
                 }
             };
+            archives_opened += 1;
             entries.sort_by_key(|(_, entry, _)| entry.offset());
             for (output_index, entry, compressed_payload_sha256) in entries {
                 control.check()?;
@@ -2424,7 +2413,7 @@ pub fn read_cached_virtual_sources(
     Ok(CachedVirtualSourceBatch {
         sources: results,
         revisions_validated,
-        archives_inspected,
+        archives_opened,
     })
 }
 
@@ -4440,7 +4429,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_cached_virtual_sources_with_one_revision_validation_and_archive_inspection() {
+    fn reads_cached_virtual_sources_with_one_revision_validation_and_archive_open() {
         let root = test_root("batch-source-read");
         let addons = root.join("addons");
         let data = addons.join("data");
@@ -4487,7 +4476,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(batch.revisions_validated, 1);
-        assert_eq!(batch.archives_inspected, 1);
+        assert_eq!(batch.archives_opened, 1);
         assert_eq!(batch.sources.len(), 3);
         assert!(batch.sources.iter().all(Result::is_ok));
         let source_text = batch

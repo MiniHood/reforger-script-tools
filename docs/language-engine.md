@@ -7,7 +7,8 @@ applies editor-only behaviour; it does not duplicate parsing or semantic
 decisions.
 
 PAC1 archive inspection is also Rust-owned. Its pack module builds a bounded
-logical file catalogue and reads only caller-selected entries. The add-on
+logical file catalogue and reads only caller-selected entries, either from an
+inspection or from previously validated locators. The add-on
 source module receives the Workbench-loaded graph, reads loose source only
 from each add-on's top-level `Scripts` directory, and composes that
 mechanism with canonical `(GUID, source-root)` instance identity, pack-set and
@@ -72,12 +73,14 @@ hover and definition navigation lazily materialize that registry on the first
 navigation time.
 Explicit Game Data full-text search uses that same immutable locator registry
 as one batch: it validates each referenced source revision once, groups entries
-by PAC archive, opens each archive once, and reads selected scripts in archive
-offset order before scanning. Its bounded result statistics report source-read
+by PAC archive, opens each archive once without reparsing its catalogue, and
+reads selected scripts in archive offset order before scanning. Entry bounds,
+archive identity, expansion limits, and the captured compressed-payload digest
+remain verified at read time. Its bounded result statistics report source-read
 wall time separately from scan time, along with per-add-on read time and failures.
 Individual navigation remains a one-entry lazy
-read; full-text search does not repeat navigation-time PAC inspection for every
-script. The matcher uses case-insensitive literal substrings by default and
+read through the same validated-locator path. The matcher uses case-insensitive
+literal substrings by default and
 accepts explicit match-case, whole-word, and regular-expression options. Those
 options and the selected add-on GUIDs are part of both the bounded result-cache
 identity and opaque paging cursor, so pages from different matching modes or

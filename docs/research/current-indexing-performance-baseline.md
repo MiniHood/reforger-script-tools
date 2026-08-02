@@ -154,3 +154,30 @@ detection, on-demand virtual-source reading, GUID-keyed inventory manifests,
 repair of missing/corrupt GUID manifests, duplicate-GUID rejection,
 byte-identical Workbench-core exclusion, and absence of an extracted script
 tree.
+
+## Cached-locator pack-read optimization
+
+The Game Data full-text path was measured again on 2026-08-02 with the
+development server, the installed add-on cache, and the broad literal query
+`SCR_`. Each process considered 8,626 sources and stopped after the bounded
+10,000-result ceiling. The comparison used one uncounted warm-up for each
+binary followed by seven alternating baseline/candidate runs, preventing one
+binary from consistently receiving the warmer filesystem state.
+
+| Measurement | Reinspect PAC catalogue | Open from validated locator | Change |
+| --- | ---: | ---: | ---: |
+| Source-read median | 267 ms (253-358 ms) | **207 ms** (193-222 ms) | **-22.5%** |
+| End-to-end search median | 301.42 ms | **240.39 ms** | **-20.2%** |
+| Text scan median | 15 ms | 14 ms | -1 ms |
+
+The candidate removes PAC catalogue reparsing only after an immutable locator
+revision has been loaded and its archive artifact stamps have been validated.
+The pack reader still checks the locator's archive identity and byte bounds,
+enforces extraction and expansion limits, and verifies the captured compressed
+payload SHA-256 before returning content. The scan time did not increase, so
+the measured source-read reduction was removed work rather than deferred work.
+
+A separate first observation from a newly copied baseline executable reported
+3,012 ms of source-read time; subsequent warm runs were 280-317 ms. That cold
+observation combines process/executable and filesystem cold-start effects and
+is recorded as an outlier, not used in the paired optimization percentage.

@@ -133,8 +133,9 @@ pub struct PakArchive {
     entries: Vec<PakEntry>,
 }
 
-pub struct PakReader<'a> {
-    archive: &'a PakArchive,
+pub struct PakReader {
+    archive_path: PathBuf,
+    file_length: u64,
     file: File,
 }
 impl PakArchive {
@@ -331,11 +332,8 @@ impl PakArchive {
             .read_to_with_cancel(entry, output, is_cancelled)
     }
 
-    pub fn reader(&self) -> Result<PakReader<'_>, PackError> {
-        Ok(PakReader {
-            archive: self,
-            file: File::open(&self.path).map_err(io)?,
-        })
+    pub fn reader(&self) -> Result<PakReader, PackError> {
+        PakReader::from_archive(self)
     }
 
     pub fn read(&self, entry: &PakEntry) -> Result<Vec<u8>, PackError> {
@@ -345,7 +343,28 @@ impl PakArchive {
     }
 }
 
-impl PakReader<'_> {
+impl PakReader {
+    /// Opens an archive for entries whose locators were validated previously.
+    /// The entry bounds and archive identity are still checked for every read.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, PackError> {
+        let archive_path = path.as_ref().to_path_buf();
+        let file = File::open(&archive_path).map_err(io)?;
+        let file_length = file.metadata().map_err(io)?.len();
+        Ok(Self {
+            archive_path,
+            file_length,
+            file,
+        })
+    }
+
+    fn from_archive(archive: &PakArchive) -> Result<Self, PackError> {
+        Ok(Self {
+            archive_path: archive.path.clone(),
+            file_length: archive.file_length,
+            file: File::open(&archive.path).map_err(io)?,
+        })
+    }
+
     pub fn read_to(&mut self, entry: &PakEntry, output: &mut impl Write) -> Result<u64, PackError> {
         self.read_to_with_cancel(entry, output, || false)
     }
@@ -356,7 +375,7 @@ impl PakReader<'_> {
         output: &mut impl Write,
         is_cancelled: impl FnMut() -> bool,
     ) -> Result<u64, PackError> {
-        if entry.archive_path != self.archive.path {
+        if entry.archive_path != self.archive_path {
             return Err(PackError::ArchiveMismatch {
                 path: entry.logical_path.clone(),
             });
@@ -378,7 +397,7 @@ impl PakReader<'_> {
         let _end = entry
             .offset
             .checked_add(entry.compressed_length)
-            .filter(|v| *v <= self.archive.file_length)
+            .filter(|v| *v <= self.file_length)
             .ok_or_else(|| {
                 PackError::Invalid(format!(
                     "PAC1 entry is outside archive: {}",
@@ -421,7 +440,7 @@ impl PakReader<'_> {
         output: &mut impl Write,
         mut is_cancelled: impl FnMut() -> bool,
     ) -> Result<u64, PackError> {
-        if entry.archive_path != self.archive.path {
+        if entry.archive_path != self.archive_path {
             return Err(PackError::ArchiveMismatch {
                 path: entry.logical_path.clone(),
             });
@@ -443,7 +462,7 @@ impl PakReader<'_> {
         entry
             .offset
             .checked_add(entry.compressed_length)
-            .filter(|end| *end <= self.archive.file_length)
+            .filter(|end| *end <= self.file_length)
             .ok_or_else(|| {
                 PackError::Invalid(format!(
                     "PAC1 entry is outside archive: {}",
@@ -691,7 +710,7 @@ mod tests {
 
     use flate2::{write::ZlibEncoder, Compression};
 
-    use super::{PackError, PakArchive, PakSelection, DEFLATE_ZLIB_COMPRESSION};
+    use super::{PackError, PakArchive, PakReader, PakSelection, DEFLATE_ZLIB_COMPRESSION};
 
     #[test]
     fn selects_and_reads_only_script_entries() {
@@ -850,6 +869,25 @@ mod tests {
         reader.read_to(&archive.entries()[1], &mut second).unwrap();
         assert_eq!(first, b"class First {}");
         assert_eq!(second, b"class Second {}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn reader_opens_an_archive_for_a_validated_entry() {
+        let path = fixture_pak(&[(
+            "Feature.c",
+            b"class Feature {}",
+            0,
+            b"class Feature {}".len(),
+        )]);
+        let archive = PakArchive::inspect(&path).unwrap();
+        let entry = archive.entries()[0].clone();
+        let mut reader = PakReader::open(&path).unwrap();
+        let mut source = Vec::new();
+
+        reader.read_to(&entry, &mut source).unwrap();
+
+        assert_eq!(source, b"class Feature {}");
         let _ = std::fs::remove_file(path);
     }
 
