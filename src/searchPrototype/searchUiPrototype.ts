@@ -42,6 +42,14 @@ interface SemanticSourceDocument {
 	startLine: number;
 }
 
+interface RawPreview {
+	hit: SearchHit;
+	document: SearchDocument;
+	previewLine: number;
+	preview: string;
+	matchRange: SourceMatchRange | undefined;
+}
+
 export function registerSearchUi(context: vscode.ExtensionContext): void {
 	diagnostic('searchUi.registered');
 	void vscode.commands.executeCommand('setContext', searchContext.key, true);
@@ -284,12 +292,38 @@ async function hydrateSymbolPreviews(
 	const previews: Record<string, string> = {};
 	const matchRanges: Record<string, SourceMatchRange> = {};
 	const semanticPreviews: Record<string, SemanticPreview> = {};
+	const rawPreviews = new Map<string, RawPreview>();
 	const previewDiagnostics: Array<Record<string, unknown>> = [];
 	let readMs = 0;
 	let semanticMs = 0;
 	let nextIndex = 0;
-	const worker = async (): Promise<void> => {
-		while (nextIndex < symbolHits.length) {
+	let firstRawMs: number | undefined;
+	const postRawPreview = (id: string): void => {
+		if (active.disposed || requestId !== active.requestSequence) {
+			return;
+		}
+		const elapsedMs = Date.now() - startedAt;
+		firstRawMs ??= elapsedMs;
+		active.panel.webview.postMessage({
+			type: 'previews',
+			requestId,
+			previews: { [id]: previews[id] },
+			matches: matchRanges[id] ? { [id]: matchRanges[id] } : {},
+			performance: {
+				phase: 'raw',
+				totalMs: elapsedMs,
+				rawMs: elapsedMs,
+				firstRawMs,
+				readMs,
+				semanticMs: 0,
+				requestedCount: symbolHits.length,
+				loadedCount: Object.keys(previews).length,
+				semanticCount: 0,
+			},
+		});
+	};
+	const readWorker = async (): Promise<void> => {
+		while (nextIndex < symbolHits.length && !active.disposed && requestId === active.requestSequence) {
 			const hit = symbolHits[nextIndex++];
 			try {
 				const readStartedAt = performance.now();
@@ -302,6 +336,61 @@ async function hydrateSymbolPreviews(
 				if (matchRange) {
 					matchRanges[hit.id] = matchRange;
 				}
+				rawPreviews.set(hit.id, { hit, document, previewLine, preview, matchRange });
+				postRawPreview(hit.id);
+			} catch (error) {
+				previewDiagnostics.push({
+					id: hit.id,
+					title: hit.title,
+					path: hit.path,
+					phase: 'source-read-failed',
+					message: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(4, symbolHits.length) }, () => readWorker()));
+	if (active.disposed || requestId !== active.requestSequence) {
+		return;
+	}
+	const rawMs = Date.now() - startedAt;
+	diagnostic('searchUi.previewRawCompleted', {
+		requestId,
+		requestedCount: symbolHits.length,
+		loadedCount: rawPreviews.size,
+		firstRawMs,
+		lastRawMs: rawMs,
+		readMs,
+	});
+
+	const semanticItems = [...rawPreviews.values()];
+	let semanticIndex = 0;
+	const postSemanticUpdates = (updates: Record<string, SemanticPreview>): void => {
+		if (Object.keys(updates).length === 0 || active.disposed || requestId !== active.requestSequence) {
+			return;
+		}
+		active.panel.webview.postMessage({
+			type: 'semanticPreviews',
+			requestId,
+			previews: updates,
+			performance: {
+				phase: 'semantic',
+				totalMs: Date.now() - startedAt,
+				rawMs,
+				readMs,
+				semanticMs,
+				requestedCount: symbolHits.length,
+				loadedCount: rawPreviews.size,
+				semanticCount: Object.keys(semanticPreviews).length,
+			},
+		});
+	};
+	const semanticWorker = async (): Promise<void> => {
+		const pendingUpdates: Record<string, SemanticPreview> = {};
+		while (semanticIndex < semanticItems.length && !active.disposed && requestId === active.requestSequence) {
+			const rawPreview = semanticItems[semanticIndex++];
+			const { hit, document, previewLine, preview, matchRange } = rawPreview;
+			try {
 				const semanticStartedAt = performance.now();
 				const semanticDocument = await semanticSourceDocument(active, client, hit, document);
 				semanticMs += performance.now() - semanticStartedAt;
@@ -315,6 +404,7 @@ async function hydrateSymbolPreviews(
 					);
 					if (semanticPreview) {
 						semanticPreviews[hit.id] = semanticPreview;
+						pendingUpdates[hit.id] = semanticPreview;
 						if (semanticPreview.text === preview) {
 							const semanticMatchRange = sourceMatchRange(semanticPreview.text, query);
 							if (semanticMatchRange) {
@@ -353,35 +443,39 @@ async function hydrateSymbolPreviews(
 					semanticEnabled: semanticPreview?.enabled,
 					semanticForegrounds: semanticPreview?.foregrounds,
 				});
+				if (Object.keys(pendingUpdates).length >= 4) {
+					postSemanticUpdates({ ...pendingUpdates });
+					for (const id of Object.keys(pendingUpdates)) {
+						delete pendingUpdates[id];
+					}
+				}
 			} catch (error) {
 				previewDiagnostics.push({
 					id: hit.id,
 					title: hit.title,
 					path: hit.path,
-					phase: 'source-read-failed',
+					phase: 'semantic-hydration-failed',
 					message: error instanceof Error ? error.message : String(error),
 				});
 			}
 		}
+		postSemanticUpdates({ ...pendingUpdates });
 	};
-	await Promise.all(Array.from({ length: Math.min(4, symbolHits.length) }, () => worker()));
+	await Promise.all(Array.from({ length: Math.min(4, semanticItems.length) }, () => semanticWorker()));
 	if (active.disposed || requestId !== active.requestSequence) {
 		return;
 	}
 	const previewPerformance = {
+		phase: 'complete',
 		totalMs: Date.now() - startedAt,
+		rawMs,
 		readMs,
 		semanticMs,
 		requestedCount: symbolHits.length,
-		loadedCount: Object.keys(previews).length,
+		loadedCount: rawPreviews.size,
 		semanticCount: Object.keys(semanticPreviews).length,
 	};
-	if (Object.keys(previews).length > 0) {
-		active.panel.webview.postMessage({ type: 'previews', requestId, previews, matches: matchRanges, performance: previewPerformance });
-	}
-	if (Object.keys(semanticPreviews).length > 0) {
-		active.panel.webview.postMessage({ type: 'semanticPreviews', requestId, previews: semanticPreviews });
-	}
+	active.panel.webview.postMessage({ type: 'semanticPreviews', requestId, previews: {}, performance: previewPerformance });
 	diagnostic('searchUi.previewHydrationCompleted', {
 		requestId,
 		requestedCount: symbolHits.length,
@@ -390,6 +484,7 @@ async function hydrateSymbolPreviews(
 		readMs: previewPerformance.readMs,
 		semanticMs: previewPerformance.semanticMs,
 		totalMs: previewPerformance.totalMs,
+		rawMs: previewPerformance.rawMs,
 		items: jsonField(previewDiagnostics.slice(0, 100)),
 		elapsedMs: Date.now() - startedAt,
 	});
@@ -667,7 +762,7 @@ window.__reforgerSearchVscode.postMessage({ type: 'webviewReady', width: window.
 </script>
 <script nonce="${nonce}">
 const vscode = window.__reforgerSearchVscode;
-const state = { query: '', source: 'all', type: 'all', results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, uiPerformance: { renderCount: 0, lastRenderMs: 0, searchStartedAt: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0 } };
+const state = { query: '', source: 'all', type: 'all', results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, uiPerformance: { renderCount: 0, lastRenderMs: 0, searchStartedAt: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
 const sources = [
   { value: 'all', label: 'All sources' },
   { value: 'workspace', label: 'Workspace' },
@@ -871,8 +966,8 @@ document.addEventListener('keydown', event => { if (event.ctrlKey && event.key =
 let searchTimer;
 function scheduleSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(() => search(true), 260); }
 function requestPage(value) { if (state.status === 'loading') return; const requested = Number.parseInt(value, 10); if (!Number.isFinite(requested)) return; state.page = Math.min(totalPages(), Math.max(1, requested)); search(false); }
-function search(resetPagination) { if (resetPagination) { state.page = 1; } const searchKey = [state.query, state.source, state.type, state.page, state.pageSize].join('\\u0000'); if (state.status === 'loading' && state.lastSearchKey === searchKey) return; state.lastSearchKey = searchKey; state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.uiPerformance.searchStartedAt = performance.now(); state.uiPerformance.lastSearchResponseMs = 0; state.uiPerformance.lastPreviewMessageMs = 0; vscode.postMessage({ type: 'search', query: state.query, source: state.source, resultType: state.type, page: state.page, pageSize: state.pageSize }); }
-window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.uiPerformance.lastSearchResponseMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = message.performance ?? {}; state.previewPerformance = {}; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'previews') { state.uiPerformance.lastPreviewMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? {}; state.sourcePreviews = { ...state.sourcePreviews, ...(message.previews ?? {}) }; state.matchRanges = { ...state.matchRanges, ...(message.matches ?? {}) }; render(); } if (message.type === 'semanticPreviews') { state.semanticPreviews = { ...state.semanticPreviews, ...(message.previews ?? {}) }; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.total = 0; state.totalBySource = {}; render(); } });
+function search(resetPagination) { if (resetPagination) { state.page = 1; } const searchKey = [state.query, state.source, state.type, state.page, state.pageSize].join('\\u0000'); if (state.status === 'loading' && state.lastSearchKey === searchKey) return; state.lastSearchKey = searchKey; state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.uiPerformance.searchStartedAt = performance.now(); state.uiPerformance.lastSearchResponseMs = 0; state.uiPerformance.lastPreviewMessageMs = 0; state.uiPerformance.lastSemanticMessageMs = 0; vscode.postMessage({ type: 'search', query: state.query, source: state.source, resultType: state.type, page: state.page, pageSize: state.pageSize }); }
+window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.uiPerformance.lastSearchResponseMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = message.performance ?? {}; state.previewPerformance = {}; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'previews') { state.uiPerformance.lastPreviewMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? {}; state.sourcePreviews = { ...state.sourcePreviews, ...(message.previews ?? {}) }; state.matchRanges = { ...state.matchRanges, ...(message.matches ?? {}) }; render(); } if (message.type === 'semanticPreviews') { state.uiPerformance.lastSemanticMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? state.previewPerformance; state.semanticPreviews = { ...state.semanticPreviews, ...(message.previews ?? {}) }; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.total = 0; state.totalBySource = {}; render(); } });
 render();
 </script>
 </body>
@@ -968,14 +1063,18 @@ function snapshotPerformance(value: unknown): Record<string, unknown> {
 	}
 	const result: Record<string, unknown> = {};
 	for (const key of [
-		'totalMs', 'startupMs', 'initialSearchMs', 'rangeSearchMs', 'mergeMs', 'requestedPage', 'pageSize',
+		'totalMs', 'rawMs', 'firstRawMs', 'startupMs', 'initialSearchMs', 'rangeSearchMs', 'mergeMs', 'requestedPage', 'pageSize',
 		'sourcePageSize', 'readMs', 'semanticMs', 'requestedCount', 'loadedCount', 'semanticCount',
-		'renderCount', 'lastRenderMs', 'searchStartedAt', 'lastSearchResponseMs', 'lastPreviewMessageMs',
+		'renderCount', 'lastRenderMs', 'searchStartedAt', 'lastSearchResponseMs', 'lastPreviewMessageMs', 'lastSemanticMessageMs',
 	]) {
 		const number = numberField(value[key]);
 		if (number !== undefined) {
 			result[key] = number;
 		}
+	}
+	const phase = textField(value.phase);
+	if (phase !== undefined) {
+		result.phase = phase;
 	}
 	const capturedAt = textField(value.capturedAt);
 	if (capturedAt !== undefined) {

@@ -163,6 +163,23 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /previewDiagnostics/);
 	});
 
+	test('publishes raw previews before semantic coloring completes', () => {
+		const rawPhase = searchUiSource.indexOf("const postRawPreview = (id: string): void =>");
+		const rawMessage = searchUiSource.indexOf("type: 'previews',", rawPhase);
+		const semanticPhase = searchUiSource.indexOf("const semanticWorker = async");
+		const semanticMessage = searchUiSource.indexOf("type: 'semanticPreviews'", semanticPhase);
+		assert.ok(rawPhase >= 0);
+		assert.ok(rawMessage > rawPhase);
+		assert.ok(semanticPhase > rawMessage);
+		assert.ok(semanticMessage > semanticPhase);
+		assert.match(searchUiSource, /postRawPreview\(hit\.id\)/);
+		assert.match(searchUiSource, /searchUi\.previewRawCompleted/);
+		assert.match(searchUiSource, /phase: 'raw'/);
+		assert.match(searchUiSource, /phase: 'semantic'/);
+		assert.match(searchUiSource, /lastSemanticMessageMs/);
+		assert.match(searchUiSource, /state\.previewPerformance = message\.performance \?\? state\.previewPerformance/);
+	});
+
 	test('opens result cards while preserving text selection and the Wiki page action', () => {
 		assert.match(searchUiSource, /data-open="' \+ esc\(result\.id\) \+ '" tabindex="0" role="button"/);
 		assert.doesNotMatch(searchUiSource, /<button class="open" data-open=/);
