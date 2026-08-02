@@ -170,6 +170,9 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /source\.pinned && !filtered\[index \+ 1\]\?\.pinned/);
 		assert.match(searchUiSource, /pinned-boundary/);
 		assert.match(searchUiSource, /\.scope-actions \[data-scope-all\] \{ flex: 0 0 76px; width: 76px; box-sizing: border-box;/);
+		assert.match(searchUiSource, /document\.addEventListener\('click', event => \{/);
+		assert.match(searchUiSource, /event\.target\.closest\('\.search-scope'\)/);
+		assert.match(searchUiSource, /document\.querySelector\('\.addon-menu'\)\?\.remove\(\)/);
 	});
 
 	test('maps symbol search handoffs into source-browser rows', () => {

@@ -1133,6 +1133,13 @@ function render(focusQuery = true) {
   state.uiPerformance.renderCount += 1;
 }
 document.addEventListener('keydown', event => { if (event.ctrlKey && event.key === 'F3') { event.preventDefault(); event.stopPropagation(); captureSearchSnapshot(); } });
+document.addEventListener('click', event => {
+  if (!state.scopeOpen || !(event.target instanceof Element) || event.target.closest('.search-scope')) return;
+  state.scopeOpen = false;
+  document.querySelector('.addon-menu')?.remove();
+  const indicator = document.querySelector('[data-scope-open] span:last-child');
+  if (indicator) indicator.textContent = '\u25bc';
+});
 let searchTimer;
 function scheduleSearch() { clearTimeout(searchTimer); if (state.mode === 'text') return; searchTimer = setTimeout(() => search(true), 260); }
 function requestPage(value) { if (state.status === 'loading') return; const requested = Number.parseInt(value, 10); if (!Number.isFinite(requested)) return; state.page = Math.min(totalPages(), Math.max(1, requested)); search(false); }
