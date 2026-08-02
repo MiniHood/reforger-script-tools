@@ -315,8 +315,16 @@ async function hydrateSymbolPreviews(
 					);
 					if (semanticPreview) {
 						semanticPreviews[hit.id] = semanticPreview;
+						if (semanticPreview.text === preview) {
+							const semanticMatchRange = sourceMatchRange(semanticPreview.text, query);
+							if (semanticMatchRange) {
+								matchRanges[hit.id] = semanticMatchRange;
+							}
+						}
 					}
 				}
+				const displayedMatchRange = matchRanges[hit.id];
+				const semanticMatchRange = semanticPreview ? sourceMatchRange(semanticPreview.text, query) : undefined;
 				previewDiagnostics.push({
 					id: hit.id,
 					title: hit.title,
@@ -324,31 +332,41 @@ async function hydrateSymbolPreviews(
 					selectionStartLine: hit.selectionStartLine,
 					previewLine,
 					previewText: preview.slice(0, 500),
-					matchStart: matchRange?.start,
-					matchLength: matchRange?.length,
-					matchText: matchRange ? preview.slice(matchRange.start, matchRange.start + matchRange.length) : undefined,
+					rawMatchStart: matchRange?.start,
+					rawMatchLength: matchRange?.length,
+					rawMatchText: matchRange ? preview.slice(matchRange.start, matchRange.start + matchRange.length) : undefined,
+					matchStart: displayedMatchRange?.start,
+					matchLength: displayedMatchRange?.length,
+					matchText: displayedMatchRange ? preview.slice(displayedMatchRange.start, displayedMatchRange.start + displayedMatchRange.length) : undefined,
+					displayedTextMatchesSemanticText: semanticPreview?.text === preview,
 					semanticDocument: Boolean(semanticDocument),
 					semanticLanguageId: semanticDocument?.document.languageId,
 					semanticStartLine: semanticDocument?.startLine,
+					semanticPreviewText: semanticPreview?.text.slice(0, 500),
+					semanticMatchStart: semanticMatchRange?.start,
+					semanticMatchLength: semanticMatchRange?.length,
+					semanticMatchText: semanticMatchRange
+						? semanticPreview?.text.slice(semanticMatchRange.start, semanticMatchRange.start + semanticMatchRange.length)
+						: undefined,
 					semanticTokenCount: semanticPreview?.tokens.length ?? 0,
 					semanticTokenRoles: semanticPreview ? [...new Set(semanticPreview.tokens.map(token => token.role))] : [],
 					semanticEnabled: semanticPreview?.enabled,
 					semanticForegrounds: semanticPreview?.foregrounds,
 				});
-			} catch {
-				// Keep the bounded search excerpt when the optional preview read fails.
+			} catch (error) {
+				previewDiagnostics.push({
+					id: hit.id,
+					title: hit.title,
+					path: hit.path,
+					phase: 'source-read-failed',
+					message: error instanceof Error ? error.message : String(error),
+				});
 			}
 		}
 	};
 	await Promise.all(Array.from({ length: Math.min(4, symbolHits.length) }, () => worker()));
-	if (active.disposed || requestId !== active.requestSequence || Object.keys(previews).length === 0) {
+	if (active.disposed || requestId !== active.requestSequence) {
 		return;
-	}
-	for (const hit of symbolHits) {
-		const excerpt = previews[hit.id];
-		if (excerpt !== undefined) {
-			active.latestResults.set(hit.id, { ...hit, excerpt });
-		}
 	}
 	const previewPerformance = {
 		totalMs: Date.now() - startedAt,
@@ -358,7 +376,9 @@ async function hydrateSymbolPreviews(
 		loadedCount: Object.keys(previews).length,
 		semanticCount: Object.keys(semanticPreviews).length,
 	};
-	active.panel.webview.postMessage({ type: 'previews', requestId, previews, matches: matchRanges, performance: previewPerformance });
+	if (Object.keys(previews).length > 0) {
+		active.panel.webview.postMessage({ type: 'previews', requestId, previews, matches: matchRanges, performance: previewPerformance });
+	}
 	if (Object.keys(semanticPreviews).length > 0) {
 		active.panel.webview.postMessage({ type: 'semanticPreviews', requestId, previews: semanticPreviews });
 	}
@@ -647,7 +667,7 @@ window.__reforgerSearchVscode.postMessage({ type: 'webviewReady', width: window.
 </script>
 <script nonce="${nonce}">
 const vscode = window.__reforgerSearchVscode;
-const state = { query: '', source: 'all', type: 'all', results: [], matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, uiPerformance: { renderCount: 0, lastRenderMs: 0, searchStartedAt: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0 } };
+const state = { query: '', source: 'all', type: 'all', results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, uiPerformance: { renderCount: 0, lastRenderMs: 0, searchStartedAt: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0 } };
 const sources = [
   { value: 'all', label: 'All sources' },
   { value: 'workspace', label: 'Workspace' },
@@ -738,10 +758,12 @@ const highlightPreviewPart = (value, offset, range) => {
 };
 const safeSemanticColor = value => /^#[0-9a-f]{3,8}$/i.test(String(value ?? '')) ? String(value) : '';
 const semanticPreviewText = result => {
+  const sourceText = state.sourcePreviews[result.id];
+  if (typeof sourceText !== 'string') return '';
   const preview = state.semanticPreviews[result.id];
   const matchRange = state.matchRanges[result.id];
-  if (!preview || typeof preview.text !== 'string' || !Array.isArray(preview.tokens)) return highlightRange(result.excerpt, matchRange);
-  const text = preview.text;
+  if (!preview || typeof preview.text !== 'string' || preview.text !== sourceText || !Array.isArray(preview.tokens)) return highlightRange(sourceText, matchRange);
+  const text = sourceText;
   const tokens = preview.enabled === false ? [] : preview.tokens.slice().sort((left, right) => left.start - right.start);
   let output = '';
   let cursor = 0;
@@ -798,8 +820,8 @@ const captureSearchSnapshot = () => vscode.postMessage({ type: 'debugSnapshot', 
     excerptLineCount: typeof result.excerpt === 'string' ? result.excerpt.split('\\n').length : 0,
     previewMatchStart: state.matchRanges[result.id]?.start,
     previewMatchLength: state.matchRanges[result.id]?.length,
-    previewMatchText: state.matchRanges[result.id] && typeof result.excerpt === 'string' ? result.excerpt.slice(state.matchRanges[result.id].start, state.matchRanges[result.id].start + state.matchRanges[result.id].length) : undefined,
-    previewText: typeof result.excerpt === 'string' ? result.excerpt.slice(0, 500) : undefined,
+    previewMatchText: state.matchRanges[result.id] && typeof state.sourcePreviews[result.id] === 'string' ? state.sourcePreviews[result.id].slice(state.matchRanges[result.id].start, state.matchRanges[result.id].start + state.matchRanges[result.id].length) : undefined,
+    previewText: typeof state.sourcePreviews[result.id] === 'string' ? state.sourcePreviews[result.id].slice(0, 500) : undefined,
     previewType: result.kind === 'documentation' ? 'markdown' : 'code',
     semanticAvailable: Boolean(state.semanticPreviews[result.id]),
     semanticEnabled: state.semanticPreviews[result.id]?.enabled,
@@ -848,8 +870,8 @@ document.addEventListener('keydown', event => { if (event.ctrlKey && event.key =
 let searchTimer;
 function scheduleSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(() => search(true), 260); }
 function requestPage(value) { if (state.status === 'loading') return; const requested = Number.parseInt(value, 10); if (!Number.isFinite(requested)) return; state.page = Math.min(totalPages(), Math.max(1, requested)); search(false); }
-function search(resetPagination) { if (resetPagination) { state.page = 1; } const searchKey = [state.query, state.source, state.type, state.page, state.pageSize].join('\\u0000'); if (state.status === 'loading' && state.lastSearchKey === searchKey) return; state.lastSearchKey = searchKey; state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; state.matchRanges = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.uiPerformance.searchStartedAt = performance.now(); state.uiPerformance.lastSearchResponseMs = 0; state.uiPerformance.lastPreviewMessageMs = 0; vscode.postMessage({ type: 'search', query: state.query, source: state.source, resultType: state.type, page: state.page, pageSize: state.pageSize }); }
-window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.uiPerformance.lastSearchResponseMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = message.performance ?? {}; state.previewPerformance = {}; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'previews') { state.uiPerformance.lastPreviewMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? {}; state.matchRanges = { ...state.matchRanges, ...(message.matches ?? {}) }; const previews = message.previews ?? {}; state.results = state.results.map(result => typeof previews[result.id] === 'string' ? { ...result, excerpt: previews[result.id] } : result); render(); } if (message.type === 'semanticPreviews') { state.semanticPreviews = { ...state.semanticPreviews, ...(message.previews ?? {}) }; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.total = 0; state.totalBySource = {}; render(); } });
+function search(resetPagination) { if (resetPagination) { state.page = 1; } const searchKey = [state.query, state.source, state.type, state.page, state.pageSize].join('\\u0000'); if (state.status === 'loading' && state.lastSearchKey === searchKey) return; state.lastSearchKey = searchKey; state.error = ''; state.warnings = []; state.status = state.query.trim() ? 'loading' : 'idle'; state.selected = ''; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.uiPerformance.searchStartedAt = performance.now(); state.uiPerformance.lastSearchResponseMs = 0; state.uiPerformance.lastPreviewMessageMs = 0; vscode.postMessage({ type: 'search', query: state.query, source: state.source, resultType: state.type, page: state.page, pageSize: state.pageSize }); }
+window.addEventListener('message', event => { const message = event.data; if (!message || message.requestId < state.requestId) return; state.requestId = message.requestId; if (message.type === 'loading') { state.status = 'loading'; state.error = ''; } if (message.type === 'results') { state.uiPerformance.lastSearchResponseMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.status = 'ready'; state.error = ''; state.results = message.results ?? []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = message.performance ?? {}; state.previewPerformance = {}; state.warnings = message.warnings ?? []; state.total = message.total ?? 0; state.totalBySource = message.totalBySource ?? {}; state.page = message.page ?? state.page; state.pageSize = message.pageSize ?? state.pageSize; render(); } if (message.type === 'previews') { state.uiPerformance.lastPreviewMessageMs = state.uiPerformance.searchStartedAt ? performance.now() - state.uiPerformance.searchStartedAt : 0; state.previewPerformance = message.performance ?? {}; state.sourcePreviews = { ...state.sourcePreviews, ...(message.previews ?? {}) }; state.matchRanges = { ...state.matchRanges, ...(message.matches ?? {}) }; render(); } if (message.type === 'semanticPreviews') { state.semanticPreviews = { ...state.semanticPreviews, ...(message.previews ?? {}) }; render(); } if (message.type === 'error') { state.status = 'error'; state.error = message.message ?? 'Search failed.'; state.results = []; state.sourcePreviews = {}; state.matchRanges = {}; state.semanticPreviews = {}; state.searchPerformance = {}; state.previewPerformance = {}; state.total = 0; state.totalBySource = {}; render(); } });
 render();
 </script>
 </body>

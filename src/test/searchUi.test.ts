@@ -147,7 +147,9 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /<div class="result-head"><h3>/);
 		assert.match(searchUiSource, /const highlightText = \(value, query\) =>/);
 		assert.match(searchUiSource, /<mark>/);
-		assert.match(searchUiSource, /highlightRange\(result\.excerpt, matchRange\)/);
+		assert.match(searchUiSource, /highlightRange\(sourceText, matchRange\)/);
+		assert.match(searchUiSource, /state\.sourcePreviews\[result\.id\]/);
+		assert.doesNotMatch(searchUiSource, /return highlightRange\(result\.excerpt, matchRange\)/);
 		assert.match(searchUiSource, /state\.matchRanges = \{ \.\.\.state\.matchRanges/);
 		assert.match(searchUiSource, /message\.type === 'previews'/);
 		assert.match(searchUiSource, /hydrateSymbolPreviews/);
