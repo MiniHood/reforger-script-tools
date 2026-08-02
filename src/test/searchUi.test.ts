@@ -315,23 +315,28 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /document\.querySelector\('\.addon-menu'\)\?\.remove\(\)/);
 		assert.match(searchClientSource, /workspaceScopeId[\s\S]*?wikiScopeId[\s\S]*?\.\.\.addonSources/);
 		assert.match(searchClientSource, /wikiScopeId[^\n]+pinned: true/);
-		assert.match(searchUiSource, /<div class="atlas-filter-strip"><div class="control-block scope-control"><div class="group-label">SEARCH SCOPE<\/div>' \+ searchScope\(\) \+ '<\/div><div class="control-block mode-control"><div class="group-label">SEARCH MODE<\/div>' \+ modeControls\(\)/);
+		assert.match(searchUiSource, /<div class="atlas-filter-strip"><div class="control-block scope-control"><div class="group-label">SEARCH SCOPE<\/div>' \+ searchScope\(\) \+ '<\/div><div class="control-block atlas-query"><div class="group-label">SEARCH<\/div>' \+ queryField\(\) \+ textSearchOptions\(\) \+ '<\/div><div class="atlas-secondary-controls"><div class="control-block mode-control"><div class="group-label">SEARCH MODE<\/div>' \+ modeControls\(\)/);
 	});
 
 	test('promotes the corrected source atlas as the only Search presentation', () => {
 		assert.match(searchUiSource, /function renderSearchUi\(webview: vscode\.Webview\): string/);
 		assert.match(searchUiSource, /class="shell search-atlas"/);
 		assert.doesNotMatch(searchUiSource, /prototypeSwitcher|prototypeVariants|pageRenderers|renderFocusVariant|renderInspectorVariant|renderLedgerVariant|renderConsoleVariant/);
-		assert.match(searchUiSource, /\.atlas-filter-strip \{ display: grid; grid-template-columns: minmax\(260px, \.8fr\) max-content minmax\(420px, 1\.5fr\); align-items: start;/);
+		assert.match(searchUiSource, /\.atlas-filter-strip \{ display: grid; grid-template-columns: 180px minmax\(240px, 1fr\); grid-template-areas: "scope query" "secondary secondary"; align-items: start;/);
 		assert.match(searchUiSource, /\.control-block \.group-label \{ min-height: 22px; padding: 0 0 7px;/);
 		assert.match(searchUiSource, /\.atlas-filter-strip \.addon-trigger \{ width: 100%; min-height: 38px;/);
+		assert.match(searchUiSource, /\.atlas-query \{ grid-area: query; min-width: 240px;/);
+		assert.match(searchUiSource, /\.atlas-secondary-controls \{ grid-area: secondary; display: flex; align-items: start;/);
 		assert.match(searchUiSource, /const typeControl = state\.mode === 'text' \? '' : '<div class="control-block type-control">/);
-		assert.match(searchUiSource, /class="control-block scope-control"[\s\S]*?class="control-block mode-control"[\s\S]*?' \+ typeControl \+ '/);
+		assert.match(searchUiSource, /class="control-block scope-control"[\s\S]*?class="control-block atlas-query"[\s\S]*?class="atlas-secondary-controls"[\s\S]*?class="control-block mode-control"[\s\S]*?' \+ typeControl \+ '/);
 		assert.match(searchUiSource, /\.atlas-card \{[^}]*border-left: 3px solid var\(--accent\);/);
-		assert.match(searchUiSource, /const resultCards = \(\) => '<div class="atlas-results'/);
-		assert.match(searchUiSource, /visibleResults\(\)\.map\(result => '<article class="atlas-card/);
+		assert.match(searchUiSource, /const resultGroups = \(\) => \{/);
+		assert.match(searchUiSource, /visibleResults\(\)\.forEach\(result => \{/);
+		assert.match(searchUiSource, /<section class="atlas-group"><div class="atlas-group-head"><h2>/);
+		assert.match(searchUiSource, /results\.map\(resultCard\)\.join\(''\)/);
 		assert.match(searchUiSource, /\.atlas-results\.two-column \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
-		assert.doesNotMatch(searchUiSource, /atlas-lanes|atlas-lane|const groups = new Map/);
+		assert.match(searchUiSource, /resultBody\(resultGroups\(\)\)/);
+		assert.doesNotMatch(searchUiSource, /atlas-lanes|atlas-lane/);
 	});
 
 	test('keeps opening and closing Search Scope presentation-only', () => {

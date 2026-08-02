@@ -1050,22 +1050,30 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .control-block { min-width: 0; }
 .control-block .group-label { min-height: 22px; padding: 0 0 7px; }
 .search-atlas { padding: 26px 28px 72px; }
-.atlas-hero { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(360px, 1.4fr); gap: 24px; align-items: end; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
-.atlas-controls { display: grid; gap: 10px; }
-.atlas-filter-strip { display: grid; grid-template-columns: minmax(260px, .8fr) max-content minmax(420px, 1.5fr); align-items: start; gap: 18px; margin: 14px 0 18px; }
+.atlas-hero { padding-bottom: 18px; border-bottom: 1px solid var(--border); }
+.atlas-filter-strip { display: grid; grid-template-columns: 180px minmax(240px, 1fr); grid-template-areas: "scope query" "secondary secondary"; align-items: start; gap: 14px 18px; margin: 14px 0 18px; }
+.atlas-filter-strip .scope-control { grid-area: scope; }
 .atlas-filter-strip .search-scope { position: relative; margin: 0; padding: 0; border: 0; background: transparent; }
 .atlas-filter-strip .addon-trigger { width: 100%; min-height: 38px; }
 .atlas-filter-strip .addon-menu { left: 0; }
+.atlas-filter-strip .query-field { min-height: 38px; box-sizing: border-box; }
+.atlas-query { grid-area: query; min-width: 240px; }
+.atlas-query .text-options { margin-top: 8px; }
+.atlas-secondary-controls { grid-area: secondary; display: flex; align-items: start; gap: 18px; }
+.atlas-groups { display: grid; gap: 14px; margin-top: 12px; }
+.atlas-group { min-width: 0; border: 1px solid var(--border); background: var(--panel); }
+.atlas-group-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--alt); }
+.atlas-group-head h2 { margin: 0; font-size: 13px; }
 .atlas-results { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 12px; align-items: start; }
 .atlas-results.two-column { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.atlas-group .atlas-results { margin: 0; padding: 10px; }
 .atlas-card { min-width: 0; padding: 12px; border: 1px solid var(--border); border-left: 3px solid var(--accent); background: var(--panel); cursor: pointer; user-select: text; }
 .atlas-card:hover, .atlas-card.selected { border-color: var(--accent); }
 .atlas-card:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 .atlas-card-head { display: flex; justify-content: space-between; gap: 10px; }
 .atlas-card .result-path { max-width: none; margin: 4px 0 0; text-align: left; }
-@media (max-width: 1100px) { .atlas-filter-strip { grid-template-columns: minmax(240px, .8fr) minmax(300px, 1fr); } .atlas-filter-strip .type-control { grid-column: 1 / -1; } }
-@media (max-width: 980px) { .atlas-results.two-column { grid-template-columns: 1fr; } .atlas-hero { grid-template-columns: 1fr; } }
-@media (max-width: 720px) { .shell { padding: 18px 14px 60px; } .atlas-filter-strip { grid-template-columns: 1fr; } .atlas-filter-strip .type-control { grid-column: auto; } .text-options { flex-wrap: wrap; } .source-header { align-items: flex-start; gap: 10px; } .atlas-card-head { align-items: flex-start; flex-wrap: wrap; } .result-path { max-width: 100%; margin-left: 0; text-align: left; } }
+@media (max-width: 980px) { .atlas-results.two-column { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .shell { padding: 18px 14px 60px; } .atlas-filter-strip { grid-template-columns: 1fr; grid-template-areas: "scope" "query" "secondary"; } .atlas-secondary-controls { flex-direction: column; } .text-options { flex-wrap: wrap; } .source-header { align-items: flex-start; gap: 10px; } .atlas-card-head { align-items: flex-start; flex-wrap: wrap; } .result-path { max-width: 100%; margin-left: 0; text-align: left; } }
 </style>
 </head>
 <body>
@@ -1221,7 +1229,17 @@ const resultPreview = result => result.kind === 'documentation'
   ? '<div class="md-preview">' + renderMarkdown(result.excerpt) + '</div>'
   : '<pre class="snippet" data-result-preview="' + esc(result.id) + '">' + semanticPreviewText(result) + '</pre>';
 const resultExternalAction = result => result.sourceUrl ? '<button data-external="' + esc(result.id) + '">Open official page</button>' : '';
-const resultCards = () => '<div class="atlas-results' + (state.resultColumns === 2 ? ' two-column' : '') + '">' + visibleResults().map(result => '<article class="atlas-card ' + (state.selected === result.id ? 'selected' : '') + '" data-open="' + esc(result.id) + '" tabindex="0" role="button"><div class="atlas-card-head"><strong>' + esc(result.title) + '</strong><span class="tag">' + esc(result.detail) + '</span></div><div class="result-path">' + esc(result.path) + '</div><div class="result-detail">' + esc(sourceLabel(result)) + '</div>' + resultPreview(result) + '<div class="result-actions">' + resultExternalAction(result) + '</div></article>').join('') + '</div>';
+const resultCard = result => '<article class="atlas-card ' + (state.selected === result.id ? 'selected' : '') + '" data-open="' + esc(result.id) + '" tabindex="0" role="button"><div class="atlas-card-head"><strong>' + esc(result.title) + '</strong><span class="tag">' + esc(result.detail) + '</span></div><div class="result-path">' + esc(result.path) + '</div>' + resultPreview(result) + '<div class="result-actions">' + resultExternalAction(result) + '</div></article>';
+const resultGroups = () => {
+  const groups = new Map();
+  visibleResults().forEach(result => {
+    const label = sourceLabel(result);
+    const group = groups.get(label) ?? [];
+    group.push(result);
+    groups.set(label, group);
+  });
+  return '<div class="atlas-groups">' + [...groups.entries()].map(([label, results]) => '<section class="atlas-group"><div class="atlas-group-head"><h2>' + esc(label) + '</h2><span class="tag">' + results.length + '</span></div><div class="atlas-results' + (state.resultColumns === 2 ? ' two-column' : '') + '">' + results.map(resultCard).join('') + '</div></section>').join('') + '</div>';
+};
 const updateResultPreviews = ids => {
   if (!ids.length) return;
   const pending = new Set(ids);
@@ -1320,7 +1338,7 @@ function render(focusQuery = false) {
   const bottomPager = state.query.trim() && totalMatches() > 0 ? '<div class="page-bottom">' + pageControls() + '</div>' : '';
   const sourceCount = new Set(visibleResults().map(sourceLabel)).size;
   const typeControl = state.mode === 'text' ? '' : '<div class="control-block type-control"><div class="group-label">RESULT TYPE</div>' + typeControls() + '</div>';
-  document.getElementById('app').innerHTML = '<div class="shell search-atlas"><div class="atlas-hero"><div><h1>See where a concept lives</h1><p class="muted">Compare matching code, resources, and documentation across source authorities.</p></div><div class="atlas-controls">' + queryField() + textSearchOptions() + '</div></div><div class="atlas-filter-strip"><div class="control-block scope-control"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '</div><div class="control-block mode-control"><div class="group-label">SEARCH MODE</div>' + modeControls() + '</div>' + typeControl + '</div><div class="source-header"><div><h2>' + totalMatchesLabel() + ' matches across ' + sourceCount + (sourceCount === 1 ? ' source' : ' sources') + '</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Page ' + state.page + ' of ' + totalPages()) + '</span></div>' + pageControls(true) + '</div>' + warnings + resultBody(resultCards()) + bottomPager + '</div>';
+  document.getElementById('app').innerHTML = '<div class="shell search-atlas"><div class="atlas-hero"><h1>See where a concept lives</h1><p class="muted">Compare matching code, resources, and documentation across source authorities.</p></div><div class="atlas-filter-strip"><div class="control-block scope-control"><div class="group-label">SEARCH SCOPE</div>' + searchScope() + '</div><div class="control-block atlas-query"><div class="group-label">SEARCH</div>' + queryField() + textSearchOptions() + '</div><div class="atlas-secondary-controls"><div class="control-block mode-control"><div class="group-label">SEARCH MODE</div>' + modeControls() + '</div>' + typeControl + '</div></div><div class="source-header"><div><h2>' + totalMatchesLabel() + ' matches across ' + sourceCount + (sourceCount === 1 ? ' source' : ' sources') + '</h2><span class="muted">' + (state.status === 'loading' ? 'Searching...' : 'Page ' + state.page + ' of ' + totalPages()) + '</span></div>' + pageControls(true) + '</div>' + warnings + resultBody(resultGroups()) + bottomPager + '</div>';
 	if (state.status !== 'loading') {
 		document.querySelector('.source-header > div:first-child > .muted')?.remove();
 	}
