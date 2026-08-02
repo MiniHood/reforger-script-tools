@@ -296,7 +296,6 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /' more<\/span>'/);
 		assert.match(searchUiSource, /<button class="addon-trigger"[\s\S]*?<div class="addon-chips">/);
 		assert.match(searchUiSource, /\.addon-chips \{[^}]*margin-top: 6px;/);
-		assert.doesNotMatch(searchUiSource, /prototypeVariants/);
 		assert.doesNotMatch(searchUiSource, /addonPrototypeSources/);
 		assert.doesNotMatch(searchUiSource, /SEARCH IN/);
 		assert.match(searchUiSource, /No search scopes selected\./);
@@ -318,10 +317,18 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /<div class="atlas-filter-strip"><div class="control-block scope-control"><div class="group-label">SEARCH SCOPE<\/div>' \+ searchScope\(\) \+ '<\/div><div class="control-block atlas-query"><div class="group-label">SEARCH<\/div>' \+ queryField\(\) \+ textSearchOptions\(\) \+ '<\/div><div class="atlas-secondary-controls"><div class="control-block mode-control"><div class="group-label">SEARCH MODE<\/div>' \+ modeControls\(\)/);
 	});
 
-	test('promotes the corrected source atlas as the only Search presentation', () => {
-		assert.match(searchUiSource, /function renderSearchUi\(webview: vscode\.Webview\): string/);
-		assert.match(searchUiSource, /class="shell search-atlas"/);
-		assert.doesNotMatch(searchUiSource, /prototypeSwitcher|prototypeVariants|pageRenderers|renderFocusVariant|renderInspectorVariant|renderLedgerVariant|renderConsoleVariant/);
+	test('offers four header prototypes over one shared Source Atlas match surface', () => {
+		assert.match(searchUiSource, /function renderSearchUi\(webview: vscode\.Webview, prototypeVariantsEnabled: boolean\): string/);
+		assert.match(searchUiSource, /context\.extensionMode !== vscode\.ExtensionMode\.Production/);
+		assert.match(searchUiSource, /class="shell search-atlas variant-atlas"/);
+		assert.match(searchUiSource, /\{ key: 'atlas', short: 'A', name: 'Current Atlas' \}/);
+		assert.match(searchUiSource, /\{ key: 'deck', short: 'B', name: 'Command Deck' \}/);
+		assert.match(searchUiSource, /\{ key: 'brief', short: 'C', name: 'Search Brief' \}/);
+		assert.match(searchUiSource, /\{ key: 'signal', short: 'D', name: 'Signal Bar' \}/);
+		assert.match(searchUiSource, /new URLSearchParams\(window\.location\.search\)\.get\('variant'\)/);
+		assert.match(searchUiSource, /const prototypeSwitcher = \(\) => \{/);
+		assert.match(searchUiSource, /const pageRenderers = \{ atlas: renderAtlasHeader, deck: renderCommandDeck, brief: renderSearchBrief, signal: renderSignalBar \}/);
+		assert.match(searchUiSource, /cyclePrototypeVariant\(event\.key === 'ArrowLeft' \? -1 : 1\)/);
 		assert.match(searchUiSource, /\.atlas-filter-strip \{ display: grid; grid-template-columns: 180px minmax\(240px, 1fr\); grid-template-areas: "scope query" "secondary secondary"; align-items: start;/);
 		assert.match(searchUiSource, /\.control-block \.group-label \{ min-height: 22px; padding: 0 0 7px;/);
 		assert.match(searchUiSource, /\.atlas-filter-strip \.addon-trigger \{ width: 100%; min-height: 38px;/);
@@ -335,7 +342,11 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /<section class="atlas-group"><div class="atlas-group-head"><h2>/);
 		assert.match(searchUiSource, /results\.map\(resultCard\)\.join\(''\)/);
 		assert.match(searchUiSource, /\.atlas-results\.two-column \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
-		assert.match(searchUiSource, /resultBody\(resultGroups\(\)\)/);
+		assert.match(searchUiSource, /const sharedMatchArea = \(\) => warnings \+ resultBody\(resultGroups\(\)\) \+ bottomPager/);
+		assert.match(searchUiSource, /renderAtlasHeader[\s\S]*?sharedMatchArea\(\)[\s\S]*?renderCommandDeck[\s\S]*?sharedMatchArea\(\)[\s\S]*?renderSearchBrief[\s\S]*?sharedMatchArea\(\)[\s\S]*?renderSignalBar[\s\S]*?sharedMatchArea\(\)/);
+		assert.match(searchUiSource, /\.command-deck \{/);
+		assert.match(searchUiSource, /\.brief-header \{/);
+		assert.match(searchUiSource, /\.signal-header \{/);
 		assert.doesNotMatch(searchUiSource, /atlas-lanes|atlas-lane/);
 	});
 
