@@ -80,6 +80,9 @@ implementation slice is progress, not a completed ticket.
 - [Current indexing performance baseline](research/current-indexing-performance-baseline.md):
   measured physical Game Data cache, source-validation, PAC extraction, and
   bare-server startup timings for evaluating the PAC-backed design.
+- [LSP feature performance review](research/lsp-feature-performance-review.md):
+  live whole-runtime evidence plus controlled semantic-coloring and formatting
+  before/after measurements.
 - [Warm manifest and locator overhead research](research/warm-manifest-locator-overhead-research.md):
   measured manifest/locator costs and the recommended lazy, compact, and binary
   representations for warm startup and first source navigation.

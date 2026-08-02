@@ -109,14 +109,22 @@ fn selected_line_spans(source: &str, range: TextSpan) -> Vec<TextSpan> {
 }
 
 fn line_is_comment_only(line: TextSpan, text: &str, comments: &[Token]) -> bool {
+    let mut comment_index = comments.partition_point(|comment| comment.span.end <= line.start);
     let mut offset = line.start;
     for character in text.chars() {
-        if !character.is_whitespace()
-            && !comments
-                .iter()
-                .any(|comment| comment.span.start <= offset && offset < comment.span.end)
-        {
-            return false;
+        if !character.is_whitespace() {
+            while comments
+                .get(comment_index)
+                .is_some_and(|comment| comment.span.end <= offset)
+            {
+                comment_index += 1;
+            }
+            if !comments
+                .get(comment_index)
+                .is_some_and(|comment| comment.span.start <= offset && offset < comment.span.end)
+            {
+                return false;
+            }
         }
         offset += character.len_utf8();
     }
@@ -172,6 +180,17 @@ mod tests {
             "\t/*!\n\t * \\brief Summary\n\t * \\warning Keep prose\n\t */\n"
         );
         assert!(format_comment_region(&formatted, selected(&formatted)).is_empty());
+    }
+
+    #[test]
+    fn preserves_multiple_comment_tokens_on_one_line() {
+        let source = "\t/* first */ /* second */\n  /* third */ /* fourth */\n";
+        let formatted = apply_edits(source, &format_comment_region(source, selected(source)));
+
+        assert_eq!(
+            formatted,
+            "\t/* first */ /* second */\n\t/* third */ /* fourth */\n"
+        );
     }
 
     #[test]

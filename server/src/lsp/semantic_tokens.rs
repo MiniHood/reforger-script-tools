@@ -588,6 +588,8 @@ fn semantic_raw_tokens(
     let mut identifier_resolver_calls = 0usize;
     let mut identifier_results_reused = 0usize;
     let mut resolved_identifier_kinds = BTreeMap::new();
+    let preprocessor_lines = preprocessor_line_spans(source);
+    let mut preprocessor_line_index = 0usize;
     let token_loop_start = Instant::now();
     for (token_index, token) in lexer_tokens.iter().enumerate() {
         if token_index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
@@ -596,7 +598,8 @@ fn semantic_raw_tokens(
         if token.kind == TokenKind::Whitespace || token.kind == TokenKind::Eof {
             continue;
         }
-        if is_preprocessor_line_token(source, *token) {
+        if token_is_on_preprocessor_line(*token, &preprocessor_lines, &mut preprocessor_line_index)
+        {
             if let Some(token_type) = preprocessor_line_semantic_type(source, *token) {
                 push_raw_semantic_token(&mut tokens, raw_semantic(*token, token_type, 0, 20));
             }
@@ -971,6 +974,8 @@ fn lexical_raw_tokens(
     }
 
     let mut tokens = Vec::new();
+    let preprocessor_lines = preprocessor_line_spans(source);
+    let mut preprocessor_line_index = 0usize;
     let token_loop_start = Instant::now();
 
     for (token_index, token) in lexer_tokens.iter().enumerate() {
@@ -980,7 +985,8 @@ fn lexical_raw_tokens(
         if token.kind == TokenKind::Whitespace || token.kind == TokenKind::Eof {
             continue;
         }
-        if is_preprocessor_line_token(source, *token) {
+        if token_is_on_preprocessor_line(*token, &preprocessor_lines, &mut preprocessor_line_index)
+        {
             if let Some(token_type) = preprocessor_line_semantic_type(source, *token) {
                 push_raw_semantic_token(&mut tokens, raw_semantic(*token, token_type, 0, 20));
             }
@@ -1402,15 +1408,29 @@ fn semantic_modifier_names(modifiers: u32) -> Vec<&'static str> {
         .collect()
 }
 
-fn is_preprocessor_line_token(source: &str, token: Token) -> bool {
-    let line_start = source[..token.span.start]
-        .rfind(['\r', '\n'])
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    let before_token = &source[line_start..token.span.start];
-    let from_token = &source[token.span.start..];
-    before_token.trim_start().starts_with('#')
-        || before_token.trim().is_empty() && from_token.trim_start().starts_with('#')
+fn preprocessor_line_spans(source: &str) -> Vec<TextSpan> {
+    let mut spans = Vec::new();
+    let mut line_start = 0usize;
+    for line in source.split_inclusive('\n') {
+        let line_end = line_start + line.len();
+        if line.trim_start().starts_with('#') {
+            spans.push(TextSpan::new(line_start, line_end));
+        }
+        line_start = line_end;
+    }
+    spans
+}
+
+fn token_is_on_preprocessor_line(token: Token, lines: &[TextSpan], line_index: &mut usize) -> bool {
+    while lines
+        .get(*line_index)
+        .is_some_and(|line| line.end <= token.span.start)
+    {
+        *line_index += 1;
+    }
+    lines
+        .get(*line_index)
+        .is_some_and(|line| line.start <= token.span.start && token.span.start < line.end)
 }
 
 fn preprocessor_line_semantic_type(source: &str, token: Token) -> Option<u32> {
@@ -1938,6 +1958,42 @@ class Example
 
         assert_eq!(known_tokens, REFERENCE_COUNT + 1);
         assert!(report.timings.identifier_resolver_calls >= REFERENCE_COUNT);
+    }
+
+    #[test]
+    fn preprocessor_line_projection_handles_indentation_crlf_and_final_lines() {
+        let source = "  #define VALUE 1\r\nint value;\n\t#ifdef TEST\nVALUE\n#endif";
+        let lines = preprocessor_line_spans(source);
+        let mut line_index = 0usize;
+        let classified = lex(source)
+            .into_iter()
+            .filter(|token| !matches!(token.kind, TokenKind::Whitespace | TokenKind::Eof))
+            .map(|token| {
+                (
+                    span_text(source, token.span).to_string(),
+                    token_is_on_preprocessor_line(token, &lines, &mut line_index),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            classified,
+            vec![
+                ("#".to_string(), true),
+                ("define".to_string(), true),
+                ("VALUE".to_string(), true),
+                ("1".to_string(), true),
+                ("int".to_string(), false),
+                ("value".to_string(), false),
+                (";".to_string(), false),
+                ("#".to_string(), true),
+                ("ifdef".to_string(), true),
+                ("TEST".to_string(), true),
+                ("VALUE".to_string(), false),
+                ("#".to_string(), true),
+                ("endif".to_string(), true),
+            ]
+        );
     }
 
     #[test]

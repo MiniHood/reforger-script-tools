@@ -36,6 +36,10 @@ name = "expression_type_corpus_report"
 path = "../tools/server-reports/expression_type_corpus_report.rs"
 
 [[example]]
+name = "formatting_benchmark"
+path = "../tools/server-reports/formatting_benchmark.rs"
+
+[[example]]
 name = "index_build_baseline"
 path = "../tools/server-reports/index_build_baseline.rs"
 
