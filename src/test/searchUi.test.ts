@@ -2,10 +2,11 @@ import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vm from 'node:vm';
+import * as vscode from 'vscode';
 import { searchLimits } from '../extensionConfig/search';
 import { addonScopeLabel, asThumbnailColor, formatSearchKind, maxSearchPages, McpToolError, normalizeResourceSearchPage, normalizeSearchPage, normalizeSourceRelationshipPage, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceContextPreview, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
 import { semanticPreviewForLine, semanticPreviewForLines, semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
-import { renderSearchUiForTest } from '../searchPrototype/searchUiPrototype';
+import { externalResourceLinkFor, renderSearchUiForTest } from '../searchPrototype/searchUiPrototype';
 
 const searchUiSource = fs.readFileSync(
 	path.join(__dirname, '../../src/searchPrototype/searchUiPrototype.ts'),
@@ -77,6 +78,18 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /hit\.kind === 'resource' && !hit\.readInput\.relativePath/);
 		assert.match(searchUiSource, /client\.readComplete\(hit\)/);
 		assert.match(searchUiSource, /showTextDocument\(documentWithLanguage, \{ preview: true \}\)/);
+	});
+
+	test('opens string tables through the official redirect without changing the Resource Manager target', () => {
+		const target = externalResourceLinkFor({
+			workbenchLink: 'enfusion://ResourceManager/~ArmaReforger:Language/localization.st',
+		});
+		const expected = 'https://enfusionengine.com/api/redirect?to=enfusion://ResourceManager/~ArmaReforger:Language/localization.st';
+		assert.strictEqual(vscode.Uri.parse(expected, true).toString(true), expected);
+		assert.strictEqual(target, expected);
+		assert.strictEqual(externalResourceLinkFor({
+			workbenchLink: 'enfusion://ResourceManager/~ArmaReforger:Prefabs/Props/Radio.et',
+		}), 'enfusion://ResourceManager/~ArmaReforger:Prefabs/Props/Radio.et');
 	});
 
 	test('offers a resource search mode backed by the canonical Workbench tools', () => {

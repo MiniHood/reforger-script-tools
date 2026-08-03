@@ -216,7 +216,9 @@ configs, and terrain-support files—use an add-on-qualified `ResourceManager`
 path. In the extension-hosted Search page, a `.c` resource uses its exact
 Game Data source-read handoff to assemble the complete script and open it as an
 Enforce document in a VS Code preview editor; other resource results follow
-their Workbench links. Cached catalogue
+their Workbench links. String-table results preserve their add-on-qualified
+`ResourceManager` target but open it through the official Enfusion Engine HTTPS
+redirect, avoiding direct custom-protocol dispatch for `.st` files. Cached catalogue
 records refresh this derived link when read so extension upgrades do not retain
 an older routing rule. Resource cards render the returned identity and path
 without source previews; selecting a resource category performs an

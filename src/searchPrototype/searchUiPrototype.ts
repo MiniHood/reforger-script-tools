@@ -84,6 +84,15 @@ interface RelationshipSearchState {
 	depth: 'one' | 'all';
 }
 
+export function externalResourceLinkFor(hit: Pick<SearchHit, 'workbenchLink'>): string | undefined {
+	if (!hit.workbenchLink) {
+		return undefined;
+	}
+	return /\.st$/i.test(hit.workbenchLink)
+		? `https://enfusionengine.com/api/redirect?to=${hit.workbenchLink}`
+		: hit.workbenchLink;
+}
+
 export function registerSearchUi(context: vscode.ExtensionContext): void {
 	diagnostic('searchUi.registered');
 	void vscode.commands.executeCommand('setContext', searchContext.key, true);
@@ -939,7 +948,7 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 	try {
 		diagnostic('searchUi.resultOpenStarted', { source: hit.source, kind: hit.kind });
 		if (hit.kind === 'resource' && !hit.readInput.relativePath) {
-			const resourceLink = hit.workbenchLink;
+			const resourceLink = externalResourceLinkFor(hit);
 			if (!resourceLink) {
 				throw new Error('The resource search result did not include a complete Workbench resource link.');
 			}
