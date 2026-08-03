@@ -42,6 +42,8 @@ trademarks or registered trademarks of Bohemia Interactive a.s.
 - Automatic installed add-on discovery and PAC-backed base-game indexing.
 - Automatic and manual script validation through the Workbench NET API.
 - Script and resource search with `Ctrl+Alt+F`.
+- Bundled MCP server for AI-assisted script, resource, add-on, and official
+  documentation search.
 
 The extension recognizes `.c` files under `Scripts` or `scripts` directories as
 Enfusion Script.
@@ -65,6 +67,14 @@ Save and Validate On Idle** to use only explicit saves and manual validation.
 
 These steps follow Bohemia Interactive's official
 [Resource Manager options documentation](https://community.bistudio.com/wiki/Arma_Reforger%3AResource_Manager%3A_Options#Enable_net_API).
+
+## MCP Server
+
+Run **Reforger Script Tools: Copy MCP Configuration** and choose Codex TOML or
+generic MCP JSON to connect a compatible AI client. The bundled server searches
+workspace scripts, indexed add-ons and resources, and packaged official
+Reforger documentation without requiring VS Code to remain open. Run the
+command again after upgrading the extension or changing **External Indexes**.
 
 ## Settings
 
