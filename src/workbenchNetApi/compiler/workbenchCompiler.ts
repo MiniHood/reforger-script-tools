@@ -113,6 +113,12 @@ export function shouldRefreshWorkbenchGraph(
 		|| (current.isRunning && bridgeInactive);
 }
 
+export function workbenchStatusCommand(phase: WorkbenchUiPhase): string {
+	return phase === 'disabled'
+		? workbenchCommands.enableIntegration
+		: workbenchCommands.validateScripts;
+}
+
 interface WorkbenchCompilerFailure {
 	category: WorkbenchGatewayFailureCategory | 'save-failed';
 	recoveryHint: string;
@@ -223,6 +229,10 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			vscode.commands.registerCommand(
 				workbenchCommands.validateScripts,
 				() => this.requestManualValidation(),
+			),
+			vscode.commands.registerCommand(
+				workbenchCommands.enableIntegration,
+				() => this.integration?.requestEnablement(),
 			),
 			vscode.commands.registerCommand(
 				workbenchCommands.openCompilerDiagnostic,
@@ -868,6 +878,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			});
 		}
 		this.phase = phase;
+		this.statusItem.command = workbenchStatusCommand(phase);
 		this.statusItem.backgroundColor = phase === 'unavailable' || this.bridgeInactive
 			? new vscode.ThemeColor('statusBarItem.errorBackground')
 			: undefined;
@@ -907,7 +918,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 				? [`Failure: ${this.lastFailure.category}. ${this.lastFailure.recoveryHint}`]
 				: []),
 			'Workbench validates its currently open project; the built-in API cannot prove that it matches this VS Code workspace.',
-			'Select to validate scripts now.',
+			phase === 'disabled'
+				? 'Select to enable Workbench integration.'
+				: 'Select to validate scripts now.',
 		].join('\n\n');
 	}
 

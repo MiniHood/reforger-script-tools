@@ -426,6 +426,7 @@ suite('extension activation', () => {
 		assert.ok(contributedCommands.some(command =>
 			command.command === mcpCommands.copyConfiguration));
 		assert.ok(commands.includes(workbenchCommands.validateScripts));
+		assert.ok(commands.includes(workbenchCommands.enableIntegration));
 		assert.ok(contributedCommands.some(command =>
 			command.command === workbenchCommands.validateScripts));
 	});

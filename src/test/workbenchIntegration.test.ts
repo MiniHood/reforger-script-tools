@@ -105,6 +105,44 @@ suite('Workbench Integration', () => {
 		assert.strictEqual(bootstraps, 0);
 	});
 
+	test('click-requested enablement prompts after an explicit disable', async () => {
+		let enabled = false;
+		let prompts = 0;
+		let bootstraps = 0;
+		const coordinator = new WorkbenchIntegrationCoordinator(
+			runtimeWith({
+				status: async () => statusResult({
+					installed: false,
+					installationAvailable: true,
+					workbenchRunning: false,
+				}),
+				bootstrap: async () => {
+					assert.strictEqual(enabled, true);
+					bootstraps += 1;
+					return bootstrapResult();
+				},
+			}),
+			uiWith({
+				confirmInstall: async () => {
+					prompts += 1;
+					return true;
+				},
+			}),
+			false,
+			async () => {
+				enabled = true;
+			},
+			false,
+		);
+
+		await coordinator.start();
+		assert.strictEqual(prompts, 0);
+
+		assert.strictEqual(await coordinator.requestEnablement(), true);
+		assert.strictEqual(prompts, 1);
+		assert.strictEqual(bootstraps, 1);
+	});
+
 	test('disabled Workbench stays dormant when the first-install prompt is not eligible', async () => {
 		let statuses = 0;
 		const coordinator = new WorkbenchIntegrationCoordinator(

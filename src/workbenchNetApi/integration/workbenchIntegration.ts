@@ -90,21 +90,32 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 	}
 
 	public start(): Promise<boolean> {
+		void this.beginStartup(false);
+		return this.ready;
+	}
+
+	public requestEnablement(): Promise<boolean> {
+		if (this.enabled) {
+			return Promise.resolve(true);
+		}
+		return this.beginStartup(true);
+	}
+
+	private beginStartup(forcePrompt: boolean): Promise<boolean> {
 		if (this.enabled) {
 			this.resolveConsentSettled?.(true);
 		}
-		if (this.startup && (this.startupInProgress
-			|| this.startupResult !== false
-			|| !this.enabled)) {
-			return this.ready;
+		if (this.startupInProgress && this.startup) {
+			return this.startup;
 		}
-		if (this.startupResult === false && !this.enabled) {
-			return this.ready;
+		if (!forcePrompt && this.startup
+			&& (this.startupResult !== false || !this.enabled)) {
+			return this.startup;
 		}
-		if (!this.enabled && !this.promptWhenDisabled) {
+		if (!this.enabled && !this.promptWhenDisabled && !forcePrompt) {
 			this.resolveConsentSettled?.(false);
 			this.resolveReady?.(true);
-			return this.ready;
+			return Promise.resolve(true);
 		}
 		this.startupInProgress = true;
 		this.startup = this.bootstrapStartup()
@@ -124,7 +135,7 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 				this.resolveReady?.(false);
 				return false;
 			});
-		return this.ready;
+		return this.startup;
 	}
 
 	public onWorkbenchConfigurationChanged(enabled: boolean): void {

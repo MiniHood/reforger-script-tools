@@ -13,6 +13,7 @@ import {
 import {
 	shouldRefreshWorkbenchGraph,
 	workbenchConnectionStarted,
+	workbenchStatusCommand,
 	type WorkbenchCompilerObservation,
 } from '../workbenchNetApi/compiler/workbenchCompiler';
 import {
@@ -24,6 +25,19 @@ import {
 
 const workbenchFixtureSource = 'class WorkbenchCompilerFixture\n{\n}\n';
 let temporaryScriptCounter = 0;
+
+suite('Workbench compiler status', () => {
+	test('routes the disabled status item to Workbench enablement', () => {
+		assert.strictEqual(
+			workbenchStatusCommand('disabled'),
+			workbenchCommands.enableIntegration,
+		);
+		assert.strictEqual(
+			workbenchStatusCommand('ready'),
+			workbenchCommands.validateScripts,
+		);
+	});
+});
 
 suite('Workbench compiler validation', () => {
 	teardown(async () => {

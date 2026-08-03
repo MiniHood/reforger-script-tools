@@ -62,8 +62,10 @@ completes without launching it. Declining records the setting as `false` while
 the other language and indexing features continue normally.
 
 The extension reconnects automatically. The Workbench status item shows
-availability, and **Reforger Script Tools: Validate Scripts in Workbench** runs
-validation manually. Workbench validation is also requested at session start
+availability; selecting it while disabled opens the enablement prompt, while
+selecting it after enablement runs validation. **Reforger Script Tools:
+Validate Scripts in Workbench** also runs validation manually. Workbench
+validation is requested at session start
 and after an eligible save. By default, it also saves the active dirty script
 and validates after three seconds without typing; disable **Workbench NET API:
 Save and Validate On Idle** to use only explicit saves and manual validation.

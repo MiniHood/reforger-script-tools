@@ -22,6 +22,7 @@ export const workbenchDefaults = {
 
 export const workbenchCommands = {
 	validateScripts: 'reforger-sript-tools.workbench.validateScripts',
+	enableIntegration: 'reforger-sript-tools.workbench.enableIntegration',
 	openCompilerDiagnostic: 'reforger-sript-tools.workbench.openCompilerDiagnostic',
 } as const;
 

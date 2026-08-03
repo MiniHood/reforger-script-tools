@@ -401,7 +401,9 @@ activations maintain or upgrade the bridge without prompting, leave
 already-correct registry values untouched, and repair a missing or stale
 `enfusion://` registration through the same authorized bootstrap. An
 explicitly disabled setting remains off and authorizes no installation or
-maintenance.
+maintenance. Selecting the disabled Workbench status item offers the same
+enablement prompt and installation path as first activation; enabling the
+setting directly also authorizes setup.
 
 The `reforgerScriptTools.workbench.externalIndexMode` setting controls external
 index scope independently of NET API availability. Its default `loaded` mode

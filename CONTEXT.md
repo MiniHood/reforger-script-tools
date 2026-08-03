@@ -111,7 +111,9 @@ _Avoid_: compiler-delay opt-out, Workbench option, connection preference
 The single extension status-bar item that reports Workbench Availability State,
 current validation activity, Workbench-reported compilation state, and
 Workbench Compiler Diagnostic freshness. Its tooltip exposes configuration and
-the last sanitized outcome; it does not use recurring connection-loss
+the last sanitized outcome. Selecting it while disabled requests the existing
+Workbench Integration enablement prompt; selecting it in every enabled state
+requests compiler validation. It does not use recurring connection-loss
 notifications.
 _Avoid_: connection popup, compiler progress notification, NET API console
 
