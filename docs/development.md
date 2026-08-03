@@ -384,16 +384,21 @@ than assuming a previous process reflects the change.
 The unified `reforgerScriptTools.workbench.enabled` setting defaults to
 `false`. When there is no prior approval, the extension asks whether it may
 enable Workbench integration and install the managed bridge. Approval updates
-the setting to `true`, writes `NetAPI_Enabled` as `REG_SZ "1"`, and either asks
-the user to restart an open Workbench or completes setup without launching a
-closed Workbench. Until that first prompt is answered, activation does not
+the setting to `true`, writes `NetAPI_Enabled` as `REG_SZ "1"`, and registers
+the per-user `enfusion://` URL handler at
+`HKCU\Software\Classes\enfusion`. The handler command uses the resolved
+Workbench executable, base-game add-ons directory, and `ArmaReforger.gproj`,
+with every path and the `%1` URI argument quoted. Setup then either asks the
+user to restart an open Workbench or completes without launching a closed
+Workbench. Until that first prompt is answered, activation does not
 register the Workbench compiler features, start the language server, show the
 indexing progress indicator, install bridge scripts, or build indexes. A
 decline stores the Workbench setting as `false`, after which the normal
 non-Workbench language-server and indexing startup may proceed. Approval is
-retained as internal extension state;
-later enabled activations maintain or upgrade the bridge without prompting and
-never rewrite the registry value. An explicitly disabled setting remains off.
+retained as internal extension state. Later enabled activations maintain or
+upgrade the bridge without prompting, leave already-correct registry values
+untouched, and repair a missing or stale `enfusion://` registration through the
+same consented bootstrap. An explicitly disabled setting remains off.
 An approved installation without an explicit enablement value remains off; the
 stored approval never rewrites the setting.
 

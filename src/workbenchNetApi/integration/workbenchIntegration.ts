@@ -32,6 +32,7 @@ export interface WorkbenchIntegrationStatus {
 	maintenanceRequired: boolean;
 	profileAvailable: boolean;
 	workbenchRunning: boolean;
+	enfusionProtocolRegistered: boolean;
 }
 
 export interface WorkbenchIntegrationRuntime {
@@ -226,14 +227,19 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 		} else if (status.ok
 			&& status.value.installed
 			&& status.value.profileAvailable
-			&& !status.value.maintenanceRequired) {
+			&& !status.value.maintenanceRequired
+			&& status.value.enfusionProtocolRegistered) {
 			result = { ok: true, value: {
 				netApiEnabled: true,
 				netApiWritePerformed: false,
+				enfusionProtocolRegistered: true,
+				enfusionProtocolWritePerformed: false,
 				bridgeInstalled: true,
 				bridgeChanged: false,
 				profileAvailable: true,
 			} };
+		} else if (status.ok && !status.value.enfusionProtocolRegistered) {
+			result = await this.ui.runInstall(() => this.runtime.bootstrap(endpoint));
 		} else {
 			result = await this.ui.runInstall(() => this.runtime.maintain(endpoint));
 		}
@@ -435,7 +441,8 @@ function decodeStatus(
 		|| typeof value.bridge.installationAvailable !== 'boolean'
 		|| typeof value.bridge.maintenanceRequired !== 'boolean'
 		|| !isRecord(value.profile)
-		|| typeof value.profile.exists !== 'boolean') {
+		|| typeof value.profile.exists !== 'boolean'
+		|| typeof value.enfusionProtocolRegistered !== 'boolean') {
 		return protocolFailure();
 	}
 	const native = isRecord(value.native) && typeof value.native.isRunning === 'boolean'
@@ -447,6 +454,7 @@ function decodeStatus(
 		maintenanceRequired: value.bridge.maintenanceRequired,
 		profileAvailable: value.profile.exists,
 		workbenchRunning: native,
+		enfusionProtocolRegistered: value.enfusionProtocolRegistered,
 	} };
 }
 
@@ -460,6 +468,8 @@ function decodeBootstrap(
 	if (!isRecord(value)
 		|| typeof value.netApiEnabled !== 'boolean'
 		|| typeof value.netApiWritePerformed !== 'boolean'
+		|| typeof value.enfusionProtocolRegistered !== 'boolean'
+		|| typeof value.enfusionProtocolWritePerformed !== 'boolean'
 		|| typeof value.bridgeInstalled !== 'boolean'
 		|| (value.bridgeVersion !== undefined && typeof value.bridgeVersion !== 'string')
 		|| typeof value.bridgeChanged !== 'boolean'
@@ -469,6 +479,8 @@ function decodeBootstrap(
 	return { ok: true, value: {
 		netApiEnabled: value.netApiEnabled,
 		netApiWritePerformed: value.netApiWritePerformed,
+		enfusionProtocolRegistered: value.enfusionProtocolRegistered,
+		enfusionProtocolWritePerformed: value.enfusionProtocolWritePerformed,
 		bridgeInstalled: value.bridgeInstalled,
 		...(value.bridgeVersion === undefined ? {} : { bridgeVersion: value.bridgeVersion }),
 		bridgeChanged: value.bridgeChanged,

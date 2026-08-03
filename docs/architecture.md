@@ -314,9 +314,14 @@ classes, field blocks from methods, sibling methods, and their attached member
 comments; consecutive blank lines are not permitted. This preserves compiler
 validation as the Workbench authority while making the reviewed source directly
 inspectable.
-The extension's bootstrap operation writes Workbench's `NetAPI_Enabled` value
-as `REG_SZ "1"` only during first approval, then installs or updates the
-managed bridge without requiring an existing NET API connection. If Workbench
+The extension's consented bootstrap operation ensures Workbench's
+`NetAPI_Enabled` value is `REG_SZ "1"` and registers the per-user
+`enfusion://` Windows URL protocol beneath
+`HKCU\Software\Classes\enfusion`, including the quoted Workbench launch command
+resolved from the authoritative Steam installations; repeated writes are
+idempotent. A later approved activation verifies that complete registration and
+reruns bootstrap only when it is missing or stale. Bootstrap then installs or
+updates the managed bridge without requiring an existing NET API connection. If Workbench
 is already running, the extension asks the user to restart it. If it is closed,
 the extension completes setup without launching it; offline indexing remains
 available until the user opens Workbench. Stored approval never enables an

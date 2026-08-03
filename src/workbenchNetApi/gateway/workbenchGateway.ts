@@ -113,6 +113,8 @@ export interface WorkbenchLoadedAddonGraph {
 export interface WorkbenchIntegrationBootstrap {
   netApiEnabled: boolean;
   netApiWritePerformed: boolean;
+  enfusionProtocolRegistered: boolean;
+  enfusionProtocolWritePerformed: boolean;
   bridgeInstalled: boolean;
   bridgeVersion?: string;
   bridgeChanged: boolean;

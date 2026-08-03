@@ -189,6 +189,7 @@ pub struct WorkbenchOverview {
     pub executable: WorkbenchPathStatus,
     pub profile: WorkbenchPathStatus,
     pub bridge_directory: PathBuf,
+    pub enfusion_protocol_registered: bool,
     pub native: Option<WorkbenchStatus>,
     pub native_failure: Option<String>,
     pub bridge: ManagedBridgeStatus,
@@ -210,6 +211,8 @@ pub struct WorkbenchBridgeInstallResult {
 pub struct WorkbenchIntegrationBootstrapResult {
     pub net_api_enabled: bool,
     pub net_api_write_performed: bool,
+    pub enfusion_protocol_registered: bool,
+    pub enfusion_protocol_write_performed: bool,
     pub bridge_installed: bool,
     pub bridge_version: Option<String>,
     pub bridge_changed: bool,
@@ -1225,6 +1228,7 @@ impl WorkbenchController {
             .map(|failure| failure_code(failure.code).to_string());
         let native = native_result.ok();
         let mut bridge = self.bridge_disk_status(&paths.bridge_directory);
+        let enfusion_protocol_registered = enfusion_protocol_registered(&paths);
         if native.is_some() {
             if !bridge.installed {
                 bridge.installation_available = paths.profile.is_dir();
@@ -1236,6 +1240,7 @@ impl WorkbenchController {
             executable: path_status(paths.executable, &paths.executable_source),
             profile: path_status(Some(paths.profile), "windows-user"),
             bridge_directory: paths.bridge_directory,
+            enfusion_protocol_registered,
             native,
             native_failure,
             bridge,
@@ -1257,6 +1262,7 @@ impl WorkbenchController {
                 "bridgeInstalled": overview.bridge.installed,
                 "bridgeVersion": overview.bridge.installed_version.clone(),
                 "protocolVersion": overview.bridge.protocol_version,
+                "enfusionProtocolRegistered": overview.enfusion_protocol_registered,
             }),
         );
         overview.support_log.exists = overview
@@ -1299,6 +1305,16 @@ impl WorkbenchController {
             .lock()
             .map_err(|_| failure(WorkbenchFailureCode::Unavailable))?;
         let started = Instant::now();
+        let paths = self.paths();
+        let enfusion_protocol_write_performed =
+            register_enfusion_protocol(&paths).map_err(|error| {
+                self.correlate_failure_details(
+                    "integration-bootstrap",
+                    "enfusion-protocol-registration-failed",
+                    failure(WorkbenchFailureCode::Unavailable),
+                    json!({"errorKind": format!("{:?}", error.kind())}),
+                )
+            })?;
         let net_api_write_performed = enable_workbench_net_api().map_err(|error| {
             self.correlate_failure_details(
                 "integration-bootstrap",
@@ -1315,6 +1331,8 @@ impl WorkbenchController {
             json!({
                 "netApiEnabled": true,
                 "netApiWritePerformed": net_api_write_performed,
+                "enfusionProtocolRegistered": true,
+                "enfusionProtocolWritePerformed": enfusion_protocol_write_performed,
                 "bridgeInstalled": result.bridge_installed,
                 "bridgeVersion": result.bridge_version.clone(),
                 "bridgeChanged": result.bridge_changed,
@@ -1324,6 +1342,8 @@ impl WorkbenchController {
         Ok(WorkbenchIntegrationBootstrapResult {
             net_api_enabled: true,
             net_api_write_performed,
+            enfusion_protocol_registered: true,
+            enfusion_protocol_write_performed,
             ..result
         })
     }
@@ -1339,6 +1359,8 @@ impl WorkbenchController {
         Ok(WorkbenchIntegrationBootstrapResult {
             net_api_enabled: false,
             net_api_write_performed: false,
+            enfusion_protocol_registered: false,
+            enfusion_protocol_write_performed: false,
             ..result
         })
     }
@@ -1381,6 +1403,8 @@ impl WorkbenchController {
             return Ok(WorkbenchIntegrationBootstrapResult {
                 net_api_enabled: false,
                 net_api_write_performed: false,
+                enfusion_protocol_registered: false,
+                enfusion_protocol_write_performed: false,
                 bridge_installed: false,
                 bridge_version: None,
                 bridge_changed: false,
@@ -1431,6 +1455,8 @@ impl WorkbenchController {
         Ok(WorkbenchIntegrationBootstrapResult {
             net_api_enabled: false,
             net_api_write_performed: false,
+            enfusion_protocol_registered: false,
+            enfusion_protocol_write_performed: false,
             bridge_installed: existing_manifest.is_some(),
             bridge_version: existing_manifest.map(|manifest| manifest.bridge_version),
             bridge_changed,
@@ -8611,8 +8637,234 @@ fn registered_steam_roots() -> Vec<PathBuf> {
     Vec::new()
 }
 
+fn enfusion_protocol_command(executable: &Path, addons: &Path, project: &Path) -> String {
+    format!(
+        "\"{}\" -addonsDir \"{}\" -gproj \"{}\" -uri=\"%1\"",
+        windows_command_path(executable),
+        windows_command_argument_path(addons),
+        windows_command_argument_path(project),
+    )
+}
+
+fn windows_command_argument_path(path: &Path) -> String {
+    windows_command_path(path).replace('\\', "/")
+}
+
+fn windows_command_path(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    if let Some(path) = value.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{path}")
+    } else {
+        value.strip_prefix(r"\\?\").unwrap_or(&value).to_string()
+    }
+}
+
+#[cfg(windows)]
+fn register_enfusion_protocol(paths: &ResolvedWorkbenchPaths) -> std::io::Result<bool> {
+    let command = resolved_enfusion_protocol_command(paths)?;
+    let mut changed = false;
+    changed |= set_current_user_registry_string(
+        r"Software\Classes\enfusion",
+        None,
+        "URL:enfusion Protocol",
+    )?;
+    changed |=
+        set_current_user_registry_string(r"Software\Classes\enfusion", Some("URL Protocol"), "")?;
+    changed |= set_current_user_registry_string(
+        r"Software\Classes\enfusion\shell\open\command",
+        None,
+        &command,
+    )?;
+    Ok(changed)
+}
+
+fn resolved_enfusion_protocol_command(paths: &ResolvedWorkbenchPaths) -> std::io::Result<String> {
+    let executable = paths
+        .executable
+        .as_deref()
+        .filter(|path| is_workbench_executable(path))
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "the resolved Workbench executable is unavailable",
+            )
+        })?;
+    let addons = paths
+        .game
+        .as_deref()
+        .map(|game| game.join("addons"))
+        .filter(|path| path.is_dir())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "the resolved Arma Reforger add-ons directory is unavailable",
+            )
+        })?;
+    let project = addons.join("data").join("ArmaReforger.gproj");
+    if !project.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "the resolved base-game Workbench project is unavailable",
+        ));
+    }
+    Ok(enfusion_protocol_command(executable, &addons, &project))
+}
+
+#[cfg(not(windows))]
+fn register_enfusion_protocol(_paths: &ResolvedWorkbenchPaths) -> std::io::Result<bool> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "enfusion protocol registration is only supported on Windows",
+    ))
+}
+
+#[cfg(windows)]
+fn enfusion_protocol_registered(paths: &ResolvedWorkbenchPaths) -> bool {
+    use windows_sys::Win32::System::Registry::HKEY_CURRENT_USER;
+
+    let Ok(expected_command) = resolved_enfusion_protocol_command(paths) else {
+        return false;
+    };
+    windows_registry_string(HKEY_CURRENT_USER, r"Software\Classes\enfusion", "").as_deref()
+        == Some("URL:enfusion Protocol")
+        && windows_registry_string_including_empty(
+            HKEY_CURRENT_USER,
+            r"Software\Classes\enfusion",
+            "URL Protocol",
+        )
+        .as_deref()
+            == Some("")
+        && windows_registry_string(
+            HKEY_CURRENT_USER,
+            r"Software\Classes\enfusion\shell\open\command",
+            "",
+        )
+        .as_deref()
+            == Some(expected_command.as_str())
+}
+
+#[cfg(not(windows))]
+fn enfusion_protocol_registered(_paths: &ResolvedWorkbenchPaths) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn set_current_user_registry_string(
+    key_path: &str,
+    value_name: Option<&str>,
+    value: &str,
+) -> std::io::Result<bool> {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyW, RegQueryValueExW, RegSetValueExW, HKEY_CURRENT_USER, REG_SZ,
+    };
+
+    let key_path = key_path
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let value_name = value_name.map(|name| {
+        name.encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>()
+    });
+    let value_name_ptr = value_name
+        .as_ref()
+        .map_or(std::ptr::null(), |name| name.as_ptr());
+    let mut key = null_mut();
+    let status = unsafe { RegCreateKeyW(HKEY_CURRENT_USER, key_path.as_ptr(), &mut key) };
+    if status != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(status as i32));
+    }
+
+    let result = (|| {
+        let mut data_type = 0_u32;
+        let mut byte_count = 0_u32;
+        let read_status = unsafe {
+            RegQueryValueExW(
+                key,
+                value_name_ptr,
+                null_mut(),
+                &mut data_type,
+                null_mut(),
+                &mut byte_count,
+            )
+        };
+        let current = if read_status == ERROR_SUCCESS
+            && data_type == REG_SZ
+            && byte_count >= 2
+            && byte_count % 2 == 0
+        {
+            let mut buffer = vec![0_u16; byte_count as usize / 2];
+            let read_status = unsafe {
+                RegQueryValueExW(
+                    key,
+                    value_name_ptr,
+                    null_mut(),
+                    &mut data_type,
+                    buffer.as_mut_ptr().cast(),
+                    &mut byte_count,
+                )
+            };
+            if read_status != ERROR_SUCCESS {
+                return Err(std::io::Error::from_raw_os_error(read_status as i32));
+            }
+            Some(
+                String::from_utf16_lossy(&buffer)
+                    .trim_end_matches('\0')
+                    .to_string(),
+            )
+        } else if read_status == ERROR_FILE_NOT_FOUND {
+            None
+        } else if read_status == ERROR_SUCCESS && data_type == REG_SZ && byte_count % 2 != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Windows registry string has an odd byte length",
+            ));
+        } else if read_status == ERROR_SUCCESS {
+            None
+        } else {
+            return Err(std::io::Error::from_raw_os_error(read_status as i32));
+        };
+        if current.as_deref() == Some(value) {
+            return Ok(false);
+        }
+
+        let encoded = value
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let status = unsafe {
+            RegSetValueExW(
+                key,
+                value_name_ptr,
+                0,
+                REG_SZ,
+                encoded.as_ptr().cast(),
+                (encoded.len() * std::mem::size_of::<u16>()) as u32,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(std::io::Error::from_raw_os_error(status as i32));
+        }
+        Ok(true)
+    })();
+    unsafe { RegCloseKey(key) };
+    result
+}
+
 #[cfg(windows)]
 fn windows_registry_string(
+    hive: windows_sys::Win32::System::Registry::HKEY,
+    key: &str,
+    value: &str,
+) -> Option<String> {
+    windows_registry_string_including_empty(hive, key, value).filter(|text| !text.trim().is_empty())
+}
+
+#[cfg(windows)]
+fn windows_registry_string_including_empty(
     hive: windows_sys::Win32::System::Registry::HKEY,
     key: &str,
     value: &str,
@@ -8663,94 +8915,16 @@ fn windows_registry_string(
         .iter()
         .position(|unit| *unit == 0)
         .unwrap_or(buffer.len());
-    String::from_utf16(&buffer[..length])
-        .ok()
-        .filter(|text| !text.trim().is_empty())
+    String::from_utf16(&buffer[..length]).ok()
 }
 
 #[cfg(windows)]
 fn enable_workbench_net_api() -> std::io::Result<bool> {
-    use std::ptr::null_mut;
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-    use windows_sys::Win32::System::Registry::{
-        RegCloseKey, RegCreateKeyW, RegGetValueW, RegSetValueExW, HKEY_CURRENT_USER, REG_SZ,
-        RRF_RT_REG_SZ,
-    };
-
-    const KEY_PATH: &str = r"Software\Bohemia Interactive\Arma Reforger Workbench\Workbench";
-    const VALUE_NAME: &str = "NetAPI_Enabled";
-    let key_path = KEY_PATH
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let value_name = VALUE_NAME
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let enabled = "1"
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-
-    let mut key = null_mut();
-    let status = unsafe { RegCreateKeyW(HKEY_CURRENT_USER, key_path.as_ptr(), &mut key) };
-    if status != ERROR_SUCCESS {
-        return Err(std::io::Error::from_raw_os_error(status as i32));
-    }
-
-    let mut byte_count = 0u32;
-    let read_status = unsafe {
-        RegGetValueW(
-            key,
-            null_mut(),
-            value_name.as_ptr(),
-            RRF_RT_REG_SZ,
-            null_mut(),
-            null_mut(),
-            &mut byte_count,
-        )
-    };
-    let already_enabled = if read_status == ERROR_SUCCESS && byte_count >= 2 {
-        let mut buffer = vec![0u16; (byte_count / 2) as usize];
-        let read_status = unsafe {
-            RegGetValueW(
-                key,
-                null_mut(),
-                value_name.as_ptr(),
-                RRF_RT_REG_SZ,
-                null_mut(),
-                buffer.as_mut_ptr().cast(),
-                &mut byte_count,
-            )
-        };
-        read_status == ERROR_SUCCESS
-            && String::from_utf16_lossy(&buffer)
-                .trim_end_matches('\0')
-                .eq("1")
-    } else {
-        false
-    };
-    if already_enabled {
-        unsafe { RegCloseKey(key) };
-        return Ok(false);
-    }
-
-    let byte_count = (enabled.len() * std::mem::size_of::<u16>()) as u32;
-    let status = unsafe {
-        RegSetValueExW(
-            key,
-            value_name.as_ptr(),
-            0,
-            REG_SZ,
-            enabled.as_ptr().cast(),
-            byte_count,
-        )
-    };
-    unsafe { RegCloseKey(key) };
-    if status != ERROR_SUCCESS {
-        return Err(std::io::Error::from_raw_os_error(status as i32));
-    }
-    Ok(true)
+    set_current_user_registry_string(
+        r"Software\Bohemia Interactive\Arma Reforger Workbench\Workbench",
+        Some("NetAPI_Enabled"),
+        "1",
+    )
 }
 
 #[cfg(not(windows))]
@@ -8839,8 +9013,8 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
 #[cfg(test)]
 mod tests {
     use super::{
-        WorkbenchDiagnosticLocation, WorkbenchDiagnosticSeverity, WorkbenchFailureCode,
-        WorkbenchGateway, WorkbenchGatewayOptions, WorkbenchStatus,
+        enfusion_protocol_command, WorkbenchDiagnosticLocation, WorkbenchDiagnosticSeverity,
+        WorkbenchFailureCode, WorkbenchGateway, WorkbenchGatewayOptions, WorkbenchStatus,
     };
     use serde_json::{json, Value};
     use std::fs;
@@ -8848,6 +9022,22 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn enfusion_protocol_command_quotes_every_path_and_the_uri_argument() {
+        let executable = std::path::Path::new(
+            r"\\?\C:\Program Files (x86)\Steam\steamapps\common\Arma Reforger Tools\Workbench\ArmaReforgerWorkbenchSteamDiag.exe",
+        );
+        let addons = std::path::Path::new(
+            r"\\?\C:\Program Files (x86)\Steam\steamapps\common\Arma Reforger\addons",
+        );
+        let project = addons.join("data").join("ArmaReforger.gproj");
+
+        assert_eq!(
+            enfusion_protocol_command(executable, addons, &project),
+            r#""C:\Program Files (x86)\Steam\steamapps\common\Arma Reforger Tools\Workbench\ArmaReforgerWorkbenchSteamDiag.exe" -addonsDir "C:/Program Files (x86)/Steam/steamapps/common/Arma Reforger/addons" -gproj "C:/Program Files (x86)/Steam/steamapps/common/Arma Reforger/addons/data/ArmaReforger.gproj" -uri="%1""#,
+        );
+    }
 
     #[test]
     fn workbench_bool_accepts_json_and_enfusion_representations() {

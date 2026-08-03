@@ -351,6 +351,34 @@ suite('Workbench Integration', () => {
 		assert.strictEqual(maintenance, 0);
 		assert.strictEqual(processStatus, 0);
 	});
+
+	test('approved integration repairs a missing enfusion protocol registration', async () => {
+		let bootstraps = 0;
+		let maintenance = 0;
+		const coordinator = new WorkbenchIntegrationCoordinator(
+			stateWith(true),
+			runtimeWith({
+				status: async () => statusResult({ enfusionProtocolRegistered: false }),
+				bootstrap: async () => {
+					bootstraps += 1;
+					return bootstrapResult();
+				},
+				maintain: async () => {
+					maintenance += 1;
+					return bootstrapResult();
+				},
+			}),
+			uiWith({}),
+			true,
+		);
+
+		const ready = coordinator.start();
+		coordinator.onWorkbenchConnected(endpoint);
+		await ready;
+
+		assert.strictEqual(bootstraps, 1);
+		assert.strictEqual(maintenance, 0);
+	});
 });
 
 function statusResult(
@@ -364,6 +392,7 @@ function statusResult(
 			maintenanceRequired: overrides.maintenanceRequired ?? false,
 			profileAvailable: overrides.profileAvailable ?? true,
 			workbenchRunning: overrides.workbenchRunning ?? true,
+			enfusionProtocolRegistered: overrides.enfusionProtocolRegistered ?? true,
 		},
 	};
 }
@@ -379,6 +408,8 @@ function bootstrapResult(
 		value: {
 			netApiEnabled: true,
 			netApiWritePerformed: true,
+			enfusionProtocolRegistered: true,
+			enfusionProtocolWritePerformed: true,
 			bridgeInstalled: true,
 			bridgeVersion: '1.52.12',
 			bridgeChanged: overrides.bridgeChanged ?? false,
