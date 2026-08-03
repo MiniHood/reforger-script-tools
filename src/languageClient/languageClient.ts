@@ -35,7 +35,11 @@ import {
   languageClientRequests,
   languageClientSchemes,
 } from "../extensionConfig/languageClient";
-import { writeLoadedAddonSourceInventory } from "../gameData/localSourceInventory";
+import {
+  clearConfirmedLoadedAddonSourceInventory,
+  confirmLoadedAddonSourceInventory,
+  writeLoadedAddonSourceInventory,
+} from "../gameData/localSourceInventory";
 import {
   workbenchConfig,
   workbenchDefaults,
@@ -481,6 +485,7 @@ async function startLanguageClient(
   });
 
   const externalIndexMode = readExternalIndexMode();
+  clearConfirmedLoadedAddonSourceInventory();
   const currentSourceInventory = resolveCurrentWorkbenchAddonInventory(
     context,
     serverPath,
@@ -652,20 +657,28 @@ async function startLanguageClient(
       if (inventoryPath && client === activeClient) {
         const reconciliation = externalIndexMonitor.waitForNextCompletion(
           activeExternalIndexProgressSession?.progress,
+          "workbench-reconciliation",
         );
         activeClient.sendNotification(languageClientNotifications.loadedAddonGraph, {
           inventoryPath,
         });
         await reconciliation;
+        if (client === activeClient) {
+          confirmLoadedAddonSourceInventory(inventoryPath);
+        }
       }
     };
-    void currentSourceInventory.then((inventoryPath) => {
+    void currentSourceInventory.then(async (inventoryPath) => {
       if (!inventoryPath) {
         return;
       }
       if (client !== activeClient) {
         return;
       }
+      const reconciliation = externalIndexMonitor.waitForNextCompletion(
+        undefined,
+        "workbench-reconciliation",
+      );
       activeClient.sendNotification(languageClientNotifications.loadedAddonGraph, {
         inventoryPath,
       });
@@ -673,6 +686,10 @@ async function startLanguageClient(
         context,
         "workbenchLoadedAddonGraphDelivered",
       );
+      await reconciliation;
+      if (client === activeClient) {
+        confirmLoadedAddonSourceInventory(inventoryPath);
+      }
     });
     diagnostic("languageClient.started", {
       workspaceScriptRoots: workspaceScriptRoots.length,
@@ -947,21 +964,28 @@ export function monitorExternalIndexProgress(
 ): {
   completion: Promise<void>;
   disposable: vscode.Disposable;
-  waitForNextCompletion(progress?: ExternalIndexProgress): Promise<void>;
+  waitForNextCompletion(progress?: ExternalIndexProgress, expectedPhase?: string): Promise<void>;
 } {
   let complete = false;
   let initialIndexComplete = false;
   const pendingCompletions: Array<{
     progress?: ExternalIndexProgress;
+    expectedPhase?: string;
+    expectedPhaseObserved: boolean;
     resolve: () => void;
   }> = [];
   let resolveCompletion: (() => void) | undefined;
   const completion = new Promise<void>((resolve) => {
     resolveCompletion = resolve;
   });
-  const resolvePendingCompletions = () => {
-    while (pendingCompletions.length > 0) {
-      pendingCompletions.shift()?.resolve();
+  const resolvePendingCompletions = (force = false) => {
+    for (let index = pendingCompletions.length - 1; index >= 0; index -= 1) {
+      const pending = pendingCompletions[index];
+      if (!force && !pending.expectedPhaseObserved) {
+        continue;
+      }
+      pendingCompletions.splice(index, 1);
+      pending.resolve();
     }
   };
   const finish = () => {
@@ -969,7 +993,7 @@ export function monitorExternalIndexProgress(
       complete = true;
       resolveCompletion?.();
     }
-    resolvePendingCompletions();
+    resolvePendingCompletions(true);
   };
   const reportProgress = (
     target: ExternalIndexProgress | undefined,
@@ -998,6 +1022,9 @@ export function monitorExternalIndexProgress(
         reportProgress(progress, params);
       }
       for (const pending of pendingCompletions) {
+        if (params.phase === pending.expectedPhase) {
+          pending.expectedPhaseObserved = true;
+        }
         reportProgress(pending.progress, params);
       }
       logLanguageClientStartupTiming(context, "externalIndexProgress", {
@@ -1026,8 +1053,13 @@ export function monitorExternalIndexProgress(
     disposable: vscode.Disposable.from(notification, stateChanges, {
       dispose: finish,
     }),
-    waitForNextCompletion: (nextProgress) => new Promise((resolve) => {
-      pendingCompletions.push({ progress: nextProgress, resolve });
+    waitForNextCompletion: (nextProgress, expectedPhase) => new Promise((resolve) => {
+      pendingCompletions.push({
+        progress: nextProgress,
+        expectedPhase,
+        expectedPhaseObserved: expectedPhase === undefined,
+        resolve,
+      });
     }),
   };
 }

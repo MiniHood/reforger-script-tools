@@ -4,11 +4,34 @@ import { tmpdir } from "os";
 import * as path from "path";
 import type * as vscode from "vscode";
 import {
+  clearConfirmedLoadedAddonSourceInventory,
+  confirmLoadedAddonSourceInventory,
+  loadedAddonSourceInventoryIsConfirmed,
+  onDidConfirmLoadedAddonSourceInventory,
   publishAtomicFile,
   writeLoadedAddonSourceInventory,
 } from "../gameData/localSourceInventory";
 
 suite("Workbench loaded add-on inventory", () => {
+  test("publishes confirmation only after the language server accepts the graph", () => {
+    const inventoryPath = path.join(tmpdir(), "confirmed-workbench-graph.json");
+    let confirmedPath: string | undefined;
+    const subscription = onDidConfirmLoadedAddonSourceInventory((value) => {
+      confirmedPath = value;
+    });
+    try {
+      assert.equal(loadedAddonSourceInventoryIsConfirmed(inventoryPath), false);
+      confirmLoadedAddonSourceInventory(inventoryPath);
+      assert.equal(loadedAddonSourceInventoryIsConfirmed(inventoryPath), true);
+      assert.equal(confirmedPath, path.resolve(inventoryPath));
+      clearConfirmedLoadedAddonSourceInventory();
+      assert.equal(loadedAddonSourceInventoryIsConfirmed(inventoryPath), false);
+      assert.equal(confirmedPath, undefined);
+    } finally {
+      subscription.dispose();
+    }
+  });
+
   test("publishes one complete graph under concurrent writers", async () => {
     const root = await fs.mkdtemp(path.join(tmpdir(), "rst-workbench-graph-"));
     const target = path.join(root, "workbench-graph-v1.json");

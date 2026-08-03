@@ -414,6 +414,14 @@ and `all` do not wait for a Workbench graph. On a warm approved startup, a
 current managed manifest avoids repeating bridge maintenance and Workbench
 process probing.
 
+The Source Search panel owns a separate local MCP child. In `loaded` mode it
+uses the same provisional dependency closure until the editor language server
+accepts the current Workbench graph. That acceptance restarts an already-open
+Search child and republishes Search Scope from the authoritative graph. Both
+semantic and resource search therefore change scope together; resource search
+resolves provisional dependency source roots from the parser-owned cache
+catalogue rather than silently returning zero for a dependency GUID.
+
 For `loaded` mode, an opened workspace with one unambiguous `.gproj` per folder
 uses the project's transitive dependency descriptors for the no-Workbench
 warmup. Rust consults the bounded Workbench project registry and adjacent

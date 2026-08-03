@@ -1282,7 +1282,9 @@ impl ReforgerMcpServer {
         let resource_config = ResourceCatalogueConfig {
             addon_source_inventory: options.game_data.addon_source_inventory.clone(),
             addon_index_storage: options.game_data.addon_index_storage.clone(),
+            external_index_mode: options.game_data.external_index_mode,
             workspace_roots: options.game_data.workspace_roots.clone(),
+            dependency_project_files: options.game_data.dependency_project_files.clone(),
         };
         Self {
             game_data: Arc::new(GameDataCatalogue::new(options.game_data)),

@@ -1265,6 +1265,76 @@ pub fn load_cached_dependency_addon_indexes(
     Ok(result)
 }
 
+/// Resolves the exact cached source instances used by provisional dependency
+/// search without decoding their semantic indexes. Resource discovery uses
+/// this to enumerate the same add-ons as semantic search.
+pub fn read_cached_dependency_addon_sources(
+    project_files: &[PathBuf],
+    storage_root: &Path,
+    control: &IndexBuildControl,
+) -> Result<Vec<LoadedAddonSourceInfo>, String> {
+    let dependency_guids =
+        read_project_dependency_scope_guids(project_files, storage_root, control)?;
+    let mut manifests = cached_manifest_descriptors(storage_root, control)?
+        .into_iter()
+        .map(|(manifest, _)| manifest)
+        .filter(|manifest| dependency_guids.contains(&manifest.guid.to_ascii_uppercase()))
+        .collect::<Vec<_>>();
+    manifests.sort_by(|left, right| {
+        left.guid
+            .cmp(&right.guid)
+            .then_with(|| {
+                dependency_source_preference(&left.source_root)
+                    .cmp(&dependency_source_preference(&right.source_root))
+            })
+            .then_with(|| left.source_root.cmp(&right.source_root))
+    });
+    manifests.dedup_by(|left, right| left.guid.eq_ignore_ascii_case(&right.guid));
+    manifests
+        .into_iter()
+        .map(|manifest| cached_manifest_source_info(&manifest))
+        .collect()
+}
+
+fn cached_manifest_source_info(
+    manifest: &AddonIndexManifestHeader,
+) -> Result<LoadedAddonSourceInfo, String> {
+    if let Ok(entries) = fs::read_dir(&manifest.source_root) {
+        for project_file in entries.flatten().map(|entry| entry.path()).filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("gproj"))
+        }) {
+            if let Ok(candidate) = read_dependency_project_candidate(&project_file) {
+                if candidate.addon.guid.eq_ignore_ascii_case(&manifest.guid) {
+                    return Ok(LoadedAddonSourceInfo {
+                        guid: candidate.addon.guid,
+                        display_id: candidate.addon.id,
+                        title: candidate.addon.title,
+                        source_root: candidate.addon.source_root,
+                    });
+                }
+            }
+        }
+    }
+    let (display_id, title) = manifest
+        .display_id
+        .strip_suffix(')')
+        .and_then(|value| value.split_once(" ("))
+        .map(|(id, title)| (id.to_string(), title.to_string()))
+        .unwrap_or_else(|| (manifest.display_id.clone(), manifest.display_id.clone()));
+    Ok(LoadedAddonSourceInfo {
+        guid: manifest.guid.to_ascii_uppercase(),
+        display_id,
+        title,
+        source_root: fs::canonicalize(&manifest.source_root).map_err(|error| {
+            format!(
+                "Failed to resolve cached add-on source {}: {error}",
+                manifest.source_root.display()
+            )
+        })?,
+    })
+}
+
 /// Loads the offline project dependency scope from its caches, building only
 /// when that scope has no usable published snapshot yet. The Workbench graph
 /// is deliberately not involved here: the opened project, Workbench's
@@ -3880,7 +3950,7 @@ mod tests {
         .unwrap();
 
         let selected = load_cached_dependency_addon_indexes(
-            &[project],
+            std::slice::from_ref(&project),
             &storage,
             &[],
             &IndexBuildControl::default(),
@@ -3888,6 +3958,17 @@ mod tests {
         .unwrap();
         assert_eq!(selected.loaded_instances, 1);
         assert_eq!(selected.summary.files, 2);
+        let resource_sources = read_cached_dependency_addon_sources(
+            &[project],
+            &storage,
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+        assert_eq!(resource_sources.len(), 1);
+        assert_eq!(
+            resource_sources[0].source_root,
+            fs::canonicalize(unpacked).unwrap()
+        );
         let _ = fs::remove_dir_all(root);
     }
 

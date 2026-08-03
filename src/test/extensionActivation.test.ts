@@ -212,7 +212,15 @@ suite('extension activation', () => {
 			if (message) {
 				messages.push(message);
 			}
-		} });
+		} }, 'workbench-reconciliation');
+
+		reportProgress?.({ phase: 'offline' });
+		reportProgress?.({ phase: 'complete', status: 'ready' });
+		const completedByUnrelatedTerminalEvent = await Promise.race([
+			reconciliation.then(() => true),
+			new Promise<boolean>(resolve => setTimeout(() => resolve(false), 50)),
+		]);
+		assert.strictEqual(completedByUnrelatedTerminalEvent, false);
 
 		reportProgress?.({ phase: 'workbench-reconciliation' });
 		const completedBeforeTerminalEvent = await Promise.race([
@@ -220,7 +228,10 @@ suite('extension activation', () => {
 			new Promise<boolean>(resolve => setTimeout(() => resolve(false), 50)),
 		]);
 		assert.strictEqual(completedBeforeTerminalEvent, false);
-		assert.deepEqual(messages, ['Reconciled Workbench add-on indexes']);
+		assert.deepEqual(messages, [
+			'Loaded offline add-on indexes',
+			'Reconciled Workbench add-on indexes',
+		]);
 		assert.deepEqual(startupMessages, []);
 
 		reportProgress?.({ phase: 'complete', status: 'ready' });

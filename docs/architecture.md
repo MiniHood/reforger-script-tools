@@ -173,9 +173,13 @@ applying either loaded filter, and `none` disables external Game Data. The MCP
 process reconstructs the selected GUID-qualified layered catalogue without
 scanning for add-ons or starting one process per add-on.
 The extension-hosted Search page starts its private MCP child with that same
-resolved mode. A mode change disposes the existing child and republishes Search
-Scope from a newly started process, so a retained Search panel cannot continue
-showing the preceding mode's catalogue.
+resolved mode. While Workbench reconciliation is pending, Semantic and
+Resource search both use the opened project's provisional dependency closure.
+After the editor-owned language server accepts a live Workbench graph, Search
+restarts its child without the dependency warmup inputs, making that graph the
+shared Semantic and Resource authority. A later accepted graph or mode change
+also disposes the existing child and republishes Search Scope, so a retained
+Search panel cannot continue showing the preceding catalogue.
 `game_data_status` publishes the currently available scope; Game Data symbol
 and text searches accept a set of loaded add-on GUIDs, and every returned
 source handoff retains its add-on GUID so colliding logical paths remain

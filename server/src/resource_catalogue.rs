@@ -1,9 +1,11 @@
 //! Offline, metadata-only resource discovery for the loaded Game Data scope.
 
 use crate::addon_sources::{
-    loaded_addon_archive_paths, read_loaded_addon_sources, read_loaded_addon_sources_allow_stale,
+    loaded_addon_archive_paths, read_cached_dependency_addon_sources, read_loaded_addon_sources,
+    read_loaded_addon_sources_allow_stale,
 };
 use crate::addon_thumbnail_color::addon_thumbnail_color;
+use crate::game_data_catalogue::GameDataExternalIndexMode;
 use crate::index_build::IndexBuildControl;
 use crate::pack::PakArchive;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -215,13 +217,15 @@ pub struct ResourceCatalogue {
 pub struct ResourceCatalogueConfig {
     pub addon_source_inventory: Option<PathBuf>,
     pub addon_index_storage: Option<PathBuf>,
+    pub external_index_mode: GameDataExternalIndexMode,
     pub workspace_roots: Vec<PathBuf>,
+    pub dependency_project_files: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
 pub struct ResourceCatalogueService {
     config: ResourceCatalogueConfig,
-    state: Mutex<Option<Arc<ResourceCatalogue>>>,
+    state: Mutex<Option<(Vec<String>, Arc<ResourceCatalogue>)>>,
 }
 
 impl ResourceCatalogueService {
@@ -237,16 +241,24 @@ impl ResourceCatalogueService {
         control: &IndexBuildControl,
         mut request: ResourceSearchRequest,
     ) -> Result<ResourceSearchPage, ResourceSearchError> {
+        let selected_addon_guids = normalized_addon_guids(request.addon_guids.as_deref());
         let catalogue = {
             let mut state = self.state.lock().unwrap();
-            if state.is_none() {
-                let (catalogue, _) = ResourceCatalogue::from_config(&self.config, control)
-                    .map_err(|_| ResourceSearchError::Unavailable)?;
-                *state = Some(Arc::new(catalogue));
+            if state
+                .as_ref()
+                .is_none_or(|(scope, _)| scope != &selected_addon_guids)
+            {
+                let (catalogue, _) = ResourceCatalogue::from_config_for_addons(
+                    &self.config,
+                    control,
+                    &selected_addon_guids,
+                )
+                .map_err(|_| ResourceSearchError::Unavailable)?;
+                *state = Some((selected_addon_guids, Arc::new(catalogue)));
             }
             state
                 .as_ref()
-                .cloned()
+                .map(|(_, catalogue)| catalogue.clone())
                 .ok_or(ResourceSearchError::Unavailable)?
         };
         if request.catalogue_revision.is_empty() {
@@ -279,14 +291,46 @@ impl ResourceCatalogue {
         config: &ResourceCatalogueConfig,
         control: &IndexBuildControl,
     ) -> Result<(Self, ResourceCatalogueStats), String> {
-        let Some(inventory) = config.addon_source_inventory.as_ref() else {
-            return Err("The Workbench loaded add-on inventory is not configured.".to_string());
-        };
+        Self::from_config_for_addons(config, control, &[])
+    }
+
+    fn from_config_for_addons(
+        config: &ResourceCatalogueConfig,
+        control: &IndexBuildControl,
+        selected_addon_guids: &[String],
+    ) -> Result<(Self, ResourceCatalogueStats), String> {
         let started = Instant::now();
-        let addons = match read_loaded_addon_sources(inventory) {
-            Ok(addons) => addons,
-            Err(_) => read_loaded_addon_sources_allow_stale(inventory)?,
+        let mut addons = match config.external_index_mode {
+            GameDataExternalIndexMode::None => {
+                return Err("External Game Data indexing is disabled.".to_string())
+            }
+            GameDataExternalIndexMode::Loaded if !config.dependency_project_files.is_empty() => {
+                let storage = config.addon_index_storage.as_ref().ok_or_else(|| {
+                    "The parser-owned add-on index storage is not configured.".to_string()
+                })?;
+                read_cached_dependency_addon_sources(
+                    &config.dependency_project_files,
+                    storage,
+                    control,
+                )?
+            }
+            GameDataExternalIndexMode::Loaded | GameDataExternalIndexMode::All => {
+                let inventory = config.addon_source_inventory.as_ref().ok_or_else(|| {
+                    "The Workbench loaded add-on inventory is not configured.".to_string()
+                })?;
+                match read_loaded_addon_sources(inventory) {
+                    Ok(addons) => addons,
+                    Err(_) => read_loaded_addon_sources_allow_stale(inventory)?,
+                }
+            }
         };
+        if !selected_addon_guids.is_empty() {
+            addons.retain(|addon| {
+                selected_addon_guids
+                    .binary_search(&addon.guid.to_ascii_uppercase())
+                    .is_ok()
+            });
+        }
         let mut records = Vec::new();
         let mut packed = 0;
         let mut loose = 0;
@@ -452,6 +496,17 @@ impl ResourceCatalogue {
         };
         Ok((Self::from_records(revision, records), stats))
     }
+}
+
+fn normalized_addon_guids(values: Option<&[String]>) -> Vec<String> {
+    let mut values = values
+        .unwrap_or_default()
+        .iter()
+        .map(|value| value.to_ascii_uppercase())
+        .collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    values
 }
 
 const MAX_RESOURCE_FILES: usize = 200_000;
@@ -1036,7 +1091,9 @@ mod tests {
         let config = ResourceCatalogueConfig {
             addon_source_inventory: Some(inventory.clone()),
             addon_index_storage: Some(storage.clone()),
+            external_index_mode: GameDataExternalIndexMode::Loaded,
             workspace_roots: Vec::new(),
+            dependency_project_files: Vec::new(),
         };
         let (first, stats) =
             ResourceCatalogue::from_config(&config, &IndexBuildControl::default()).unwrap();

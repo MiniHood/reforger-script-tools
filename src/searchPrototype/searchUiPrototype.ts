@@ -3,6 +3,10 @@ import { performance } from 'node:perf_hooks';
 import * as vscode from 'vscode';
 import { diagnostic, diagnosticsEnabled } from '../diagnostics/diagnostics';
 import { gameDataStorage } from '../extensionConfig/gameData';
+import {
+	loadedAddonSourceInventoryIsConfirmed,
+	onDidConfirmLoadedAddonSourceInventory,
+} from '../gameData/localSourceInventory';
 import { languageClientIndexCache, languageClientSchemes } from '../extensionConfig/languageClient';
 import { searchCommands, searchContext, searchLimits } from '../extensionConfig/search';
 import {
@@ -43,6 +47,7 @@ const maxSearchDocuments = 32;
 const sourcePreviewWorkerCount = 8;
 const previewUpdateBatchSize = 4;
 let activePanel: vscode.WebviewPanel | undefined;
+let activeSearch: ActiveSearch | undefined;
 let documentSequence = 0;
 const searchDocuments = new Map<string, string>();
 
@@ -135,6 +140,13 @@ export function registerSearchUi(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(
 		vscode.workspace.registerTextDocumentContentProvider(searchScheme, searchDocumentContentProvider),
 		vscode.commands.registerCommand(searchCommands.open, () => openSearchPanel(context)),
+		onDidConfirmLoadedAddonSourceInventory(() => {
+			if (!activeSearch || activeSearch.disposed) {
+				return;
+			}
+			diagnostic('searchUi.loadedAddonScopeChanged');
+			void refreshSearchScope(context, activeSearch);
+		}),
 		new vscode.Disposable(() => {
 			for (const key of searchDocuments.keys()) {
 				searchDocuments.delete(key);
@@ -172,6 +184,7 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 		scopeRefresh: undefined,
 		disposed: false,
 	};
+	activeSearch = active;
 	activePanel = panel;
 	panel.webview.html = renderSearchUi();
 	const indexModeSubscription = vscode.workspace.onDidChangeConfiguration(event => {
@@ -192,6 +205,9 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 		}
 		if (activePanel === panel) {
 			activePanel = undefined;
+		}
+		if (activeSearch === active) {
+			activeSearch = undefined;
 		}
 	}, undefined, context.subscriptions);
 }
@@ -971,20 +987,24 @@ async function createClient(context: vscode.ExtensionContext): Promise<McpSearch
 	if (!serverPath) {
 		throw new Error('The bundled Reforger language server is not available yet.');
 	}
+	const addonSourceInventory = path.join(
+		context.globalStorageUri.fsPath,
+		gameDataStorage.rootFolder,
+		gameDataStorage.inventoryFile,
+	);
+	const externalIndexMode = readExternalIndexMode();
+	const authoritativeWorkbenchScope = externalIndexMode === 'loaded'
+		&& loadedAddonSourceInventoryIsConfirmed(addonSourceInventory);
 	return new McpSearchClient({
 		serverPath,
-		addonSourceInventory: path.join(
-			context.globalStorageUri.fsPath,
-			gameDataStorage.rootFolder,
-			gameDataStorage.inventoryFile,
-		),
+		addonSourceInventory,
 		addonIndexStorage: path.join(
 			context.globalStorageUri.fsPath,
 			languageClientIndexCache.rootFolder,
 		),
-		externalIndexMode: readExternalIndexMode(),
+		externalIndexMode,
 		workspaceScripts: await discoverWorkspaceScriptRoots(),
-		dependencyProjectFiles: await discoverWorkspaceProjectFiles(),
+		dependencyProjectFiles: authoritativeWorkbenchScope ? [] : await discoverWorkspaceProjectFiles(),
 		officialWikiRoot: path.join(context.extensionPath, 'data', 'official-wiki'),
 	});
 }

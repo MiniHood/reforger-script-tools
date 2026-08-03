@@ -6,6 +6,27 @@ import type { WorkbenchLoadedAddonGraph } from "../workbenchNetApi/gateway/workb
 import { gameDataStorage } from "../extensionConfig/gameData";
 
 const atomicPublishQueues = new Map<string, Promise<void>>();
+const loadedAddonInventoryConfirmedEmitter = new vscode.EventEmitter<string | undefined>();
+let confirmedLoadedAddonInventoryPath: string | undefined;
+
+export const onDidConfirmLoadedAddonSourceInventory = loadedAddonInventoryConfirmedEmitter.event;
+
+export function confirmLoadedAddonSourceInventory(inventoryPath: string): void {
+  confirmedLoadedAddonInventoryPath = path.resolve(inventoryPath);
+  loadedAddonInventoryConfirmedEmitter.fire(confirmedLoadedAddonInventoryPath);
+}
+
+export function clearConfirmedLoadedAddonSourceInventory(): void {
+  if (!confirmedLoadedAddonInventoryPath) {
+    return;
+  }
+  confirmedLoadedAddonInventoryPath = undefined;
+  loadedAddonInventoryConfirmedEmitter.fire(undefined);
+}
+
+export function loadedAddonSourceInventoryIsConfirmed(inventoryPath: string): boolean {
+  return confirmedLoadedAddonInventoryPath === path.resolve(inventoryPath);
+}
 
 export interface LoadedAddonSourceInventory {
   schema: "reforger-workbench-loaded-addon-graph-v1";
