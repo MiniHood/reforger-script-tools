@@ -329,7 +329,17 @@ pub(super) fn if_header_body_before_enter_plan(
         .filter_map(|(index, token)| {
             (token.kind == TokenKind::Keyword(Keyword::If)
                 && tokens.get(index + 1).map(|token| token.kind) == Some(TokenKind::LeftParen))
-            .then(|| matching_right_paren(&tokens, index + 1).map(|close| (index, close)))
+            .then(|| {
+                let close = matching_right_paren(&tokens, index + 1)?;
+                let header_start =
+                    if index > 0 && tokens[index - 1].kind == TokenKind::Keyword(Keyword::Else) {
+                        tokens[index - 1].span.start
+                    } else {
+                        token.span.start
+                    };
+                (header_start <= cursor && cursor <= tokens[close].span.end)
+                    .then_some((index, close))
+            })
             .flatten()
         })
         .last()?;

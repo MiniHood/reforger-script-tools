@@ -655,6 +655,30 @@ fn input_route_moves_if_enter_to_the_unbraced_body_without_moving_the_parenthesi
 }
 
 #[test]
+fn input_route_moves_enter_inside_an_earlier_if_when_a_later_if_exists() {
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    let uri = "file:///Scripts/EarlierIfEnter.c";
+    let source = "        if (true)\n        if (false)";
+    server.handle_message(json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": { "uri": uri, "languageId": "enforce", "version": 1, "text": source }
+    }}), None, 0, 0).unwrap();
+    server.writer.clear();
+    server.handle_message(json!({ "jsonrpc": "2.0", "id": 1, "method": CONTROL_HEADER_ENTER_METHOD, "params": {
+        "textDocument": { "uri": uri }, "operation": "insertNewline", "version": 1,
+        "selections": [{ "start": { "line": 0, "character": 16 }, "end": { "line": 0, "character": 16 } }],
+        "options": { "tabSize": 4, "insertSpaces": true }
+    }}), None, 0, 0).unwrap();
+
+    let output = String::from_utf8_lossy(&server.writer);
+    assert!(output.contains("\"newText\":\"\\n            \""), "{output}");
+    assert!(output.contains("\"owner\":\"ifHeader\""), "{output}");
+    assert!(
+        output.contains("\"selection\":{\"character\":12,\"line\":1}"),
+        "{output}"
+    );
+}
+
+#[test]
 fn input_route_leaves_paired_control_braces_below_a_header_native() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
     let uri = "file:///Scripts/ControlBraceEnter.c";
