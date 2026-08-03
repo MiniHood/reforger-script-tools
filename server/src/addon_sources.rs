@@ -1,3 +1,4 @@
+use crate::addon_thumbnail_color::addon_thumbnail_color;
 use crate::index::{SourceFileId, SymbolIndex};
 use crate::index_build::{
     build_index_from_sources, IndexBuildControl, IndexBuildResult, IndexSourceText,
@@ -30,6 +31,7 @@ pub const ENFUSION_CORE_GUID: &str = "5614BBCCBB55ED1C";
 pub const VIRTUAL_SOURCE_SCHEME: &str = "reforger-pak";
 const MAX_ADDON_INDEX_WORKERS: usize = 4;
 const ADDON_MANIFEST_HEADER_FILE: &str = "manifest-header.json";
+const ADDON_MANIFEST_SCHEMA: &str = "reforger-addon-index-manifest-v4";
 const ADDON_CACHE_CATALOGUE_FILE: &str = "cache-catalogue.json";
 const LOCATOR_TABLE_MAGIC: &[u8; 8] = b"RSTLOC01";
 const LOCATOR_TABLE_VERSION: u32 = 1;
@@ -126,6 +128,7 @@ pub struct LoadedAddonIndexInstance {
     pub guid: String,
     pub display_id: String,
     pub title: String,
+    pub thumbnail_color: Option<String>,
     pub pack_count: usize,
     pub script_count: usize,
     pub file_start: usize,
@@ -159,6 +162,7 @@ struct CompletedAddonInspection {
 struct CompletedAddonTask {
     sequence: usize,
     addon: LoadedAddonSource,
+    thumbnail_color: Option<String>,
     result: Result<GameDataIndexCacheResult, String>,
 }
 
@@ -250,6 +254,7 @@ struct BaseGameInspection {
     guid: String,
     display_id: String,
     root: PathBuf,
+    thumbnail_color: Option<String>,
     archives: Vec<(PakArchive, Vec<PakEntry>)>,
     loose_files: Vec<PathBuf>,
     fingerprint: SourceFingerprint,
@@ -466,6 +471,8 @@ struct AddonIndexManifest {
     extractor_schema: String,
     guid: String,
     display_id: String,
+    #[serde(default)]
+    thumbnail_color: Option<String>,
     source_root: PathBuf,
     source_precedence: String,
     revision: String,
@@ -491,6 +498,8 @@ struct AddonIndexManifestHeader {
     extractor_schema: String,
     guid: String,
     display_id: String,
+    #[serde(default)]
+    thumbnail_color: Option<String>,
     source_root: PathBuf,
     source_precedence: String,
     revision: String,
@@ -520,6 +529,7 @@ impl AddonIndexManifest {
             extractor_schema: self.extractor_schema.clone(),
             guid: self.guid.clone(),
             display_id: self.display_id.clone(),
+            thumbnail_color: self.thumbnail_color.clone(),
             source_root: self.source_root.clone(),
             source_precedence: self.source_precedence.clone(),
             revision: self.revision.clone(),
@@ -531,6 +541,13 @@ impl AddonIndexManifest {
             manifest_sha256: None,
         }
     }
+}
+
+fn cached_thumbnail_color(cache_path: &Path) -> Option<String> {
+    let header_path = cache_path.parent()?.join(ADDON_MANIFEST_HEADER_FILE);
+    let header =
+        serde_json::from_slice::<AddonIndexManifestHeader>(&fs::read(header_path).ok()?).ok()?;
+    header.thumbnail_color
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -781,6 +798,7 @@ fn load_or_build_addon_indexes(
             let Some(task) = task else {
                 return;
             };
+            let thumbnail_color = task.inspection.thumbnail_color.clone();
             let result = control.check().and_then(|()| {
                 load_or_build_inspected_addon(
                     task.inspection,
@@ -793,6 +811,7 @@ fn load_or_build_addon_indexes(
             let _ = completed_sender.send(CompletedAddonTask {
                 sequence: task.sequence,
                 addon: task.addon,
+                thumbnail_color,
                 result,
             });
         }));
@@ -825,6 +844,7 @@ fn load_or_build_addon_indexes(
     let mut file_start = 0;
     for completed in completed {
         let addon = completed.addon;
+        let thumbnail_color = completed.thumbnail_color;
         let result = completed.result?;
         match &result.cache_status {
             IndexCacheStatus::Loaded => loaded_instances += 1,
@@ -851,17 +871,19 @@ fn load_or_build_addon_indexes(
                 .iter()
                 .map(|(file, starts)| (SourceFileId(file.0 + file_start), starts.clone())),
         );
+        let cache_path = storage_root
+            .join(addon_instance_key(&addon.guid, &addon.source_root))
+            .join("symbols.bin");
         instances.push(LoadedAddonIndexInstance {
             guid: addon.guid.clone(),
             display_id: addon.id.clone(),
             title: addon.title.clone(),
+            thumbnail_color,
             pack_count,
             script_count,
             file_start,
             file_count,
-            cache_path: storage_root
-                .join(addon_instance_key(&addon.guid, &addon.source_root))
-                .join("symbols.bin"),
+            cache_path,
             revision,
             cache_status: result.cache_status.as_str().to_string(),
             cache_detail: result.cache_status.detail().map(str::to_string),
@@ -1070,6 +1092,7 @@ fn load_cached_loaded_addon_indexes_with_maintenance(
     let mut unavailable_instances = Vec::new();
     let mut scope_instances = Vec::with_capacity(completed.len());
     let mut file_start = 0;
+    let mut cache_metadata_read = Duration::ZERO;
     for completed in completed {
         let addon = completed.addon;
         let cache_path = completed.cache_path;
@@ -1104,10 +1127,14 @@ fn load_cached_loaded_addon_indexes_with_maintenance(
                 .iter()
                 .map(|(file, starts)| (SourceFileId(file.0 + file_start), starts.clone())),
         );
+        let thumbnail_read_start = Instant::now();
+        let thumbnail_color = cached_thumbnail_color(&cache_path);
+        cache_metadata_read += thumbnail_read_start.elapsed();
         instances.push(LoadedAddonIndexInstance {
             guid: addon.guid.clone(),
             display_id: addon.id.clone(),
             title: addon.title.clone(),
+            thumbnail_color,
             pack_count,
             script_count,
             file_start,
@@ -1138,7 +1165,7 @@ fn load_cached_loaded_addon_indexes_with_maintenance(
             graph_read,
             workspace_root_resolution,
             cache_prune,
-            cache_metadata_read: Duration::ZERO,
+            cache_metadata_read,
             source_inspection: Duration::ZERO,
             index_load_or_build,
             layer_rebase: layer_timings.rebase,
@@ -1351,9 +1378,7 @@ fn scan_cached_manifest_descriptors(
         else {
             continue;
         };
-        if manifest.schema != "reforger-addon-index-manifest-v3"
-            || manifest.index_file != "symbols.bin"
-        {
+        if manifest.schema != ADDON_MANIFEST_SCHEMA || manifest.index_file != "symbols.bin" {
             continue;
         }
         descriptors.push((manifest, cache_root.join("symbols.bin")));
@@ -1434,7 +1459,7 @@ fn load_cached_indexes_from_storage(
     let mut descriptors = Vec::new();
     for (manifest, cache_path) in cached_manifest_descriptors(storage_root, control)? {
         control.check()?;
-        if manifest.schema != "reforger-addon-index-manifest-v3"
+        if manifest.schema != ADDON_MANIFEST_SCHEMA
             || manifest.index_file != "symbols.bin"
             || (base_game_only && !is_base_game_manifest(&manifest))
             || dependency_guids
@@ -1590,6 +1615,7 @@ fn load_cached_indexes_from_storage(
             guid: manifest.guid.clone(),
             display_id: manifest.display_id.clone(),
             title: manifest.display_id.clone(),
+            thumbnail_color: manifest.thumbnail_color.clone(),
             pack_count,
             script_count,
             file_start,
@@ -1939,7 +1965,7 @@ fn manifest_matches_current_source(
     pack_artifacts: &[PackArtifact],
     index_bytes: u64,
 ) -> bool {
-    manifest.schema == "reforger-addon-index-manifest-v3"
+    manifest.schema == ADDON_MANIFEST_SCHEMA
         && manifest.cache_schema == cache_schema
         && manifest.cache_format_version == cache_format_version
         && manifest.cache_index_shape == cache_index_shape
@@ -2016,6 +2042,7 @@ fn load_or_build_inspected_addon(
     source_build_worker_count: usize,
 ) -> Result<GameDataIndexCacheResult, String> {
     let source_root = inspection.root.clone();
+    let thumbnail_color = inspection.thumbnail_color.clone();
     let addon_guid = inspection.guid.clone();
     let addon_display_id = inspection.display_id.clone();
     let pack_artifacts = inspection.artifacts.clone();
@@ -2081,13 +2108,14 @@ fn load_or_build_inspected_addon(
             })
             .collect::<Result<Vec<_>, String>>()?;
         let manifest = AddonIndexManifest {
-            schema: "reforger-addon-index-manifest-v3".to_string(),
+            schema: ADDON_MANIFEST_SCHEMA.to_string(),
             cache_schema: cache_schema.to_string(),
             cache_format_version,
             cache_index_shape: cache_index_shape.to_string(),
             extractor_schema: "pac1-selected-script-payload-v2".to_string(),
             guid: addon_guid.clone(),
             display_id: addon_display_id,
+            thumbnail_color,
             source_root,
             source_precedence: "Workbench loaded add-on order".to_string(),
             revision: artifact_digest.clone(),
@@ -2532,6 +2560,11 @@ fn inspect_packed_addon(
     // Two loaded roots can legitimately share GUID and bytes, but their source
     // URIs must still never target the other instance's archive.
     hasher.update(root.to_string_lossy().to_ascii_lowercase().as_bytes());
+    let thumbnail_color = addon_thumbnail_color(&root);
+    if let Some(color) = &thumbnail_color {
+        hasher.update(b"thumbnail-color");
+        hasher.update(color.as_bytes());
+    }
     let mut archives = Vec::new();
     let mut latest_modified = 0_u128;
     let mut script_count = 0_usize;
@@ -2611,6 +2644,7 @@ fn inspect_packed_addon(
         guid: guid.clone(),
         display_id,
         root,
+        thumbnail_color,
         fingerprint: SourceFingerprint::Addon {
             guid,
             artifact_digest: artifact_digest.clone(),
@@ -3482,7 +3516,7 @@ fn read_project_dependency_scope_guids_from_candidates(
 fn cached_dependency_project_files(storage_root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut project_files = BTreeSet::new();
     for (manifest, _) in cached_manifest_descriptors(storage_root, &IndexBuildControl::default())? {
-        if manifest.schema != "reforger-addon-index-manifest-v3" {
+        if manifest.schema != ADDON_MANIFEST_SCHEMA {
             continue;
         }
         if let Ok(entries) = fs::read_dir(&manifest.source_root) {
@@ -4610,6 +4644,17 @@ mod tests {
         let core = addons.join("core");
         fs::create_dir_all(&data).unwrap();
         fs::create_dir_all(&core).unwrap();
+        {
+            let file = fs::File::create(addons.join("thumbnail.png")).unwrap();
+            let mut encoder = png::Encoder::new(file, 2, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[255, 0, 0, 255, 0, 0, 255, 255])
+                .unwrap();
+        }
         write_fixture_pak(
             &data.join("data007.pak"),
             &[
@@ -4643,6 +4688,7 @@ mod tests {
         assert!(manifest_header_path.is_file());
         let manifest: AddonIndexManifest =
             serde_json::from_slice(&fs::read(addon_cache.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest.thumbnail_color.as_deref(), Some("#800080"));
         let feature_uri = manifest
             .scripts
             .iter()
@@ -4677,6 +4723,24 @@ mod tests {
             load_or_build_base_game_index(&inventory, &storage, &IndexBuildControl::default())
                 .unwrap();
         assert_eq!(loaded.cache_status, IndexCacheStatus::Loaded);
+        {
+            let file = fs::File::create(addons.join("thumbnail.png")).unwrap();
+            let mut encoder = png::Encoder::new(file, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[0, 255, 0, 255])
+                .unwrap();
+        }
+        let thumbnail_changed =
+            load_or_build_base_game_index(&inventory, &storage, &IndexBuildControl::default())
+                .unwrap();
+        assert!(matches!(
+            thumbnail_changed.cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
         assert!(addon_cache.join("manifest.json").is_file());
         assert!(addon_cache.join("symbols.bin").is_file());
         let locator_payload =
@@ -4684,9 +4748,14 @@ mod tests {
                 .unwrap()
                 .expect("new add-on caches embed a binary locator section");
         assert!(!locator_payload.is_empty());
+        fs::remove_file(addons.join("thumbnail.png")).unwrap();
         let all_cached =
             load_all_cached_addon_indexes(&storage, &[], &IndexBuildControl::default()).unwrap();
         assert_eq!(all_cached.loaded_instances, 1);
+        assert_eq!(
+            all_cached.instances[0].thumbnail_color.as_deref(),
+            Some("#00FF00")
+        );
         let base_cached =
             load_cached_base_game_indexes(&storage, &[], &IndexBuildControl::default()).unwrap();
         assert_eq!(base_cached.loaded_instances, 1);

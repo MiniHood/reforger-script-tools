@@ -207,6 +207,12 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
         },
         "symbolRef": {
           "type": "string"
+        },
+        "thumbnailColor": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

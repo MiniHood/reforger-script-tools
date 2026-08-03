@@ -3,6 +3,7 @@
 use crate::addon_sources::{
     loaded_addon_archive_paths, read_loaded_addon_sources, read_loaded_addon_sources_allow_stale,
 };
+use crate::addon_thumbnail_color::addon_thumbnail_color;
 use crate::index_build::IndexBuildControl;
 use crate::pack::PakArchive;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -88,6 +89,8 @@ impl ResourceKind {
 pub struct ResourceRecord {
     pub addon_guid: String,
     pub addon_id: String,
+    #[serde(default)]
+    pub thumbnail_color: Option<String>,
     pub logical_path: String,
     pub basename: String,
     pub extension: String,
@@ -125,6 +128,7 @@ impl ResourceRecord {
         Self {
             addon_guid: addon_guid.to_ascii_uppercase(),
             addon_id: addon_id.to_string(),
+            thumbnail_color: None,
             logical_path: normalized,
             basename,
             extension: extension.clone(),
@@ -154,6 +158,8 @@ pub struct ResourceSearchResult {
     pub resource_name: String,
     pub addon_guid: String,
     pub addon_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumbnail_color: Option<String>,
     pub logical_path: String,
     pub basename: String,
     pub extension: String,
@@ -285,6 +291,10 @@ impl ResourceCatalogue {
                     .to_ascii_lowercase()
                     .as_bytes(),
             );
+            let thumbnail_color = addon_thumbnail_color(&addon.source_root);
+            if let Some(color) = &thumbnail_color {
+                revision_hasher.update(color.as_bytes());
+            }
             let source_files = match enumerate_loose_files(&addon.source_root, control) {
                 Ok(files) => files,
                 Err(_) if !workspace_addon_for(&workspace_roots, &addon.source_root) => {
@@ -316,7 +326,11 @@ impl ResourceCatalogue {
                 }
                 Err(error) => return Err(error),
             };
-            let fingerprint = source_fingerprint(&source_files);
+            let fingerprint = format!(
+                "{}:{}",
+                source_fingerprint(&source_files),
+                thumbnail_color.as_deref().unwrap_or("-")
+            );
             revision_hasher.update(fingerprint.as_bytes());
             let workspace_addon = workspace_addon_for(&workspace_roots, &addon.source_root);
             if !workspace_addon {
@@ -366,6 +380,7 @@ impl ResourceCatalogue {
                     record.registered = !workspace_roots
                         .iter()
                         .any(|root| root.starts_with(&addon.source_root));
+                    record.thumbnail_color = thumbnail_color.clone();
                     records.push(record);
                     packed += 1;
                 }
@@ -387,13 +402,14 @@ impl ResourceCatalogue {
                 record.registered = !workspace_roots
                     .iter()
                     .any(|root| root.starts_with(&addon.source_root));
+                record.thumbnail_color = thumbnail_color.clone();
                 records.push(record);
                 loose += 1;
             }
             if !workspace_addon {
                 if let Some(storage) = config.addon_index_storage.as_ref() {
                     let cached = CachedAddonResources {
-                        schema: "reforger-resource-catalogue-addon-v1".to_string(),
+                        schema: "reforger-resource-catalogue-addon-v2".to_string(),
                         fingerprint,
                         records: records[addon_start..].to_vec(),
                     };
@@ -470,7 +486,7 @@ fn read_cached_addon_any(
     let mut decoded = Vec::new();
     decoder.read_to_end(&mut decoded).ok()?;
     let cached = serde_json::from_slice::<CachedAddonResources>(&decoded).ok()?;
-    (cached.schema == "reforger-resource-catalogue-addon-v1").then_some(cached)
+    (cached.schema == "reforger-resource-catalogue-addon-v2").then_some(cached)
 }
 
 fn read_cached_addon(
@@ -489,7 +505,7 @@ fn read_cached_addon(
     let mut decoded = Vec::new();
     decoder.read_to_end(&mut decoded).ok()?;
     let cached = serde_json::from_slice::<CachedAddonResources>(&decoded).ok()?;
-    (cached.schema == "reforger-resource-catalogue-addon-v1" && cached.fingerprint == fingerprint)
+    (cached.schema == "reforger-resource-catalogue-addon-v2" && cached.fingerprint == fingerprint)
         .then_some(cached)
 }
 
@@ -652,6 +668,7 @@ impl ResourceCatalogue {
                 resource_name: format!("{{{}}}{}", record.addon_guid, record.logical_path),
                 addon_guid: record.addon_guid.clone(),
                 addon_id: record.addon_id.clone(),
+                thumbnail_color: record.thumbnail_color.clone(),
                 logical_path: record.logical_path.clone(),
                 basename: record.basename.clone(),
                 extension: record.extension.clone(),

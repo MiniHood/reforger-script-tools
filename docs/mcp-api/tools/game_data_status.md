@@ -70,6 +70,13 @@ The first call reads the parser-owned indexes selected by the exact current add-
           "minimum": 0,
           "type": "integer"
         },
+        "thumbnailColor": {
+          "description": "Alpha-weighted average thumbnail color as a CSS #RRGGBB value.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "title": {
           "type": "string"
         }

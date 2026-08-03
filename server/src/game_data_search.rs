@@ -108,6 +108,8 @@ pub struct GameDataSearchHit {
     pub addon_guid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub addon_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumbnail_color: Option<String>,
     pub symbol_ref: String,
     pub name: String,
     pub kind: String,
@@ -182,6 +184,7 @@ struct Candidate {
     position: usize,
     addon_guid: Option<String>,
     addon_label: Option<String>,
+    thumbnail_color: Option<String>,
 }
 
 fn compare_candidates(left: &Candidate, right: &Candidate) -> Ordering {
@@ -211,6 +214,7 @@ fn compare_candidates(left: &Candidate, right: &Candidate) -> Ordering {
 pub struct GameDataAddonIdentity {
     pub guid: String,
     pub label: String,
+    pub thumbnail_color: Option<String>,
 }
 
 pub type GameDataAddonMap = BTreeMap<SourceFileId, GameDataAddonIdentity>;
@@ -250,6 +254,7 @@ pub fn search(
     let identity = GameDataAddonIdentity {
         guid: crate::addon_sources::BASE_GAME_GUID.to_string(),
         label: "Arma Reforger".to_string(),
+        thumbnail_color: None,
     };
     let addon_map = index
         .files()
@@ -427,6 +432,7 @@ fn search_with_scope(
             position: symbol.span.start,
             addon_guid: addon.map(|identity| identity.guid.clone()),
             addon_label: addon.map(|identity| identity.label.clone()),
+            thumbnail_color: addon.and_then(|identity| identity.thumbnail_color.clone()),
         });
     }
     control
@@ -826,6 +832,7 @@ fn project_hit(
         symbol_ref,
         addon_guid: candidate.addon_guid,
         addon_label: candidate.addon_label,
+        thumbnail_color: candidate.thumbnail_color,
         name: bounded_search_text(symbol.name.clone().unwrap_or_default()),
         kind: candidate.kind,
         qualified_name: bounded_search_text(candidate.qualified_name),

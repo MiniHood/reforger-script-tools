@@ -128,6 +128,7 @@ impl WorkspaceCatalogue {
                     relative_path,
                     addon_guid: None,
                     addon_label: None,
+                    thumbnail_color: None,
                     source_uri: file
                         .metadata
                         .absolute_path

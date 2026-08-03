@@ -140,6 +140,12 @@ Explicit bounded full-text search over readable user add-on workspace script fil
             "string",
             "null"
           ]
+        },
+        "thumbnailColor": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

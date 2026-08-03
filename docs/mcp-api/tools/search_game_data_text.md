@@ -169,6 +169,12 @@ Explicit bounded full-text search over readable Reforger Game Data source files.
             "string",
             "null"
           ]
+        },
+        "thumbnailColor": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

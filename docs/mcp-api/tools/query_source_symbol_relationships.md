@@ -205,6 +205,12 @@ Query exact inheritance, modded-class, and method-override relationships across 
         },
         "symbolRef": {
           "type": "string"
+        },
+        "thumbnailColor": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

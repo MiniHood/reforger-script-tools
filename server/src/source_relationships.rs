@@ -87,6 +87,8 @@ pub struct SourceRelationshipHit {
     pub addon_guid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub addon_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumbnail_color: Option<String>,
     pub symbol_ref: String,
     pub name: String,
     pub kind: String,
@@ -1415,6 +1417,7 @@ fn project_hit(
         source: node.key.source,
         addon_guid: addon.map(|addon| addon.guid.clone()),
         addon_label: addon.map(|addon| addon.label.clone()),
+        thumbnail_color: addon.and_then(|addon| addon.thumbnail_color.clone()),
         symbol_ref: encode_symbol_ref(
             &snapshot.revision,
             addon.map(|addon| addon.guid.as_str()),
@@ -1569,6 +1572,7 @@ mod tests {
                         GameDataAddonIdentity {
                             guid: "game-guid".to_string(),
                             label: "Game".to_string(),
+                            thumbnail_color: None,
                         },
                     )
                 })

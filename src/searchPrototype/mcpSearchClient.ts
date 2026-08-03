@@ -33,6 +33,10 @@ export interface SearchScopeSource {
 	defaultSelected: boolean;
 }
 
+export function asThumbnailColor(value: unknown): string | undefined {
+	return typeof value === 'string' && /^#[0-9A-F]{6}$/i.test(value) ? value.toUpperCase() : undefined;
+}
+
 export interface SearchScopeDiscovery {
 	scopeRevision?: string;
 	scopeAuthority?: string;
@@ -152,6 +156,7 @@ export interface SearchHit {
 	readInput: Record<string, unknown>;
 	addonGuid?: string;
 	addonLabel?: string;
+	thumbnailColor?: string;
 	textMatchStart?: number;
 	textMatchLength?: number;
 	resourceName?: string;
@@ -1267,6 +1272,7 @@ export function normalizeResourceSearchPage(value: unknown): SearchHit[] {
 		const basename = asString(hit.basename, logicalPath.split('/').pop() ?? logicalPath);
 		const extension = asString(hit.extension, 'resource');
 		const addonGuid = asOptionalString(hit.addonGuid);
+		const thumbnailColor = asThumbnailColor(hit.thumbnailColor);
 		return [{
 			id: `game-data-resource-${index}-${resourceName}`,
 			source: 'gameData' as const,
@@ -1282,6 +1288,7 @@ export function normalizeResourceSearchPage(value: unknown): SearchHit[] {
 			...(hit.stale === true ? { resourceStale: true } : {}),
 			...(addonGuid ? { addonGuid } : {}),
 			...(asOptionalString(hit.addonId) ? { addonLabel: asOptionalString(hit.addonId) } : {}),
+			...(thumbnailColor ? { thumbnailColor } : {}),
 		}];
 	});
 }
@@ -1338,6 +1345,7 @@ function normalizeSymbolHit(source: SearchSource, hit: RecordValue, index: numbe
 	const readInput = asRecord(hit.readSourceInput);
 	const addonGuid = asOptionalString(hit.addonGuid);
 	const addonLabel = normalizedAddonLabel(hit);
+	const thumbnailColor = asThumbnailColor(hit.thumbnailColor);
 	const symbolRef = asOptionalString(hit.symbolRef);
 	if (!readInput.relativePath) {
 		return [];
@@ -1361,6 +1369,7 @@ function normalizeSymbolHit(source: SearchSource, hit: RecordValue, index: numbe
 		readInput,
 		...(addonGuid ? { addonGuid } : {}),
 		...(addonLabel ? { addonLabel } : {}),
+		...(thumbnailColor ? { thumbnailColor } : {}),
 	}];
 }
 
@@ -1379,6 +1388,7 @@ function normalizeTextHit(source: SearchSource, hit: RecordValue, index: number)
 	const readInput = asRecord(hit.readSourceInput);
 	const addonGuid = asOptionalString(hit.addonGuid);
 	const addonLabel = normalizedAddonLabel(hit);
+	const thumbnailColor = asThumbnailColor(hit.thumbnailColor);
 	if (!readInput.relativePath) {
 		return [];
 	}
@@ -1398,6 +1408,7 @@ function normalizeTextHit(source: SearchSource, hit: RecordValue, index: number)
 		readInput,
 		...(addonGuid ? { addonGuid } : {}),
 		...(addonLabel ? { addonLabel } : {}),
+		...(thumbnailColor ? { thumbnailColor } : {}),
 		textMatchStart: matchStart,
 		textMatchLength: matchText.length,
 	}];

@@ -154,6 +154,12 @@ Search the offline metadata-only Game Data Resource Catalogue for packed and loo
         "stale": {
           "type": "boolean"
         },
+        "thumbnailColor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "workbenchLink": {
           "type": "string"
         }

@@ -1164,7 +1164,7 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .search-atlas { padding: 26px 28px 72px; }
 .atlas-groups { display: grid; gap: 14px; margin-top: 12px; }
 .atlas-group { min-width: 0; border: 1px solid var(--border); background: var(--panel); }
-.atlas-group-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--alt); }
+.atlas-group-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 3px solid var(--addon-header-color, var(--border)); background: var(--alt); }
 .atlas-group-head h2 { margin: 0; font-size: 13px; }
 .atlas-results { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 12px; align-items: start; }
 .atlas-results.two-column { display: block; column-count: 2; column-gap: 10px; }
@@ -1432,6 +1432,10 @@ const highlightPreviewPart = (value, offset, range) => {
   return esc(String(value).slice(0, localStart)) + '<mark>' + esc(String(value).slice(localStart, localEnd)) + '</mark>' + esc(String(value).slice(localEnd));
 };
 const safeSemanticColor = value => /^#[0-9a-f]{3,8}$/i.test(String(value ?? '')) ? String(value) : '';
+const addonHeaderColor = result => {
+  const value = result.thumbnailColor;
+  return /^#[0-9A-F]{6}$/i.test(String(value ?? '')) ? String(value).toUpperCase() : '';
+};
 const semanticPreviewText = result => {
   const sourceText = state.sourcePreviews[result.id] ?? (result.kind === 'text' ? result.excerpt : undefined);
   if (typeof sourceText !== 'string') return '';
@@ -1476,11 +1480,12 @@ const resultGroups = () => {
   const groups = new Map();
   visibleResults().forEach(result => {
     const label = sourceLabel(result);
-    const group = groups.get(label) ?? [];
-    group.push(result);
-    groups.set(label, group);
+    const key = [result.source, result.addonGuid ?? '', label, addonHeaderColor(result)].join('\u0000');
+    const group = groups.get(key) ?? { label, results: [] };
+    group.results.push(result);
+    groups.set(key, group);
   });
-  return '<div class="atlas-groups">' + [...groups.entries()].map(([label, results]) => '<section class="atlas-group"><div class="atlas-group-head"><h2>' + esc(label) + '</h2><span class="tag">' + results.length + '</span></div><div class="atlas-results' + (state.resultColumns === 2 ? ' two-column' : '') + '">' + results.map(resultCard).join('') + '</div></section>').join('') + '</div>';
+  return '<div class="atlas-groups">' + [...groups.values()].map(({ label, results }) => { const color = addonHeaderColor(results[0]); return '<section class="atlas-group"><div class="atlas-group-head"' + (color ? ' style="--addon-header-color:' + esc(color) + ';"' : '') + '><h2>' + esc(label) + '</h2><span class="tag">' + results.length + '</span></div><div class="atlas-results' + (state.resultColumns === 2 ? ' two-column' : '') + '">' + results.map(resultCard).join('') + '</div></section>'; }).join('') + '</div>';
 };
 const updateResultPreviews = ids => {
   if (!ids.length) return;

@@ -159,6 +159,12 @@ Search semantic declarations in the configured user add-on workspace index. Resu
         },
         "symbolRef": {
           "type": "string"
+        },
+        "thumbnailColor": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

@@ -46,6 +46,7 @@ fn scoped_search_qualifies_colliding_paths_and_references_by_addon_guid() {
         GameDataAddonIdentity {
             guid: "AAAAAAAAAAAAAAAA".to_string(),
             label: "Left".to_string(),
+            thumbnail_color: Some("#112233".to_string()),
         },
     );
     addons.insert(
@@ -53,6 +54,7 @@ fn scoped_search_qualifies_colliding_paths_and_references_by_addon_guid() {
         GameDataAddonIdentity {
             guid: "BBBBBBBBBBBBBBBB".to_string(),
             label: "Right".to_string(),
+            thumbnail_color: None,
         },
     );
     let mut left_request = GameDataSearchRequest::new("Shared");
@@ -83,6 +85,7 @@ fn scoped_search_qualifies_colliding_paths_and_references_by_addon_guid() {
         left.results[0].addon_guid.as_deref(),
         Some("AAAAAAAAAAAAAAAA")
     );
+    assert_eq!(left.results[0].thumbnail_color.as_deref(), Some("#112233"));
     assert_eq!(
         left.results[0].read_source_input.addon_guid.as_deref(),
         Some("AAAAAAAAAAAAAAAA")

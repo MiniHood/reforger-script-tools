@@ -244,7 +244,8 @@ impl GameDataCatalogue {
             (corpus, false)
         } else {
             let mut sources = Vec::new();
-            let mut virtual_sources = BTreeMap::<String, Vec<(String, String, String)>>::new();
+            let mut virtual_sources =
+                BTreeMap::<String, Vec<(String, String, String, Option<String>)>>::new();
             let mut source_read_failures = 0;
             let mut source_read_failures_by_addon = BTreeMap::<String, usize>::new();
             let mut source_read_time_by_addon = BTreeMap::<String, Duration>::new();
@@ -277,6 +278,7 @@ impl GameDataCatalogue {
                             relative_path,
                             virtual_source.uri.clone(),
                             addon.label.clone(),
+                            addon.thumbnail_color.clone(),
                         ));
                     continue;
                 }
@@ -307,6 +309,7 @@ impl GameDataCatalogue {
                     relative_path,
                     addon_guid: Some(addon.guid.clone()),
                     addon_label: Some(addon.label.clone()),
+                    thumbnail_color: addon.thumbnail_color.clone(),
                     source_uri,
                     content: Arc::<str>::from(source),
                 });
@@ -338,7 +341,7 @@ impl GameDataCatalogue {
                                 .map(|(sequence, guid, addon_sources, cache_path)| {
                                     let uris = addon_sources
                                         .iter()
-                                        .map(|(_, uri, _)| uri.clone())
+                                        .map(|(_, uri, _, _)| uri.clone())
                                         .collect::<Vec<_>>();
                                     let read_started = Instant::now();
                                     let batch =
@@ -371,7 +374,7 @@ impl GameDataCatalogue {
                 *source_read_time_by_addon
                     .entry(guid.clone())
                     .or_insert(Duration::ZERO) += read_elapsed;
-                for ((relative_path, source_uri, addon_label), source) in
+                for ((relative_path, source_uri, addon_label, thumbnail_color), source) in
                     addon_sources.into_iter().zip(batch.sources.into_iter())
                 {
                     match source {
@@ -379,6 +382,7 @@ impl GameDataCatalogue {
                             relative_path,
                             addon_guid: Some(guid.clone()),
                             addon_label: Some(addon_label),
+                            thumbnail_color,
                             source_uri: Some(source_uri),
                             content: Arc::<str>::from(source),
                         }),
@@ -794,6 +798,9 @@ pub struct GameDataAddonStatus {
     pub addon_guid: String,
     pub display_id: String,
     pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Alpha-weighted average thumbnail color as a CSS #RRGGBB value.")]
+    pub thumbnail_color: Option<String>,
     pub script_count: usize,
     pub available: bool,
     pub pinned: bool,
@@ -1034,6 +1041,7 @@ fn ready_layered_state(result: LoadedAddonIndexResult) -> GameDataCatalogueState
                 addon_guid: instance.guid.to_ascii_uppercase(),
                 display_id: instance.display_id.clone(),
                 title: instance.title.clone(),
+                thumbnail_color: None,
                 script_count: 0,
                 available: false,
                 pinned: false,
@@ -1154,6 +1162,9 @@ fn layered_scope_revision(
         digest.update(identity.source_root.to_string_lossy().as_bytes());
         digest.update([0]);
         digest.update(instance.revision.as_bytes());
+        if let Some(color) = &instance.thumbnail_color {
+            digest.update(color.as_bytes());
+        }
         digest.update([0xff]);
     }
     format!("gd2:{:x}", digest.finalize())
@@ -1173,6 +1184,7 @@ fn addon_map(instances: &[LoadedAddonIndexInstance]) -> GameDataAddonMap {
         let identity = GameDataAddonIdentity {
             guid: instance.guid.to_ascii_uppercase(),
             label: instance.title.clone(),
+            thumbnail_color: instance.thumbnail_color.clone(),
         };
         for file in instance.file_start..instance.file_start + instance.file_count {
             map.insert(SourceFileId(file), identity.clone());
@@ -1187,6 +1199,7 @@ fn addon_status(instance: &LoadedAddonIndexInstance) -> GameDataAddonStatus {
         addon_guid: guid.clone(),
         display_id: instance.display_id.clone(),
         title: instance.title.clone(),
+        thumbnail_color: instance.thumbnail_color.clone(),
         script_count: instance.script_count,
         available: true,
         pinned: matches!(guid.as_str(), BASE_GAME_GUID | ENFUSION_CORE_GUID),
@@ -1299,12 +1312,14 @@ mod tests {
             relative_path: "Game/Feature.c".to_string(),
             addon_guid: Some("1111111111111111".to_string()),
             addon_label: Some("Feature".to_string()),
+            thumbnail_color: Some("#123456".to_string()),
             source_uri: Some("reforger-pak://example".to_string()),
             content: Arc::from("class Feature {}"),
         };
         let dynamic_bytes = source.relative_path.len()
             + source.addon_guid.as_deref().map_or(0, str::len)
             + source.addon_label.as_deref().map_or(0, str::len)
+            + source.thumbnail_color.as_deref().map_or(0, str::len)
             + source.source_uri.as_deref().map_or(0, str::len)
             + source.content.len();
 
@@ -1495,10 +1510,11 @@ mod tests {
 
     #[test]
     fn scope_revision_changes_with_exact_instance_root() {
-        let instance = LoadedAddonIndexInstance {
+        let mut instance = LoadedAddonIndexInstance {
             guid: BASE_GAME_GUID.to_string(),
             display_id: "ArmaReforger".to_string(),
             title: "Arma Reforger".to_string(),
+            thumbnail_color: None,
             pack_count: 1,
             script_count: 1,
             file_start: 0,
@@ -1519,6 +1535,17 @@ mod tests {
             guid: BASE_GAME_GUID.to_string(),
             source_root: PathBuf::from("right"),
         };
+
+        let without_thumbnail =
+            layered_scope_revision(std::slice::from_ref(&instance), std::slice::from_ref(&left));
+        instance.thumbnail_color = Some("#123456".to_string());
+        let status = addon_status(&instance);
+
+        assert_eq!(status.thumbnail_color.as_deref(), Some("#123456"));
+        assert_ne!(
+            without_thumbnail,
+            layered_scope_revision(std::slice::from_ref(&instance), std::slice::from_ref(&left)),
+        );
 
         assert_ne!(
             layered_scope_revision(std::slice::from_ref(&instance), &[left]),
@@ -1557,6 +1584,7 @@ fn retained_text_source_bytes(sources: &[TextSource]) -> Option<usize> {
             source.relative_path.len(),
             source.addon_guid.as_deref().map_or(0, str::len),
             source.addon_label.as_deref().map_or(0, str::len),
+            source.thumbnail_color.as_deref().map_or(0, str::len),
             source.source_uri.as_deref().map_or(0, str::len),
             source.content.len(),
         ]

@@ -22,6 +22,7 @@ pub struct TextSource {
     pub relative_path: String,
     pub addon_guid: Option<String>,
     pub addon_label: Option<String>,
+    pub thumbnail_color: Option<String>,
     pub source_uri: Option<String>,
     pub content: Arc<str>,
 }
@@ -101,6 +102,8 @@ pub struct TextSearchHit {
     pub addon_guid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub addon_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumbnail_color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_uri: Option<String>,
     pub relative_path: String,
@@ -408,6 +411,7 @@ fn project_hit(
     TextSearchHit {
         addon_guid: source.addon_guid.clone(),
         addon_label: source.addon_label.clone(),
+        thumbnail_color: source.thumbnail_color.clone(),
         source_uri: source.source_uri.clone(),
         relative_path: source.relative_path.clone(),
         match_range: TextRange {
@@ -530,6 +534,7 @@ mod tests {
                     relative_path: "Game/Z.c".to_string(),
                     addon_guid: None,
                     addon_label: None,
+                    thumbnail_color: None,
                     source_uri: None,
                     content: Arc::from("// SCR_ in a comment\nvoid Z() { string s = \"SCR_\"; }\n"),
                 },
@@ -537,6 +542,7 @@ mod tests {
                     relative_path: "Game/A.c".to_string(),
                     addon_guid: None,
                     addon_label: None,
+                    thumbnail_color: None,
                     source_uri: None,
                     content: Arc::from("😀 void A() { SCR_(); }\n"),
                 },
@@ -626,6 +632,7 @@ mod tests {
                     relative_path: "Game/Repeated.c".to_string(),
                     addon_guid: None,
                     addon_label: None,
+                    thumbnail_color: None,
                     source_uri: None,
                     content: Arc::from("SCR_ SCR_"),
                 }],
@@ -664,6 +671,7 @@ mod tests {
                 relative_path: "Game/Words.c".to_string(),
                 addon_guid: None,
                 addon_label: None,
+                thumbnail_color: None,
                 source_uri: None,
                 content: Arc::from("SCR SCR_Player scr\nSCR_One SCR_Two other"),
             }],
@@ -885,6 +893,7 @@ mod tests {
                     relative_path: "Game/Large.c".to_string(),
                     addon_guid: None,
                     addon_label: None,
+                    thumbnail_color: None,
                     source_uri: None,
                     content: Arc::from(content),
                 }],

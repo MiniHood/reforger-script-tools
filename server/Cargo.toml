@@ -191,6 +191,7 @@ path = "../tools/server-reports/pack_catalogue_report.rs"
 ahash = "0.8"
 base64 = "0.22"
 flate2 = "1.0"
+png = "0.17"
 regex = "1.11"
 rmcp = { version = "=2.2.0", default-features = false, features = ["server", "macros", "transport-io"] }
 schemars = "1.0"
@@ -202,7 +203,6 @@ tokio = { version = "1.49", features = ["macros", "rt-multi-thread", "sync", "ti
 url = "2.5"
 
 [target.'cfg(windows)'.dependencies]
-png = "0.17"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

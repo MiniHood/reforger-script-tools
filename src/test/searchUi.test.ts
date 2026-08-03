@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vm from 'node:vm';
 import { searchLimits } from '../extensionConfig/search';
-import { addonScopeLabel, formatSearchKind, maxSearchPages, McpToolError, normalizeResourceSearchPage, normalizeSearchPage, normalizeSourceRelationshipPage, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceContextPreview, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
+import { addonScopeLabel, asThumbnailColor, formatSearchKind, maxSearchPages, McpToolError, normalizeResourceSearchPage, normalizeSearchPage, normalizeSourceRelationshipPage, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceContextPreview, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
 import { semanticPreviewForLine, semanticPreviewForLines, semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
 import { renderSearchUiForTest } from '../searchPrototype/searchUiPrototype';
 
@@ -17,6 +17,12 @@ const searchClientSource = fs.readFileSync(
 );
 
 suite('Reforger search UI MCP mapping', () => {
+	test('accepts only canonical thumbnail colors for add-on header accents', () => {
+		assert.strictEqual(asThumbnailColor('#12abEF'), '#12ABEF');
+		assert.strictEqual(asThumbnailColor('red'), undefined);
+		assert.strictEqual(asThumbnailColor('#123456; background:red'), undefined);
+	});
+
 	test('maps canonical Workbench resources and exposes their fixed kind filters', () => {
 		assert.deepStrictEqual(resourceKindsFor('audio'), ['audio']);
 		assert.deepStrictEqual(resourceKindsFor('texture'), ['texture']);
@@ -27,6 +33,7 @@ suite('Reforger search UI MCP mapping', () => {
 				resourceName: '{58D0FB3206B6F859}Prefabs/Props/Radio.et',
 				addonGuid: '58D0FB3206B6F859',
 				addonId: 'ArmaReforger',
+				thumbnailColor: '#12abef',
 				logicalPath: 'Prefabs/Props/Radio.et',
 				basename: 'Radio.et',
 				name: 'Radio',
@@ -47,6 +54,7 @@ suite('Reforger search UI MCP mapping', () => {
 			workbenchLink: 'enfusion://ResourceManager/~ArmaReforger:Prefabs/Props/Radio.et',
 			addonGuid: '58D0FB3206B6F859',
 			addonLabel: 'ArmaReforger',
+			thumbnailColor: '#12ABEF',
 		}]);
 	});
 
@@ -381,7 +389,12 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /const resultAccent = result =>/);
 		assert.match(searchUiSource, /const resultGroups = \(\) => \{/);
 		assert.match(searchUiSource, /visibleResults\(\)\.forEach\(result => \{/);
-		assert.match(searchUiSource, /<section class="atlas-group"><div class="atlas-group-head"><h2>/);
+		assert.match(searchUiSource, /<section class="atlas-group"><div class="atlas-group-head"/);
+		assert.match(searchUiSource, /--addon-header-color/);
+		assert.match(searchUiSource, /const addonHeaderColor = result =>[\s\S]*?result\.thumbnailColor/);
+		assert.doesNotMatch(searchUiSource, /scopeSources\.find\(source => source\.id === guid\)/);
+		assert.doesNotMatch(searchUiSource, /\.atlas-group \{[^}]*--addon-header-color/);
+		assert.doesNotMatch(searchUiSource, /\.atlas-card \{[^}]*--addon-header-color/);
 		assert.match(searchUiSource, /results\.map\(resultCard\)\.join\(''\)/);
 		assert.match(searchUiSource, /\.atlas-results\.two-column \{ display: block; column-count: 2;/);
 		assert.match(searchUiSource, /const sharedMatchArea = \(\) => warnings \+ resultBody\(resultGroups\(\)\) \+ bottomPager/);
@@ -645,6 +658,7 @@ suite('Reforger search UI MCP mapping', () => {
 				symbolRef: 'sr2:addon-symbol',
 				addonGuid: 'A1B2C3D4E5F60718',
 				addonLabel: 'ExampleAddon (Example Add-on)',
+				thumbnailColor: '#654321',
 				sourceUri: 'file:///C:/Addons/Example/Scripts/SCR_AddonClass.c',
 				readSourceInput: {
 					catalogueRevision: 'gd2:revision',
@@ -657,6 +671,7 @@ suite('Reforger search UI MCP mapping', () => {
 
 		assert.strictEqual(results[0].addonGuid, 'A1B2C3D4E5F60718');
 		assert.strictEqual(results[0].addonLabel, 'Example Add-on');
+		assert.strictEqual(results[0].thumbnailColor, '#654321');
 		assert.strictEqual(results[0].sourceUri, 'file:///C:/Addons/Example/Scripts/SCR_AddonClass.c');
 		assert.strictEqual(results[0].readInput.addonGuid, 'A1B2C3D4E5F60718');
 		assert.strictEqual(results[0].symbolRef, 'sr2:addon-symbol');

@@ -1,6 +1,7 @@
 // Shared Enfusion language and evidence modules. These do not own a client
 // protocol and may be used by either adapter.
 pub mod addon_sources;
+mod addon_thumbnail_color;
 pub mod analysis_runtime;
 pub mod ast;
 pub mod callable;

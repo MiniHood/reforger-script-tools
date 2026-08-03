@@ -179,7 +179,13 @@ showing the preceding mode's catalogue.
 `game_data_status` publishes the currently available scope; Game Data symbol
 and text searches accept a set of loaded add-on GUIDs, and every returned
 source handoff retains its add-on GUID so colliding logical paths remain
-unambiguous. Script text-search handoffs also retain their complete physical or
+unambiguous. Loaded add-on indexing also derives an optional alpha-weighted
+average from the Workbench-owned source root's `thumbnail.png`; status exposes
+that bounded metadata, and the per-instance cache manifest retains it so warm
+loads do not depend on the original image. Search results carry their resolved
+instance color to the Search page, which applies it to the add-on group-header
+accent only. Missing or invalid thumbnails do not affect index availability. Script
+text-search handoffs also retain their complete physical or
 virtual editor identity. The Search page publishes their raw line previews
 immediately, then asynchronously applies the language server's semantic tokens
 from the complete document; Official Wiki text remains Markdown evidence and
