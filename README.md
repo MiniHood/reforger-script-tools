@@ -82,6 +82,20 @@ Tools`, or add the keys to `settings.json`.
 | `reforgerScriptTools.workbench.saveOnIdle` | `true` | After three seconds without typing, save the active Enforce Script and validate in Workbench. Disable to validate only on explicit save or command. |
 | `reforgerScriptTools.workbench.externalIndexMode` | `"loaded"` | Choose cached external indexes: `"loaded"` for the opened project's dependencies, `"all"` for every compatible cached index, or `"none"` for workspace scripts only. |
 
+For the default `"semantic"` bracket mode, the extension contributes and
+maintains these language-specific user settings when Enforce support activates:
+
+```json
+"[enforce]": {
+  "editor.bracketPairColorization.enabled": false,
+  "editor.matchBrackets": "never"
+}
+```
+
+The `"punctuation"` mode uses the same editor settings. The `"vscode"` mode
+sets them to `true` and `"always"` so native bracket coloring and matching take
+over.
+
 ## Customize Semantic Colors
 
 The extension supplies default Enfusion Script colors through VS Code's native

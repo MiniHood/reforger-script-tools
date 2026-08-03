@@ -312,25 +312,23 @@ export function registerLanguageClientFeatures(
   );
 
   const bracketColoring = getBracketColoringMode();
-	const startup = runAfterWorkbenchStartupGate(workbenchStartupGate, () => vscode.window.withProgress(
-		{
-			location: vscode.ProgressLocation.Window,
-			title: 'Reforger: Indexing loaded add-ons',
-			cancellable: false,
-		},
-		progress => {
-			return synchronizeBracketColoringEditorMode(
-				bracketColoring,
-				outputChannel,
-			).then(() => startLanguageClient(
-				context,
-				outputChannel,
-				bracketColoring,
-				progress,
-				workbenchReady,
-			));
-		},
-	));
+  const startup = synchronizeBracketColoringEditorMode(
+    bracketColoring,
+    outputChannel,
+  ).then(() => runAfterWorkbenchStartupGate(workbenchStartupGate, () => vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Window,
+      title: 'Reforger: Indexing loaded add-ons',
+      cancellable: false,
+    },
+    progress => startLanguageClient(
+      context,
+      outputChannel,
+      bracketColoring,
+      progress,
+      workbenchReady,
+    ),
+  )));
   initialStartup = startup;
   void startup.finally(() => {
     if (initialStartup === startup) {
