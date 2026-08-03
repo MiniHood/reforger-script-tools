@@ -4,9 +4,9 @@ import * as path from 'node:path';
 import * as vm from 'node:vm';
 import * as vscode from 'vscode';
 import { searchLimits } from '../extensionConfig/search';
-import { addonScopeLabel, asThumbnailColor, formatSearchKind, maxSearchPages, McpToolError, normalizeResourceSearchPage, normalizeSearchPage, normalizeSourceRelationshipPage, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceContextPreview, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
+import { addonScopeLabel, asThumbnailColor, formatSearchKind, maxSearchPages, McpToolError, normalizeResourceSearchPage, normalizeSearchPage, normalizeSourceRelationshipPage, normalizeWorkbenchProjectContext, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceContextPreview, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
 import { semanticPreviewForLine, semanticPreviewForLines, semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
-import { externalResourceLinkFor, renderSearchUiForTest } from '../searchPrototype/searchUiPrototype';
+import { localWorkbenchResourceLinkFor, renderSearchUiForTest, resourceAddonIsLoaded, resourcePathForClipboard, resourcePhysicalPathFor, workbenchResourceOpenState } from '../searchPrototype/searchUiPrototype';
 
 const searchUiSource = fs.readFileSync(
 	path.join(__dirname, '../../src/searchPrototype/searchUiPrototype.ts'),
@@ -80,16 +80,86 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /showTextDocument\(documentWithLanguage, \{ preview: true \}\)/);
 	});
 
-	test('opens string tables through the official redirect without changing the Resource Manager target', () => {
-		const target = externalResourceLinkFor({
+	test('keeps string tables on the local Resource Manager protocol', () => {
+		const target = localWorkbenchResourceLinkFor({
 			workbenchLink: 'enfusion://ResourceManager/~ArmaReforger:Language/localization.st',
 		});
-		const expected = 'https://enfusionengine.com/api/redirect?to=enfusion://ResourceManager/~ArmaReforger:Language/localization.st';
-		assert.strictEqual(vscode.Uri.parse(expected, true).toString(true), expected);
+		const expected = 'enfusion://ResourceManager/~ArmaReforger:Language/localization.st';
 		assert.strictEqual(target, expected);
-		assert.strictEqual(externalResourceLinkFor({
+		assert.strictEqual(localWorkbenchResourceLinkFor({
 			workbenchLink: 'enfusion://ResourceManager/~ArmaReforger:Prefabs/Props/Radio.et',
 		}), 'enfusion://ResourceManager/~ArmaReforger:Prefabs/Props/Radio.et');
+		assert.strictEqual(localWorkbenchResourceLinkFor({
+			workbenchLink: 'https://enfusionengine.com/api/redirect?to=enfusion://ResourceManager/~ArmaReforger:Language/localization.st',
+		}), undefined);
+	});
+
+	test('opens Workbench resources only when their add-on is in the live project context', () => {
+		const resource = {
+			kind: 'resource' as const,
+			addonLabel: 'ArmaReforger',
+		};
+		assert.strictEqual(resourceAddonIsLoaded(resource, ['TestBullshit', 'armareforger']), true);
+		assert.strictEqual(resourceAddonIsLoaded(resource, ['TestBullshit']), false);
+		assert.strictEqual(resourceAddonIsLoaded({ kind: 'resource' }, ['ArmaReforger']), false);
+		assert.strictEqual(workbenchResourceOpenState(resource, {
+			loadedAddons: ['ArmaReforger'], loadedAddonsTruncated: false,
+		}), 'loaded');
+		assert.strictEqual(workbenchResourceOpenState(resource, {
+			loadedAddons: [], loadedAddonsTruncated: false,
+		}), 'not-loaded');
+		assert.strictEqual(workbenchResourceOpenState(resource, {
+			loadedAddons: [], loadedAddonsTruncated: true,
+		}), 'unconfirmed');
+		assert.match(searchClientSource, /callTool\('workbench_project_context', \{\}\)/);
+		assert.match(searchUiSource, /workbenchResourceOpenState\(hit, projectContext\)/);
+		assert.match(searchUiSource, /The add-on .* is not loaded in Workbench/);
+		assert.match(searchUiSource, /could not be confirmed because Workbench returned an incomplete loaded add-on list/);
+		assert.match(searchUiSource, /did not identify its owning add-on/);
+	});
+
+	test('rejects malformed live Workbench project context', () => {
+		assert.deepStrictEqual(normalizeWorkbenchProjectContext({
+			loadedAddons: ['ArmaReforger'],
+			loadedAddonsTruncated: false,
+		}), {
+			loadedAddons: ['ArmaReforger'],
+			loadedAddonsTruncated: false,
+		});
+		assert.throws(
+			() => normalizeWorkbenchProjectContext({ loadedAddons: [] }),
+			/The live Workbench project context was malformed/,
+		);
+	});
+
+	test('offers resource context actions and enables Explorer reveal only for loose files', () => {
+		const [loose] = normalizeResourceSearchPage({
+			results: [{
+				resourceName: '{C014582791ECBF24}Language/localization.st',
+				addonGuid: 'C014582791ECBF24',
+				addonId: 'ArmaReforger',
+				logicalPath: 'Language/localization.st',
+				basename: 'localization.st',
+				extension: 'st',
+				physicalPath: 'C:\\Addons\\ArmaReforger\\Language\\localization.st',
+				workbenchLink: 'enfusion://ResourceManager/~ArmaReforger:Language/localization.st',
+			}],
+		});
+		assert.strictEqual(
+			resourcePathForClipboard(loose),
+			'{C014582791ECBF24}Language/localization.st',
+		);
+		assert.strictEqual(
+			resourcePhysicalPathFor(loose),
+			'C:\\Addons\\ArmaReforger\\Language\\localization.st',
+		);
+		assert.strictEqual(resourcePhysicalPathFor({ kind: 'resource' }), undefined);
+		assert.match(searchUiSource, /data-copy-resource>Copy Resource Path/);
+		assert.match(searchUiSource, /data-reveal-resource[\s\S]*Show in File Explorer/);
+		assert.match(searchUiSource, /result\.resourcePhysicalPath \? '' : ' disabled aria-disabled="true"/);
+		assert.match(searchUiSource, /vscode\.env\.clipboard\.writeText\(resourcePath\)/);
+		assert.match(searchUiSource, /executeCommand\('revealFileInOS', vscode\.Uri\.file\(physicalPath\)\)/);
+		assert.match(searchUiSource, /element\.addEventListener\('contextmenu', event => openResourceContextMenu\(element, event\)\)/);
 	});
 
 	test('offers a resource search mode backed by the canonical Workbench tools', () => {
@@ -99,7 +169,9 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /hit\.kind === 'resource'/);
 		assert.match(searchClientSource, /search_game_data_resources/);
 		assert.match(searchUiSource, /workbenchLink/);
-		assert.match(searchUiSource, /const resultPreview = result => result\.kind === 'resource' \? ''/);
+		assert.match(searchUiSource, /const resultPreview = result => result\.kind === 'resource'[\s\S]*?\? ''/);
+		assert.match(searchUiSource, /const resultTitle = result => result\.kind === 'resource' \? result\.path : result\.title/);
+		assert.match(searchUiSource, /const resultPath = result => result\.kind === 'resource' \? ''/);
 		assert.match(searchUiSource, /const hasActiveSearch = \(\) =>/);
 		assert.match(searchUiSource, /includeLayoutToggle && state\.mode !== 'resource'/);
 		assert.match(searchUiSource, /const navigationDisabled = !hasActiveSearch\(\)/);

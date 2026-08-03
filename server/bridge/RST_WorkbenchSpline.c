@@ -164,12 +164,15 @@ class RST_WorkbenchSpline : NetApiHandler
 			vector inTangent;
 			vector outTangent;
 			spline.GetTangents(i, inTangent, outTangent);
+			string tangentMode = "auto";
+			if (spline.HasPointExplicitTangents(i))
+				tangentMode = "explicit";
 			if (!encoded.IsEmpty())
 				encoded += ";";
 			encoded += string.Format(
 				"%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11",
 				i,
-				spline.HasPointExplicitTangents(i) ? "explicit" : "auto",
+				tangentMode,
 				PointToSpace(spline, localPosition, space)[0],
 				PointToSpace(spline, localPosition, space)[1],
 				PointToSpace(spline, localPosition, space)[2],
@@ -315,7 +318,10 @@ class RST_WorkbenchSpline : NetApiHandler
 				return false;
 			}
 		}
-		if (hasClosed && !api.SetVariableValue(source, null, "IsClosed", closed ? "1" : "0"))
+		string closedValue = "0";
+		if (closed)
+			closedValue = "1";
+		if (hasClosed && !api.SetVariableValue(source, null, "IsClosed", closedValue))
 		{
 			api.EndEntityAction("Reforger Script Tools: edit spline");
 			return false;

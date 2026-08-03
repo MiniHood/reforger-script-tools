@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::fs;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -189,6 +189,8 @@ pub struct ResourceSearchResult {
     pub registered: bool,
     pub stale: bool,
     pub source_identity: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_path: Option<String>,
     pub workbench_link: String,
 }
 
@@ -712,6 +714,7 @@ impl ResourceCatalogue {
                 registered: record.registered,
                 stale: record.stale,
                 source_identity: record.source_identity.clone(),
+                physical_path: loose_resource_path(record),
                 workbench_link: record.workbench_link.clone(),
             })
             .collect::<Vec<_>>();
@@ -725,6 +728,23 @@ impl ResourceCatalogue {
             next_cursor: (next_offset < total).then(|| encode_cursor(&request, next_offset)),
         })
     }
+}
+
+fn loose_resource_path(record: &ResourceRecord) -> Option<String> {
+    if record.stale {
+        return None;
+    }
+    let root = Path::new(record.source_identity.strip_prefix("loose:")?);
+    let relative = Path::new(&record.logical_path);
+    if !root.is_absolute()
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return None;
+    }
+    Some(root.join(relative).to_string_lossy().into_owned())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -851,6 +871,42 @@ mod tests {
             record("AI/BehaviorTrees/Radio.bt").workbench_link,
             "enfusion://BehaviorEditor/~Test:AI/BehaviorTrees/Radio.bt"
         );
+    }
+
+    #[test]
+    fn physical_paths_are_available_only_for_current_loose_resources() {
+        let root = std::env::temp_dir().join("reforger-resource-catalogue-test");
+        let loose_identity = format!("loose:{}", root.display());
+        let loose = ResourceRecord::new(
+            "1111111111111111",
+            "Test",
+            "Language/localization.st",
+            &loose_identity,
+        );
+        assert_eq!(
+            loose_resource_path(&loose),
+            Some(
+                root.join("Language/localization.st")
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
+
+        let packed = ResourceRecord::new(
+            "1111111111111111",
+            "Test",
+            "Language/localization.st",
+            "packed:C:/Addons/Test/data.pak",
+        );
+        assert_eq!(loose_resource_path(&packed), None);
+
+        let mut stale = loose.clone();
+        stale.stale = true;
+        assert_eq!(loose_resource_path(&stale), None);
+
+        let escaping =
+            ResourceRecord::new("1111111111111111", "Test", "../outside.st", &loose_identity);
+        assert_eq!(loose_resource_path(&escaping), None);
     }
 
     #[test]

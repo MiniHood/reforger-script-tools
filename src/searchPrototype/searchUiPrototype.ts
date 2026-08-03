@@ -35,6 +35,7 @@ import {
 	type SearchSymbolKind,
 	type SearchSource,
 	type SourceMatchRange,
+	type WorkbenchProjectContext,
 } from './mcpSearchClient';
 
 const searchScheme = 'reforger-search';
@@ -84,13 +85,41 @@ interface RelationshipSearchState {
 	depth: 'one' | 'all';
 }
 
-export function externalResourceLinkFor(hit: Pick<SearchHit, 'workbenchLink'>): string | undefined {
-	if (!hit.workbenchLink) {
-		return undefined;
+export function localWorkbenchResourceLinkFor(hit: Pick<SearchHit, 'workbenchLink'>): string | undefined {
+	return hit.workbenchLink?.startsWith('enfusion://') ? hit.workbenchLink : undefined;
+}
+
+export function resourceAddonIsLoaded(
+	hit: Pick<SearchHit, 'kind' | 'addonLabel'>,
+	loadedAddons: readonly string[],
+): boolean {
+	if (hit.kind !== 'resource' || !hit.addonLabel) {
+		return false;
 	}
-	return /\.st$/i.test(hit.workbenchLink)
-		? `https://enfusionengine.com/api/redirect?to=${hit.workbenchLink}`
-		: hit.workbenchLink;
+	const addonId = hit.addonLabel.toLowerCase();
+	return loadedAddons.some(loadedAddon => loadedAddon.toLowerCase() === addonId);
+}
+
+export function workbenchResourceOpenState(
+	hit: Pick<SearchHit, 'kind' | 'addonLabel'>,
+	context: WorkbenchProjectContext,
+): 'loaded' | 'not-loaded' | 'unconfirmed' {
+	if (resourceAddonIsLoaded(hit, context.loadedAddons)) {
+		return 'loaded';
+	}
+	return !hit.addonLabel || context.loadedAddonsTruncated ? 'unconfirmed' : 'not-loaded';
+}
+
+export function resourcePathForClipboard(
+	hit: Pick<SearchHit, 'kind' | 'resourceName'>,
+): string | undefined {
+	return hit.kind === 'resource' ? hit.resourceName : undefined;
+}
+
+export function resourcePhysicalPathFor(
+	hit: Pick<SearchHit, 'kind' | 'resourcePhysicalPath'>,
+): string | undefined {
+	return hit.kind === 'resource' ? hit.resourcePhysicalPath : undefined;
 }
 
 export function registerSearchUi(context: vscode.ExtensionContext): void {
@@ -275,6 +304,23 @@ async function handleMessage(
 	}
 	if (message.type === 'open' && typeof message.id === 'string') {
 		await openSearchResult(active, message.id);
+		return;
+	}
+	if (message.type === 'copyResourcePath' && typeof message.id === 'string') {
+		const hit = active.latestResults.get(message.id);
+		const resourcePath = hit ? resourcePathForClipboard(hit) : undefined;
+		if (resourcePath) {
+			await vscode.env.clipboard.writeText(resourcePath);
+			vscode.window.setStatusBarMessage('Copied Reforger resource path.', 2_000);
+		}
+		return;
+	}
+	if (message.type === 'revealResource' && typeof message.id === 'string') {
+		const hit = active.latestResults.get(message.id);
+		const physicalPath = hit ? resourcePhysicalPathFor(hit) : undefined;
+		if (physicalPath) {
+			await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(physicalPath));
+		}
 		return;
 	}
 	if (message.type === 'external' && typeof message.id === 'string') {
@@ -948,9 +994,27 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 	try {
 		diagnostic('searchUi.resultOpenStarted', { source: hit.source, kind: hit.kind });
 		if (hit.kind === 'resource' && !hit.readInput.relativePath) {
-			const resourceLink = externalResourceLinkFor(hit);
+			const resourceLink = localWorkbenchResourceLinkFor(hit);
 			if (!resourceLink) {
 				throw new Error('The resource search result did not include a complete Workbench resource link.');
+			}
+			const client = await getClientFromActive(active);
+			const projectContext = await client.workbenchProjectContext();
+			const openState = workbenchResourceOpenState(hit, projectContext);
+			if (openState !== 'loaded') {
+				const addon = hit.addonLabel ?? 'for this resource';
+				diagnostic('searchUi.resultOpenBlocked', {
+					source: hit.source,
+					addon,
+					loadedAddonsTruncated: projectContext.loadedAddonsTruncated,
+				});
+				const reason = !hit.addonLabel
+					? 'The resource result did not identify its owning add-on, so its loaded state could not be confirmed.'
+					: openState === 'unconfirmed'
+					? `The loaded state of add-on ${addon} could not be confirmed because Workbench returned an incomplete loaded add-on list.`
+					: `The add-on ${addon} is not loaded in Workbench.`;
+				await vscode.window.showWarningMessage(`${reason} ${hit.title} was not opened.`);
+				return;
 			}
 			await vscode.env.openExternal(vscode.Uri.parse(resourceLink, true));
 			diagnostic('searchUi.resultOpenCompleted', { source: hit.source, enfusionResourceLink: true });
@@ -1195,6 +1259,10 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .atlas-card:hover, .atlas-card.selected { border-color: var(--accent); border-left-color: var(--result-accent); }
 .atlas-card.selected { background: color-mix(in srgb, var(--result-accent) 15%, var(--panel)); box-shadow: 0 0 0 1px var(--accent), 0 4px 14px rgba(0, 0, 0, .2); }
 .atlas-card:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.resource-context-menu { position: fixed; z-index: 20; min-width: 210px; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--border)); color: var(--vscode-menu-foreground, var(--text)); background: var(--vscode-menu-background, var(--panel)); box-shadow: 0 8px 24px rgba(0, 0, 0, .4); }
+.resource-context-menu button { display: block; width: 100%; padding: 6px 20px 6px 8px; border: 0; text-align: left; color: inherit; background: transparent; }
+.resource-context-menu button:hover:not(:disabled), .resource-context-menu button:focus-visible { color: var(--vscode-menu-selectionForeground, var(--selected-text)); background: var(--vscode-menu-selectionBackground, var(--selected)); outline: none; }
+.resource-context-menu button:disabled { opacity: .45; cursor: default; }
 .atlas-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .atlas-card-tools { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; }
 .result-anchor-action { display: inline-flex; width: 24px; height: 24px; align-items: center; justify-content: center; padding: 0; color: var(--muted); background: transparent; }
@@ -1478,6 +1546,8 @@ const resultExternalAction = result => result.sourceUrl ? '<button data-external
 const resultRelationAction = result => state.mode === 'semantic' && result.kind === 'symbol' && result.symbolRef ? '<button type="button" class="result-anchor-action" data-relation-anchor="' + esc(result.id) + '" aria-label="Explore relationships from ' + esc(result.title) + '" title="Explore relationships"><span class="relation-icon" aria-hidden="true"></span></button>' : '';
 const relationshipLabels = { direct: 'Direct', directBase: 'Parent', derivedType: 'Child', moddedExtension: 'Modded', overriddenDeclaration: 'Base', override: 'Override' };
 const resultRelationshipTag = result => result.relationshipKind ? '<span class="tag relationship-tag" title="' + esc(result.relationshipEvidence ?? '') + '">' + esc(relationshipLabels[result.relationshipKind] ?? result.relationshipKind) + (Number(result.relationshipDistance) > 1 ? ' · ' + result.relationshipDistance : '') + '</span>' : '';
+const resultTitle = result => result.kind === 'resource' ? result.path : result.title;
+const resultPath = result => result.kind === 'resource' ? '' : '<div class="result-path">' + esc(result.path) + '</div>';
 const resultAccent = result => {
   if (result.kind === 'text') return 'string';
   if (result.kind === 'resource') return 'resource';
@@ -1488,7 +1558,7 @@ const resultAccent = result => {
   if (['enum', 'enumMember'].includes(result.symbolKind)) return 'enum';
   return 'default';
 };
-const resultCard = result => '<article class="atlas-card result-' + resultAccent(result) + ' ' + (state.selected === result.id ? 'selected' : '') + '" data-open="' + esc(result.id) + '" tabindex="0" role="button"><div class="atlas-card-head"><strong>' + esc(result.title) + '</strong><span class="atlas-card-tools">' + resultRelationshipTag(result) + '<span class="tag">' + esc(result.detail) + '</span>' + resultRelationAction(result) + '</span></div><div class="result-path">' + esc(result.path) + '</div>' + resultPreview(result) + '<div class="result-actions">' + resultExternalAction(result) + '</div></article>';
+const resultCard = result => '<article class="atlas-card result-' + resultAccent(result) + ' ' + (state.selected === result.id ? 'selected' : '') + '" data-open="' + esc(result.id) + '" tabindex="0" role="button"><div class="atlas-card-head"><strong>' + esc(resultTitle(result)) + '</strong><span class="atlas-card-tools">' + resultRelationshipTag(result) + '<span class="tag">' + esc(result.detail) + '</span>' + resultRelationAction(result) + '</span></div>' + resultPath(result) + resultPreview(result) + '<div class="result-actions">' + resultExternalAction(result) + '</div></article>';
 const resultGroups = () => {
   const groups = new Map();
   visibleResults().forEach(result => {
@@ -1583,6 +1653,25 @@ const openResult = element => {
   vscode.postMessage({ type: 'open', id: element.dataset.open });
   render();
 };
+const closeResourceContextMenu = () => document.querySelector('.resource-context-menu')?.remove();
+const openResourceContextMenu = (element, event) => {
+  const result = state.results.find(candidate => candidate.id === element.dataset.open);
+  if (result?.kind !== 'resource') return;
+  event.preventDefault();
+  event.stopPropagation();
+  closeResourceContextMenu();
+  const menu = document.createElement('div');
+  menu.className = 'resource-context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'Resource actions');
+  menu.innerHTML = '<button type="button" role="menuitem" data-copy-resource>Copy Resource Path</button><button type="button" role="menuitem" data-reveal-resource' + (result.resourcePhysicalPath ? '' : ' disabled aria-disabled="true" title="Available only for unpacked add-on resources"') + '>Show in File Explorer</button>';
+  document.body.appendChild(menu);
+  menu.style.left = Math.max(4, Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 4)) + 'px';
+  menu.style.top = Math.max(4, Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 4)) + 'px';
+  menu.querySelector('[data-copy-resource]').addEventListener('click', () => { vscode.postMessage({ type: 'copyResourcePath', id: result.id }); closeResourceContextMenu(); });
+  menu.querySelector('[data-reveal-resource]').addEventListener('click', () => { if (!result.resourcePhysicalPath) return; vscode.postMessage({ type: 'revealResource', id: result.id }); closeResourceContextMenu(); });
+  menu.querySelector('button:not(:disabled)')?.focus();
+};
 const focusScopeFilter = (selectionStart, selectionEnd = selectionStart) => {
   const filter = document.querySelector('[data-scope-filter]');
   if (!filter) return;
@@ -1619,6 +1708,7 @@ const resultBody = content => state.error
       ? content
       : '<div class="empty">No results match this search.</div>';
 function render(focusQuery = false) {
+  closeResourceContextMenu();
   const renderStartedAt = performance.now();
   const warnings = state.warnings.map(warning => '<div class="warning">' + esc(warning) + '</div>').join('');
   const bottomPager = hasActiveSearch() && totalMatches() > 0 ? '<div class="page-bottom">' + pageControls() + '</div>' : '';
@@ -1662,12 +1752,14 @@ function render(focusQuery = false) {
   document.querySelectorAll('[data-open]').forEach(element => {
     element.addEventListener('click', event => { if (event.target.closest('[data-external], [data-relation-anchor]') || hasTextSelection()) return; openResult(element); });
     element.addEventListener('keydown', event => { if (event.target.closest('[data-external], [data-relation-anchor]')) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openResult(element); } });
+    element.addEventListener('contextmenu', event => openResourceContextMenu(element, event));
   });
   document.querySelectorAll('[data-external]').forEach(element => element.addEventListener('click', event => { event.stopPropagation(); vscode.postMessage({ type: 'external', id: element.dataset.external }); }));
   state.uiPerformance.lastRenderMs = performance.now() - renderStartedAt;
   state.uiPerformance.renderCount += 1;
 }
 document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && document.querySelector('.resource-context-menu')) { closeResourceContextMenu(); event.preventDefault(); return; }
   if (event.ctrlKey && event.key === 'F3') { event.preventDefault(); event.stopPropagation(); captureSearchSnapshot(); return; }
   if (document.activeElement !== document.body || event.ctrlKey || event.altKey || event.metaKey || event.isComposing || event.key.length !== 1) return;
   const query = document.getElementById('query');
@@ -1678,6 +1770,7 @@ document.addEventListener('keydown', event => {
   query.dispatchEvent(new Event('input', { bubbles: true }));
   event.preventDefault();
 });
+document.addEventListener('click', event => { if (!(event.target instanceof Element) || !event.target.closest('.resource-context-menu')) closeResourceContextMenu(); });
 document.addEventListener('click', event => {
   if (!state.scopeOpen || !(event.target instanceof Element) || event.target.closest('.search-scope')) return;
   state.scopeOpen = false;

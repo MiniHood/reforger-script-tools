@@ -208,20 +208,26 @@ exact loaded add-on scope. Packed PAC file tables and bounded loose-root
 enumeration contribute only logical paths, extensions, classification,
 provenance, and registration state; no payload is read or extracted. Results
 carry an opaque catalogue revision and complete Workbench link, so the UI does
-not reconstruct editor URLs. Link construction follows Workbench's module
-contract: scripts use an unqualified `ScriptEditor` path, `.ent` world files
+not reconstruct editor URLs. A current loose-file result also carries its
+physical path; packed and stale-cache results do not. Link construction follows
+Workbench's module contract: scripts use an unqualified `ScriptEditor` path, `.ent` world files
 use an unqualified `WorldEditor` path, behavior trees use an add-on-qualified
 `BehaviorEditor` path, and all other resource families—including prefabs,
 configs, and terrain-support files—use an add-on-qualified `ResourceManager`
 path. In the extension-hosted Search page, a `.c` resource uses its exact
 Game Data source-read handoff to assemble the complete script and open it as an
 Enforce document in a VS Code preview editor; other resource results follow
-their Workbench links. String-table results preserve their add-on-qualified
-`ResourceManager` target but open it through the official Enfusion Engine HTTPS
-redirect, avoiding direct custom-protocol dispatch for `.st` files. Cached catalogue
-records refresh this derived link when read so extension upgrades do not retain
-an older routing rule. Resource cards render the returned identity and path
-without source previews; selecting a resource category performs an
+their direct local `enfusion://` Workbench links. Immediately before dispatching
+any Workbench-bound resource link, Search reads the live
+`workbench_project_context` add-on IDs and opens the resource only when its owning
+add-on is present. Missing identity, unavailable or truncated context, or an
+unloaded add-on fails closed so Workbench is never asked to open an absent or
+unconfirmed resource. Cached
+catalogue records refresh their derived links when read so extension upgrades do
+not retain an older routing rule. A resource card's context menu copies the canonical
+GUID-qualified Resource Name. Its File Explorer action is enabled only when
+Rust supplied that current loose-file physical path. Resource cards render the
+returned identity and path without source previews; selecting a resource category performs an
 empty-query kind search, while a semantic query further narrows that kind.
 `workbench_search_resources` remains the separate live registered-resource
 route for native editor truth and inspection.
@@ -314,13 +320,13 @@ does not probe a capability handler during installation, maintenance, or
 status diagnosis: Workbench logs a missing handler as an error. Only an
 explicit custom operation may test its own handler availability.
 
-The package's 27 Enfusion sources are checked in under `server/bridge/` and
+The package's 30 Enfusion sources are checked in under `server/bridge/` and
 are embedded by `server/src/workbench_bridge.rs`. They are the sole source of
 the installed bytes; Rust performs no runtime reformatting or source synthesis.
 The development-only `tools/check-workbench-bridge-style.mjs` gate enforces the
 local base-game-derived contract: tab indentation, no trailing whitespace, one
 executable statement per physical line (except `for` headers), Allman control
-layout, braced loop bodies, and an immediately-indented single-statement body
+layout, no conditional (`?:`) expressions, braced loop bodies, and an immediately-indented single-statement body
 as the only permitted unbraced `if` form. One blank line separates top-level
 classes, field blocks from methods, sibling methods, and their attached member
 comments; consecutive blank lines are not permitted. This preserves compiler

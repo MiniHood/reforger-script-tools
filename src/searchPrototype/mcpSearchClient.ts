@@ -161,6 +161,7 @@ export interface SearchHit {
 	textMatchLength?: number;
 	resourceName?: string;
 	workbenchLink?: string;
+	resourcePhysicalPath?: string;
 	resourceStale?: boolean;
 	symbolKind?: SearchSymbolKind;
 	symbolRef?: string;
@@ -241,6 +242,24 @@ export interface SearchDocument {
 	content: string;
 	startLine: number;
 	endLine: number;
+}
+
+export interface WorkbenchProjectContext {
+	loadedAddons: string[];
+	loadedAddonsTruncated: boolean;
+}
+
+export function normalizeWorkbenchProjectContext(value: unknown): WorkbenchProjectContext {
+	const record = asRecord(value);
+	if (!Array.isArray(record.loadedAddons)
+		|| record.loadedAddons.some(addon => typeof addon !== 'string' || addon.length === 0)
+		|| typeof record.loadedAddonsTruncated !== 'boolean') {
+		throw new Error('The live Workbench project context was malformed.');
+	}
+	return {
+		loadedAddons: record.loadedAddons as string[],
+		loadedAddonsTruncated: record.loadedAddonsTruncated,
+	};
 }
 
 export function sourcePreviewLine(
@@ -802,6 +821,11 @@ export class McpSearchClient {
 		};
 	}
 
+	public async workbenchProjectContext(): Promise<WorkbenchProjectContext> {
+		await this.start();
+		return normalizeWorkbenchProjectContext(await this.callTool('workbench_project_context', {}));
+	}
+
 	public async readComplete(hit: SearchHit): Promise<SearchDocument> {
 		if (hit.source !== 'gameData' || typeof hit.readInput.relativePath !== 'string') {
 			return this.read(hit);
@@ -1336,6 +1360,7 @@ export function normalizeResourceSearchPage(
 			readInput: scriptReadInput ?? {},
 			resourceName,
 			...(asOptionalString(hit.workbenchLink) ? { workbenchLink: asOptionalString(hit.workbenchLink) } : {}),
+			...(asOptionalString(hit.physicalPath) ? { resourcePhysicalPath: asOptionalString(hit.physicalPath) } : {}),
 			...(hit.stale === true ? { resourceStale: true } : {}),
 			...(addonGuid ? { addonGuid } : {}),
 			...(asOptionalString(hit.addonId) ? { addonLabel: asOptionalString(hit.addonId) } : {}),

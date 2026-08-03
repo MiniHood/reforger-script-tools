@@ -26,6 +26,7 @@ for (const sourceFile of sourceFiles) {
     }
     assertVerticalSpacing(sourceFile, lines, index);
     assertSingleStatement(sourceFile, lineNumber, line);
+    assertNoConditionalOperator(sourceFile, lineNumber, line);
     assertControlBody(sourceFile, lines, index);
   }
 }
@@ -57,6 +58,26 @@ function assertVerticalSpacing(sourceFile, lines, index) {
   }
   if (isMemberComment && previous?.trim() && previous.trim() !== "{" && !previous.trimStart().startsWith("//")) {
     failures.push(`${sourceFile}:${index + 1}: member comments require one separating blank line`);
+  }
+}
+
+function assertNoConditionalOperator(sourceFile, lineNumber, line) {
+  let quoted = false;
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    const next = line[index + 1];
+    if (!quoted && character === "/" && next === "/") {
+      return;
+    }
+    if (character === '"' && !escaped) {
+      quoted = !quoted;
+    }
+    escaped = quoted && character === "\\" && !escaped;
+    if (!quoted && character === "?") {
+      failures.push(`${sourceFile}:${lineNumber}: conditional operator is not accepted by the Workbench compiler`);
+      return;
+    }
   }
 }
 

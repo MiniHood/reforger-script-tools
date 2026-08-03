@@ -3,7 +3,7 @@
 
 [Back to the MCP API router](../../mcp-api.md)
 
-Search the offline metadata-only Game Data Resource Catalogue for packed and loose resources in the exact Workbench-loaded add-on scope. It never reads resource payloads, extracts archives, or requires live Workbench. Search terms match basename and logical path case-insensitively; results are deterministic, revision-bound, carry provenance, and include a complete Workbench resource link. Use workbench_search_resources separately when live registered-resource truth or editor inspection is required.
+Search the offline metadata-only Game Data Resource Catalogue for packed and loose resources in the exact Workbench-loaded add-on scope. It never reads resource payloads, extracts archives, or requires live Workbench. Search terms match basename and logical path case-insensitively; results are deterministic, revision-bound, carry provenance, and include a complete Workbench resource link. A current loose-file result also includes physicalPath; packed and stale-cache results omit it. Use workbench_search_resources separately when live registered-resource truth or editor inspection is required.
 
 ### Annotations
 
@@ -141,6 +141,12 @@ Search the offline metadata-only Game Data Resource Catalogue for packed and loo
         },
         "logicalPath": {
           "type": "string"
+        },
+        "physicalPath": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "registered": {
           "type": "boolean"
