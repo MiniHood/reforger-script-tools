@@ -42,8 +42,8 @@ trademarks or registered trademarks of Bohemia Interactive a.s.
 - Automatic installed add-on discovery and PAC-backed base-game indexing.
 - Automatic and manual script validation through the Workbench NET API.
 - Script and resource search with `Ctrl+Alt+F`.
-- Bundled MCP server for AI-assisted script, resource, add-on, and official
-  documentation search.
+- Bundled MCP server for script, resource, add-on, and official documentation
+  search, plus Workbench inspection and editing.
 
 The extension recognizes `.c` files under `Scripts` or `scripts` directories as
 Enfusion Script.
@@ -71,9 +71,11 @@ These steps follow Bohemia Interactive's official
 ## MCP Server
 
 Run **Reforger Script Tools: Copy MCP Configuration** and choose Codex TOML or
-generic MCP JSON to connect a compatible AI client. The bundled server searches
+generic MCP JSON to connect a compatible MCP client. The bundled server searches
 workspace scripts, indexed add-ons and resources, and packaged official
-Reforger documentation without requiring VS Code to remain open. Run the
+Reforger documentation without requiring VS Code to remain open. With
+Workbench Integration enabled, it can also inspect and modify live resources,
+prefabs, and World Editor entities, and run supported editor actions. Run the
 command again after upgrading the extension or changing **External Indexes**.
 
 ## Settings
