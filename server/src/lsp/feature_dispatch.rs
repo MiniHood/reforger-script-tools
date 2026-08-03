@@ -25,10 +25,10 @@ use super::{
     DocumentRuntime, ExternalIndexHandle, HoverSelectionSource, LspPositionIndex, QueryQuality,
     RuntimeEffect, TextSpan, ACTIVE_SCOPE_DELIMITERS_METHOD, BLOCK_COMMENT_PAIR_METHOD,
     CONTROL_HEADER_ENTER_METHOD, DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD,
-    RANGE_FORMATTING_METHOD, WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
+    PREVIEW_CONTEXT_METHOD, RANGE_FORMATTING_METHOD, READ_PACK_SOURCE_METHOD,
+    WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::{json, Value};
-use std::path::Path;
 use std::time::Instant;
 
 /// Executes feature and workspace commands from the explicit state they
@@ -96,14 +96,16 @@ impl FeatureDispatcher<'_> {
         self.effects.push(RuntimeEffect::diagnostic_lazy(
             self.diagnostic_logging,
             "rpc.received",
-            || json!({
-                "method": method,
-                "command": format!("{command:?}"),
-                "request": message.id.is_some(),
-                "queueMs": queue_ms,
-                "coalescedChanges": coalesced_changes,
-                "supersededChanges": superseded_changes,
-            }),
+            || {
+                json!({
+                    "method": method,
+                    "command": format!("{command:?}"),
+                    "request": message.id.is_some(),
+                    "queueMs": queue_ms,
+                    "coalescedChanges": coalesced_changes,
+                    "supersededChanges": superseded_changes,
+                })
+            },
         ));
 
         if self.shutdown_requested && method != "exit" {
@@ -111,9 +113,7 @@ impl FeatureDispatcher<'_> {
             if let Some(id) = message.id.clone() {
                 self.respond_error(id, -32600, error)?;
             } else {
-                self.log(|| format!(
-                    "notification ignored after shutdown method={method}"
-                ));
+                self.log(|| format!("notification ignored after shutdown method={method}"));
             }
             return Ok(self.finish(false));
         }
@@ -122,9 +122,9 @@ impl FeatureDispatcher<'_> {
             if let Some(id) = message.id.clone() {
                 self.respond_error(id, -32602, &error)?;
             } else {
-                self.log(|| format!(
-                    "notification ignored invalid_params method={method} error={error}"
-                ));
+                self.log(|| {
+                    format!("notification ignored invalid_params method={method} error={error}")
+                });
             }
             return Ok(self.finish(false));
         }
@@ -143,33 +143,36 @@ impl FeatureDispatcher<'_> {
             }
         }
 
-        let mut semantic_generation_preservation = None;
         match method {
             "$/cancelRequest" => {}
+            READ_PACK_SOURCE_METHOD => {
+                if let Some(id) = message.id {
+                    let RequestCommand::Feature(FeatureCommand::ReadPackSource(params)) = &command
+                    else {
+                        unreachable!("pack source method has a typed command");
+                    };
+                    match params
+                        .as_ref()
+                        .ok_or_else(|| "Pack source URI is required".to_string())
+                        .and_then(|params| crate::addon_sources::read_virtual_source(&params.uri))
+                    {
+                        Ok(source) => self.respond(id, Value::String(source))?,
+                        Err(error) => self.respond_error(id, -32002, &error)?,
+                    }
+                }
+            }
             WORKSPACE_FILE_CHANGED_METHOD => {
                 let RequestCommand::WorkspaceIndex(WorkspaceIndexCommand::Changed(params)) =
                     &command
                 else {
                     unreachable!("workspace change method has a workspace command");
                 };
-                let previous_generation = self.external_index.status_summary().generation;
-                let preservation = params.as_ref().and_then(|params| {
-                    self.document_runtime.self_save_generation_preservation(
-                        Path::new(&params.path),
-                        &params.text,
-                        previous_generation,
-                    )
-                });
                 for effect in update_workspace_file(
                     &mut self.external_index,
                     params.clone(),
                     self.operational_logging,
                 ) {
                     self.deliver_effect(effect)?;
-                }
-                let generation = self.external_index.status_summary().generation;
-                if generation == previous_generation.saturating_add(1) {
-                    semantic_generation_preservation = preservation;
                 }
             }
             WORKSPACE_FILE_DELETED_METHOD => {
@@ -245,12 +248,14 @@ impl FeatureDispatcher<'_> {
                         self.deliver_effect(RuntimeEffect::diagnostic_lazy(
                             self.diagnostic_logging,
                             "documentSymbol.rangeRepaired",
-                            || json!({
-                                "revision": revision,
-                                "bytes": bytes,
-                                "repairCount": range_repair_count,
-                                "samples": range_repair_samples,
-                            }),
+                            || {
+                                json!({
+                                    "revision": revision,
+                                    "bytes": bytes,
+                                    "repairCount": range_repair_count,
+                                    "samples": range_repair_samples,
+                                })
+                            },
                         ))?;
                     }
                     self.respond(id, result)?;
@@ -298,18 +303,19 @@ impl FeatureDispatcher<'_> {
                                 let DocumentQuery {
                                     document,
                                     external_indexes: indexes,
+                                state,
                                 } = query;
-                                bytes = document.text.len();
-                                revision = document.revision;
+                                bytes = document.snapshot.text().len();
+                                revision = document.snapshot.revision();
                                 foreground_ready = document.foreground_ready();
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
                                 let report = if let DocumentQueryState::Cached(analysis) =
-                                    DocumentQuery::state_for(document)
+                                    state
                                 {
                                     cached_analysis = true;
                                     completion_report_for_cached_analysis_with_external_indexes(
-                                        &document.text,
+                                        &document.snapshot.text(),
                                         analysis,
                                         params.position,
                                         indexes.workspace.as_deref(),
@@ -332,18 +338,18 @@ impl FeatureDispatcher<'_> {
                                         // immutable snapshot rather than falling back to broad
                                         // position-based lexical completion.
                                         .or_else(|| {
-                                            offset_for_position(&document.text, params.position)
+                                            offset_for_position(&document.snapshot.text(), params.position)
                                         });
                                     if let Some(offset) = offset {
                                         completion_report_for_current_preprocessor_at_offset_with_external_indexes(
-                                            &document.text,
+                                            &document.snapshot.text(),
                                             offset,
                                             indexes.workspace.as_deref(),
                                             indexes.game_data.as_deref(),
                                         ).unwrap_or_else(|| {
                                             let completion_start = std::time::Instant::now();
                                             if let Some(report) = completion_report_for_current_contextual_constructor_at_offset_with_external_indexes(
-                                                &document.text,
+                                                &document.snapshot.text(),
                                                 offset,
                                                 indexes.workspace.as_deref(),
                                                 indexes.game_data.as_deref(),
@@ -351,7 +357,7 @@ impl FeatureDispatcher<'_> {
                                                 return report;
                                             }
                                             if let Some(report) = completion_report_for_current_incomplete_callable_parameter_type_at_offset_with_external_indexes(
-                                                &document.text,
+                                                &document.snapshot.text(),
                                                 offset,
                                                 indexes.workspace.as_deref(),
                                                 indexes.game_data.as_deref(),
@@ -359,31 +365,31 @@ impl FeatureDispatcher<'_> {
                                                 return report;
                                             }
                                             let argument_label_report = completion_report_for_current_argument_labels_at_offset_with_external_indexes(
-                                                &document.text,
+                                                &document.snapshot.text(),
                                                 offset,
                                                 indexes.workspace.as_deref(),
                                                 indexes.game_data.as_deref(),
                                             );
                                             let value_report = completion_report_for_current_receiver_at_offset_with_external_indexes(
-                                                &document.text,
+                                                &document.snapshot.text(),
                                                 offset,
                                                 indexes.workspace.as_deref(),
                                                 indexes.game_data.as_deref(),
                                             )
                                             .or_else(|| completion_report_for_current_super_at_offset_with_external_indexes(
-                                                &document.text,
+                                                &document.snapshot.text(),
                                                 offset,
                                                 indexes.workspace.as_deref(),
                                                 indexes.game_data.as_deref(),
                                             ))
                                             .or_else(|| completion_report_for_current_override_at_offset_with_external_indexes(
-                                                &document.text,
+                                                &document.snapshot.text(),
                                                 offset,
                                                 indexes.workspace.as_deref(),
                                                 indexes.game_data.as_deref(),
                                             ))
                                             .or_else(|| completion_report_for_current_local_scope_at_offset_with_external_indexes(
-                                                &document.text,
+                                                &document.snapshot.text(),
                                                 offset,
                                                 indexes.workspace.as_deref(),
                                                 indexes.game_data.as_deref(),
@@ -400,7 +406,7 @@ impl FeatureDispatcher<'_> {
                                                 (None, Some(value_report)) => value_report,
                                                 (None, None) => {
                                                     completion_report_for_lexical_source_at_offset_with_external_indexes(
-                                                        &document.text,
+                                                        &document.snapshot.text(),
                                                         offset,
                                                         indexes.workspace.as_deref(),
                                                         indexes.game_data.as_deref(),
@@ -410,7 +416,7 @@ impl FeatureDispatcher<'_> {
                                         })
                                     } else {
                                         completion_report_for_lexical_source_with_external_indexes(
-                                            &document.text,
+                                            &document.snapshot.text(),
                                             params.position,
                                             indexes.workspace.as_deref(),
                                             indexes.game_data.as_deref(),
@@ -512,19 +518,19 @@ impl FeatureDispatcher<'_> {
                                 .document_runtime
                                 .capture_query(&params.text_document.uri, self.external_index.snapshot())?;
                             let document = query.document;
-                            if document.version != params.version {
+                            if document.snapshot.version() != params.version {
                                 trace = params.trace.then_some(("stale", "none", false, "staleVersion"));
                                 return None;
                             }
-                            let cursor = offset_for_position(&document.text, params.selections[0].end)?;
+                            let cursor = offset_for_position(&document.snapshot.text(), params.selections[0].end)?;
                             if params.operation == "insertSpace" {
                                 crate::lsp::collection_declaration::collection_declaration_before_cursor(
-                                    &document.text,
+                                    &document.snapshot.text(),
                                     cursor,
                                     false,
                                 )?;
                                 trace = params.trace.then_some(("applied", "collectionDeclarationTail", true, "eligible"));
-                                let position = position_for_offset(&document.text, cursor);
+                                let position = position_for_offset(&document.snapshot.text(), cursor);
                                 return Some(json!({
                                     "edits": [{
                                         "range": { "start": position, "end": position },
@@ -536,38 +542,38 @@ impl FeatureDispatcher<'_> {
                                 }));
                             }
                             let plan = if params.operation == "indent" {
-                                on_type_formatting::unbraced_if_body_indent_plan(&document.text, cursor)
+                                on_type_formatting::unbraced_if_body_indent_plan(&document.snapshot.text(), cursor)
                                     .map(|plan| (plan, "unbracedIfBody"))
                             } else {
                                 on_type_formatting::auto_block_class_declaration_enter_plan(
-                                    &document.text,
+                                    &document.snapshot.text(),
                                     cursor,
                                     params.options.tab_size,
                                     params.options.insert_spaces,
                                 )
                                 .map(|plan| (plan, "classDeclaration"))
                                 .or_else(|| on_type_formatting::auto_block_protected_method_enter_plan(
-                                    &document.text,
+                                    &document.snapshot.text(),
                                     cursor,
                                     params.options.tab_size,
                                     params.options.insert_spaces,
                                 )
                                 .map(|plan| (plan, "protectedMethod")))
                                 .or_else(|| on_type_formatting::control_header_block_before_enter_plan(
-                                    &document.text,
+                                    &document.snapshot.text(),
                                     cursor,
                                     params.options.tab_size,
                                     params.options.insert_spaces,
                                 )
                                 .map(|plan| (plan, "controlHeader")))
                             .or_else(|| on_type_formatting::if_header_body_before_enter_plan(
-                                &document.text,
+                                &document.snapshot.text(),
                                 cursor,
                                 params.options.tab_size,
                                 params.options.insert_spaces,
                             ).map(|plan| (plan, "ifHeader")))
                             .or_else(|| on_type_formatting::semicolon_before_enter_plan(
-                                &document.text,
+                                &document.snapshot.text(),
                                 cursor,
                             ).map(|plan| (plan, "semicolon")))
                             };
@@ -576,17 +582,17 @@ impl FeatureDispatcher<'_> {
                             };
                             let use_snippet = owner == "pairedBraceBody";
                             trace = params.trace.then_some(("applied", owner, true, "eligible"));
-                            let start = position_for_offset(&document.text, plan.span.start);
+                            let start = position_for_offset(&document.snapshot.text(), plan.span.start);
                             Some(json!({
                                 "edits": [{
                                     "range": {
                                         "start": start,
-                                        "end": position_for_offset(&document.text, plan.span.end),
+                                        "end": position_for_offset(&document.snapshot.text(), plan.span.end),
                                     },
                                     "newText": if use_snippet { "" } else { &plan.replacement },
                                 }],
                                 "snippet": use_snippet.then_some(&plan.replacement),
-                                "snippetRange": use_snippet.then(|| json!({ "start": start, "end": position_for_offset(&document.text, plan.span.end) })),
+                                "snippetRange": use_snippet.then(|| json!({ "start": start, "end": position_for_offset(&document.snapshot.text(), plan.span.end) })),
                                 "owner": owner,
                                 "selectionRange": plan.switch_arm_selection_end.map(|end| json!({ "start": { "line": plan.selection_line, "character": plan.selection_character }, "end": { "line": plan.selection_line, "character": end } })),
                                 "selection": { "line": plan.selection_line, "character": plan.selection_character },
@@ -625,25 +631,25 @@ impl FeatureDispatcher<'_> {
                                 .document_runtime
                                 .capture_query(&log_uri, self.external_index.snapshot())?;
                             let document = query.document;
-                            bytes = document.text.len();
-                            if document.version != params.version {
+                            bytes = document.snapshot.text().len();
+                            if document.snapshot.version() != params.version {
                                 outcome = "stale_version";
                                 return None;
                             }
-                            let cursor = offset_for_position(&document.text, params.position)?;
+                            let cursor = offset_for_position(&document.snapshot.text(), params.position)?;
                             let plan = on_type_formatting::block_comment_pair_plan(
-                                &document.text,
+                                &document.snapshot.text(),
                                 cursor,
                                 params.options.tab_size,
                                 params.options.insert_spaces,
                             )?;
                             outcome = "paired";
-                            let start = position_for_offset(&document.text, plan.span.start);
+                            let start = position_for_offset(&document.snapshot.text(), plan.span.start);
                             Some(json!({
                                 "edits": [{
                                     "range": {
                                         "start": start,
-                                        "end": position_for_offset(&document.text, plan.span.end),
+                                        "end": position_for_offset(&document.snapshot.text(), plan.span.end),
                                     },
                                     "newText": plan.replacement,
                                 }],
@@ -688,18 +694,18 @@ impl FeatureDispatcher<'_> {
                                 .document_runtime
                                 .capture_query(&log_uri, self.external_index.snapshot())?;
                             let document = query.document;
-                            response_version = document.version;
-                            if document.version != params.version {
+                            response_version = document.snapshot.version();
+                            if document.snapshot.version() != params.version {
                                 return Some(json!({
-                                    "version": document.version,
+                                    "version": document.snapshot.version(),
                                     "pairs": [],
                                 }));
                             }
-                            if document.text.len()
+                            if document.snapshot.text().len()
                                 > crate::lsp::scope_delimiters::MAX_ACTIVE_SCOPE_DELIMITER_SOURCE_BYTES
                             {
                                 return Some(json!({
-                                    "version": document.version,
+                                    "version": document.snapshot.version(),
                                     "pairs": [],
                                 }));
                             }
@@ -708,7 +714,7 @@ impl FeatureDispatcher<'_> {
                                 .map(|foreground| foreground.scope_delimiters())
                             else {
                                 return Some(json!({
-                                    "version": document.version,
+                                    "version": document.snapshot.version(),
                                     "pending": !document.analysis_rejected(),
                                     "pairs": [],
                                 }));
@@ -718,7 +724,7 @@ impl FeatureDispatcher<'_> {
                                 .iter()
                                 .take(64)
                                 .filter_map(|position| {
-                                    offset_for_position(&document.text, *position)
+                                    offset_for_position(&document.snapshot.text(), *position)
                                 })
                                 .collect::<Vec<_>>();
                             let pairs = crate::lsp::scope_delimiters::active_scope_delimiters(
@@ -731,21 +737,21 @@ impl FeatureDispatcher<'_> {
                                 Some(json!({
                                     "opener": {
                                         "start": position_for_offset(
-                                            &document.text,
+                                            &document.snapshot.text(),
                                             delimiter.opener.start,
                                         ),
                                         "end": position_for_offset(
-                                            &document.text,
+                                            &document.snapshot.text(),
                                             delimiter.opener.end,
                                         ),
                                     },
                                     "closer": {
                                         "start": position_for_offset(
-                                            &document.text,
+                                            &document.snapshot.text(),
                                             closer.start,
                                         ),
                                         "end": position_for_offset(
-                                            &document.text,
+                                            &document.snapshot.text(),
                                             closer.end,
                                         ),
                                     },
@@ -754,7 +760,7 @@ impl FeatureDispatcher<'_> {
                             .collect::<Vec<_>>();
                             pair_count = pairs.len();
                             Some(json!({
-                                "version": document.version,
+                                "version": document.snapshot.version(),
                                 "pairs": pairs,
                             }))
                         })
@@ -768,6 +774,46 @@ impl FeatureDispatcher<'_> {
                         pair_count,
                         start.elapsed().as_millis()
                     ));
+                    self.respond(id, result)?;
+                }
+            }
+            PREVIEW_CONTEXT_METHOD => {
+                if let Some(id) = message.id {
+                    let start = Instant::now();
+                    let RequestCommand::Feature(FeatureCommand::PreviewContext(params)) = &command
+                    else {
+                        unreachable!("preview context method has typed parameters");
+                    };
+                    let mut log_uri = "<missing>".to_string();
+                    let mut result_kind = "unavailable";
+                    let result = params
+                        .clone()
+                        .and_then(|params| {
+                            log_uri = params.text_document.uri;
+                            let query = self
+                                .document_runtime
+                                .capture_query(&log_uri, self.external_index.snapshot())?;
+                            let DocumentQueryState::Cached(analysis) = query.state() else {
+                                return None;
+                            };
+                            let requested_line = params.position.line;
+                            let context = crate::lsp::preview_context::preview_context(
+                                &query.document.snapshot.text(),
+                                analysis,
+                                requested_line,
+                            );
+                            result_kind = context.kind;
+                            serde_json::to_value(context).ok()
+                        })
+                        .unwrap_or(Value::Null);
+                    self.log(|| {
+                        format!(
+                            "request previewContext uri={} kind={} elapsed_ms={}",
+                            log_uri,
+                            result_kind,
+                            start.elapsed().as_millis()
+                        )
+                    });
                     self.respond(id, result)?;
                 }
             }
@@ -791,23 +837,25 @@ impl FeatureDispatcher<'_> {
                                 .document_runtime
                                 .capture_query(&log_uri, self.external_index.snapshot())?;
                             let document = query.document;
-                            bytes = document.text.len();
-                            version = document.version;
-                            let start = offset_for_position(&document.text, params.range.start)?;
-                            let end = offset_for_position(&document.text, params.range.end)?;
+                            bytes = document.snapshot.text().len();
+                            version = document.snapshot.version();
+                            let start =
+                                offset_for_position(&document.snapshot.text(), params.range.start)?;
+                            let end =
+                                offset_for_position(&document.snapshot.text(), params.range.end)?;
                             if start > end {
                                 outcome = "invalid_range";
                                 return None;
                             }
                             let edits = crate::formatting::format_comment_region(
-                                &document.text,
+                                &document.snapshot.text(),
                                 TextSpan::new(start, end),
                             );
                             edit_count = edits.len();
                             if edits.is_empty() {
                                 return None;
                             }
-                            let positions = LspPositionIndex::new(&document.text);
+                            let positions = LspPositionIndex::new(&document.snapshot.text());
                             outcome = "comment_region";
                             Some(Value::Array(
                                 edits
@@ -866,16 +914,17 @@ impl FeatureDispatcher<'_> {
                                 let DocumentQuery {
                                     document,
                                     external_indexes: indexes,
+                                state,
                                 } = query;
-                                bytes = document.text.len();
-                                revision = document.revision;
+                                bytes = document.snapshot.text().len();
+                                revision = document.snapshot.revision();
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
-                                let report = match DocumentQuery::state_for(document) {
+                                let report = match state {
                                     DocumentQueryState::Cached(analysis) => {
                                         cached_analysis = true;
                                         signature_help_report_for_cached_analysis_with_external_indexes(
-                                        &document.text,
+                                        &document.snapshot.text(),
                                         analysis,
                                         params.position,
                                         indexes.workspace.as_deref(),
@@ -1088,15 +1137,16 @@ impl FeatureDispatcher<'_> {
                                     let DocumentQuery {
                                         document,
                                         external_indexes: indexes,
+                                        state,
                                     } = query;
-                                    bytes = document.text.len();
-                                    revision = document.revision;
+                                    bytes = document.snapshot.text().len();
+                                    revision = document.snapshot.revision();
                                     external_index_status = indexes.status;
                                     external_index_layers = indexes.available_layers();
-                                    let report = match DocumentQuery::state_for(document) {
+                                    let report = match state {
                                         DocumentQueryState::Cached(analysis) => {
                                             hover_report_for_cached_analysis_with_external_indexes(
-                                                &document.text,
+                                                &document.snapshot.text(),
                                                 analysis,
                                                 &log_uri,
                                                 params.position,
@@ -1212,15 +1262,16 @@ impl FeatureDispatcher<'_> {
                                     let DocumentQuery {
                                         document,
                                         external_indexes: indexes,
+                                        state,
                                     } = query;
-                                    bytes = document.text.len();
-                                    revision = document.revision;
+                                    bytes = document.snapshot.text().len();
+                                    revision = document.snapshot.revision();
                                     external_index_status = indexes.status;
                                     external_index_layers = indexes.available_layers();
-                                    let report = match DocumentQuery::state_for(document) {
+                                    let report = match state {
                                     DocumentQueryState::Cached(analysis) => {
                                         definition_report_for_cached_analysis_with_external_indexes(
-                                            &document.text,
+                                            &document.snapshot.text(),
                                             analysis,
                                             &log_uri,
                                             params.position,
@@ -1304,14 +1355,13 @@ impl FeatureDispatcher<'_> {
                             let DocumentQuery {
                                 document,
                                 external_indexes: indexes,
+                                state,
                             } = query;
-                            if let DocumentQueryState::Cached(analysis) =
-                                DocumentQuery::state_for(document)
-                            {
+                            if let DocumentQueryState::Cached(analysis) = state {
                                 if self.document_runtime.has_runtime_worker() {
                                     let uri = params.text_document.uri.clone();
                                     let position = params.position;
-                                    let revision = document.revision;
+                                    let revision = document.snapshot.revision();
                                     let analysis = analysis.clone();
                                     let external_status = self.external_index.status_summary();
                                     let task = match self.document_runtime.admit_debug_capture(&uri)
@@ -1366,18 +1416,17 @@ impl FeatureDispatcher<'_> {
                                     let DocumentQuery {
                                         document,
                                         external_indexes: indexes,
+                                        state,
                                     } = query;
-                                    let DocumentQueryState::Cached(analysis) =
-                                        DocumentQuery::state_for(document)
-                                    else {
+                                    let DocumentQueryState::Cached(analysis) = state else {
                                         return None;
                                     };
-                                    bytes = document.text.len();
-                                    revision = document.revision;
+                                    bytes = document.snapshot.text().len();
+                                    revision = document.snapshot.revision();
                                     let external_status = self.external_index.status_summary();
                                     let report =
                                     debug_hover_report_for_cached_analysis_with_external_indexes(
-                                        &document.text,
+                                        &document.snapshot.text(),
                                         analysis,
                                         &log_uri,
                                         params.position,
@@ -1426,14 +1475,13 @@ impl FeatureDispatcher<'_> {
                             let DocumentQuery {
                                 document,
                                 external_indexes: indexes,
+                                state,
                             } = query;
-                            if let DocumentQueryState::Cached(analysis) =
-                                DocumentQuery::state_for(document)
-                            {
+                            if let DocumentQueryState::Cached(analysis) = state {
                                 if self.document_runtime.has_runtime_worker() {
                                     let uri = params.text_document.uri.clone();
                                     let position = params.position;
-                                    let revision = document.revision;
+                                    let revision = document.snapshot.revision();
                                     let analysis = analysis.clone();
                                     let task = match self.document_runtime.admit_debug_capture(&uri)
                                     {
@@ -1490,25 +1538,26 @@ impl FeatureDispatcher<'_> {
                                 let DocumentQuery {
                                     document,
                                     external_indexes: indexes,
+                                state,
                                 } = query;
                                 let DocumentQueryState::Cached(analysis) =
-                                    DocumentQuery::state_for(document)
+                                    state
                                 else {
                                     return None;
                                 };
-                                bytes = document.text.len();
-                                revision = document.revision;
+                                bytes = document.snapshot.text().len();
+                                revision = document.snapshot.revision();
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
                                 let report = completion_report_for_cached_analysis_with_external_indexes(
-                                        &document.text,
+                                        &document.snapshot.text(),
                                         analysis,
                                         params.position,
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
                                     );
                                 let signature_report = signature_help_report_for_cached_analysis_with_external_indexes(
-                                        &document.text,
+                                        &document.snapshot.text(),
                                         analysis,
                                         params.position,
                                         indexes.workspace.as_deref(),
@@ -1565,7 +1614,7 @@ impl FeatureDispatcher<'_> {
         for effect in self.document_runtime.observe_semantic_external_generation(
             external_status.generation,
             external_status.status,
-            semantic_generation_preservation,
+            None,
         ) {
             self.deliver_effect(effect)?;
         }
@@ -1573,11 +1622,13 @@ impl FeatureDispatcher<'_> {
         self.effects.push(RuntimeEffect::diagnostic_lazy(
             self.diagnostic_logging,
             "rpc.completed",
-            || json!({
-                "method": method,
-                "outcome": if should_exit { "exit" } else { "complete" },
-                "elapsedMs": started_at.elapsed().as_millis(),
-            }),
+            || {
+                json!({
+                    "method": method,
+                    "outcome": if should_exit { "exit" } else { "complete" },
+                    "elapsedMs": started_at.elapsed().as_millis(),
+                })
+            },
         ));
         Ok(self.finish(should_exit))
     }

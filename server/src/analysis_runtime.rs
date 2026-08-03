@@ -10,7 +10,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, OnceLock,
     },
-    time::Instant,
 };
 
 /// A zero-based LSP-compatible position.  `character` is counted in UTF-16
@@ -94,9 +93,43 @@ impl PositionIndex {
     /// Returns the earliest byte offset for an exact UTF-16 boundary.
     /// Positions in the middle of a surrogate pair are deliberately rejected.
     pub fn offset_for_position(&self, wanted: Position) -> Option<usize> {
-        self.positions
-            .iter()
-            .position(|position| *position == wanted)
+        let mut run_start = 0;
+        let mut previous = self.positions.first().copied()?;
+        for (offset, position) in self.positions.iter().copied().enumerate() {
+            if position != previous {
+                run_start = offset;
+                previous = position;
+            }
+            if position == wanted {
+                return Some(run_start);
+            }
+        }
+        None
+    }
+
+    /// Resolves positions inside a UTF-16 character to that character's byte
+    /// start. This is retained only for the protocol's tolerant source-text
+    /// fallback; foreground snapshot coordinates use the strict method above.
+    pub fn offset_for_position_recovering(&self, wanted: Position) -> Option<usize> {
+        let mut run_start = 0;
+        let mut previous = self.positions.first().copied()?;
+        for (offset, position) in self.positions.iter().copied().enumerate() {
+            if position != previous {
+                if previous.line == wanted.line
+                    && position.line == wanted.line
+                    && previous.character < wanted.character
+                    && wanted.character < position.character
+                {
+                    return Some(run_start);
+                }
+                run_start = offset;
+                previous = position;
+            }
+            if position == wanted {
+                return Some(run_start);
+            }
+        }
+        None
     }
 }
 
@@ -163,13 +196,12 @@ pub enum UpsertOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryQuality {
     Exact,
-    RecoveryExact,
     Unavailable,
 }
 
 impl QueryQuality {
     pub const fn permits_local_facts(self) -> bool {
-        matches!(self, Self::Exact | Self::RecoveryExact)
+        matches!(self, Self::Exact)
     }
 }
 
@@ -231,9 +263,8 @@ impl AnalysisRuntime {
         class: TaskClass,
         snapshot: DocumentSnapshot,
         request_id: u64,
-        deadline: Instant,
     ) -> AdmissionDisposition {
-        self.admission.admit(class, snapshot, request_id, deadline)
+        self.admission.admit(class, snapshot, request_id)
     }
 
     pub fn take_next(&mut self) -> Option<AnalysisTask> {
@@ -357,7 +388,6 @@ impl TaskIdentity {
 pub struct AnalysisTask {
     identity: TaskIdentity,
     snapshot: DocumentSnapshot,
-    deadline: Instant,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -370,10 +400,6 @@ impl AnalysisTask {
         &self.snapshot
     }
 
-    pub fn deadline(&self) -> Instant {
-        self.deadline
-    }
-
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
@@ -383,13 +409,6 @@ impl AnalysisTask {
     /// runtime decides whether the task remains eligible to publish.
     pub fn cancellation_token(&self) -> Arc<AtomicBool> {
         self.cancelled.clone()
-    }
-
-    /// Used only by a bounded executor when it evicts queued work.  The
-    /// runtime still owns publication: the executor must report the identity
-    /// back and [`AnalysisRuntime::complete`] decides whether it was current.
-    pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
     }
 }
 
@@ -466,7 +485,6 @@ impl TaskAdmission {
         class: TaskClass,
         snapshot: DocumentSnapshot,
         request_id: u64,
-        deadline: Instant,
     ) -> AdmissionDisposition {
         let key = TaskKey {
             uri: Arc::from(snapshot.uri()),
@@ -499,7 +517,6 @@ impl TaskAdmission {
         let task = AnalysisTask {
             identity: identity.clone(),
             snapshot,
-            deadline,
             cancelled: Arc::new(AtomicBool::new(false)),
         };
         self.retained_bytes = self.retained_bytes.saturating_add(bytes);
@@ -610,7 +627,6 @@ mod tests {
     #[test]
     fn query_quality_never_treats_unavailable_as_current_local_facts() {
         assert!(QueryQuality::Exact.permits_local_facts());
-        assert!(QueryQuality::RecoveryExact.permits_local_facts());
         assert!(!QueryQuality::Unavailable.permits_local_facts());
     }
 
@@ -622,8 +638,7 @@ mod tests {
             UpsertOutcome::Accepted
         );
         let snapshot = runtime.latest("file:///a.c").unwrap();
-        let identity = match runtime.admit(TaskClass::Semantic, snapshot.clone(), 1, Instant::now())
-        {
+        let identity = match runtime.admit(TaskClass::Semantic, snapshot.clone(), 1) {
             AdmissionDisposition::Enqueued { task, .. } => task,
             other => panic!("unexpected admission disposition: {other:?}"),
         };
@@ -645,7 +660,6 @@ mod tests {
             TaskClass::Semantic,
             runtime.latest("file:///a.c").unwrap(),
             1,
-            Instant::now(),
         ) {
             AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
             other => panic!("unexpected admission disposition: {other:?}"),
@@ -778,17 +792,13 @@ mod tests {
         store.latest(uri).unwrap()
     }
 
-    fn deadline() -> Instant {
-        Instant::now() + std::time::Duration::from_secs(1)
-    }
-
     #[test]
     fn admission_is_latest_wins_and_cancels_an_inflight_replacement() {
         let mut admission = TaskAdmission::new(AdmissionLimits::new(2, 64));
         let first = snapshot("file:///a.c", 1, "old");
         let second = snapshot("file:///a.c", 2, "new");
 
-        let first_identity = match admission.admit(TaskClass::Semantic, first, 10, deadline()) {
+        let first_identity = match admission.admit(TaskClass::Semantic, first, 10) {
             AdmissionDisposition::Enqueued { task, replaced } => {
                 assert!(replaced.is_none());
                 task
@@ -798,7 +808,7 @@ mod tests {
         let running = admission.take_next().unwrap();
         assert_eq!(running.identity(), &first_identity);
 
-        let second_identity = match admission.admit(TaskClass::Semantic, second, 11, deadline()) {
+        let second_identity = match admission.admit(TaskClass::Semantic, second, 11) {
             AdmissionDisposition::Enqueued { task, replaced } => {
                 assert_eq!(replaced.as_ref(), Some(&first_identity));
                 task
@@ -823,17 +833,17 @@ mod tests {
         let overload = snapshot("file:///rich.c", 1, "g");
 
         assert!(matches!(
-            admission.admit(TaskClass::Semantic, semantic, 1, deadline()),
+            admission.admit(TaskClass::Semantic, semantic, 1),
             AdmissionDisposition::Enqueued { .. }
         ));
         assert!(matches!(
-            admission.admit(TaskClass::Foreground, foreground, 2, deadline()),
+            admission.admit(TaskClass::Foreground, foreground, 2),
             AdmissionDisposition::Enqueued { .. }
         ));
         assert_eq!(admission.retained_jobs(), 2);
         assert_eq!(admission.retained_bytes(), 6);
         assert_eq!(
-            admission.admit(TaskClass::Rich, overload, 3, deadline()),
+            admission.admit(TaskClass::Rich, overload, 3),
             AdmissionDisposition::DroppedOverload {
                 class: TaskClass::Rich,
                 retained_jobs: 2,
@@ -854,14 +864,14 @@ mod tests {
         let mut admission = TaskAdmission::new(AdmissionLimits::new(1, 3));
         let old = snapshot("file:///a.c", 1, "abc");
         let too_large = snapshot("file:///a.c", 2, "abcd");
-        let old_identity = match admission.admit(TaskClass::Semantic, old, 1, deadline()) {
+        let old_identity = match admission.admit(TaskClass::Semantic, old, 1) {
             AdmissionDisposition::Enqueued { task, .. } => task,
             other => panic!("unexpected disposition: {other:?}"),
         };
         let old_task = admission.take_next().unwrap();
 
         assert_eq!(
-            admission.admit(TaskClass::Semantic, too_large, 2, deadline()),
+            admission.admit(TaskClass::Semantic, too_large, 2),
             AdmissionDisposition::DroppedOverload {
                 class: TaskClass::Semantic,
                 retained_jobs: 0,
@@ -874,7 +884,7 @@ mod tests {
 
         let queued = snapshot("file:///a.c", 3, "abc");
         assert!(matches!(
-            admission.admit(TaskClass::Rich, queued, 3, deadline()),
+            admission.admit(TaskClass::Rich, queued, 3),
             AdmissionDisposition::Enqueued { .. }
         ));
         admission.cancel_uri("file:///a.c");

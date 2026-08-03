@@ -1,7 +1,8 @@
 use crate::analysis_runtime::DocumentSnapshot;
 use crate::callable::{
-    callable_argument_context_at_offset, callable_signature_parts, CallableArgumentContext,
-    CallableParameter, CallableSignatureParts, CallableTarget,
+    builtin_callable_fact, callable_argument_context_at_offset, callable_signature_parts,
+    BuiltinCallableFact, CallableArgumentContext, CallableParameter, CallableSignatureParts,
+    CallableTarget,
 };
 use crate::index::SymbolIndex;
 use crate::index_query::{
@@ -114,8 +115,12 @@ pub(crate) fn signature_help_report_for_cached_analysis_with_external_indexes(
         workspace_index,
         game_data_index,
     );
+    let builtin = match &context.target {
+        CallableTarget::Attribute { name } => builtin_callable_fact(name),
+        _ => None,
+    };
     let lookup_elapsed = lookup_start.elapsed();
-    if candidates.is_empty() {
+    if candidates.is_empty() && builtin.is_none() {
         let mut report = empty_signature_help_report(analysis.parse_diagnostics, total_start);
         report.timings.context_detection = context_elapsed;
         report.timings.candidate_lookup = lookup_elapsed;
@@ -129,32 +134,37 @@ pub(crate) fn signature_help_report_for_cached_analysis_with_external_indexes(
     let mut signatures = Vec::new();
     let mut selected_label = None;
     let mut selected_active_parameter = None;
-    for candidate in &candidates {
-        let label = candidate
-            .name
-            .as_deref()
-            .unwrap_or(candidate.display.label.as_str());
-        let signature = candidate
-            .signature
-            .as_deref()
-            .or(candidate.constructor_signature.as_deref());
-        let Some(signature) = signature else {
-            continue;
-        };
-        let Some(parts) = callable_signature_parts(label, signature) else {
-            continue;
-        };
+    if let Some(fact) = builtin {
+        let parts = fact.signature_parts();
         let active_parameter = active_parameter_for_candidate(&context, &parts);
-        if selected_label.is_none() {
-            selected_label = Some(label.to_string());
-            selected_active_parameter = active_parameter;
-        }
-        signatures.push(signature_information_for_candidate(
-            candidate,
-            label,
+        selected_label = Some(fact.name.to_string());
+        selected_active_parameter = active_parameter;
+        signatures.push(signature_information_for_builtin(
+            fact,
             &parts,
             active_parameter,
         ));
+    } else {
+        for candidate in &candidates {
+            let label = candidate
+                .name
+                .as_deref()
+                .unwrap_or(candidate.display.label.as_str());
+            let Some(parts) = candidate.callable_signature_parts.as_ref() else {
+                continue;
+            };
+            let active_parameter = active_parameter_for_candidate(&context, parts);
+            if selected_label.is_none() {
+                selected_label = Some(label.to_string());
+                selected_active_parameter = active_parameter;
+            }
+            signatures.push(signature_information_for_candidate(
+                candidate,
+                label,
+                parts,
+                active_parameter,
+            ));
+        }
     }
     let render_elapsed = render_start.elapsed();
 
@@ -178,7 +188,11 @@ pub(crate) fn signature_help_report_for_cached_analysis_with_external_indexes(
         parse_diagnostics: analysis.parse_diagnostics,
         context: Some(context_label(&context)),
         active_parameter: selected_active_parameter,
-        candidate_count: candidates.len(),
+        candidate_count: if builtin.is_some() {
+            1
+        } else {
+            candidates.len()
+        },
         selected_label,
         failure_reason: None,
         timings: LspSignatureHelpTimings {
@@ -505,6 +519,26 @@ fn signature_information_for_candidate(
         label: signature.to_string(),
         documentation,
         parameters,
+        active_parameter: active_parameter.map(|parameter| parameter as u32),
+    }
+}
+
+fn signature_information_for_builtin(
+    fact: &BuiltinCallableFact,
+    parts: &CallableSignatureParts,
+    active_parameter: Option<usize>,
+) -> LspSignatureInformation {
+    LspSignatureInformation {
+        label: fact.signature(),
+        documentation: None,
+        parameters: parts
+            .parameters_info
+            .iter()
+            .map(|parameter| LspParameterInformation {
+                label: parameter.raw.clone(),
+                documentation: None,
+            })
+            .collect(),
         active_parameter: active_parameter.map(|parameter| parameter as u32),
     }
 }
@@ -852,6 +886,25 @@ class Example
         let position = position_after(source, "desc: ");
         let report = signature_help_report_for_source_position(source, position);
         assert_eq!(report.active_parameter, Some(2));
+    }
+
+    #[test]
+    fn builtin_attribute_signature_uses_the_shared_compiler_fact() {
+        let source = "class Example { [Attribute(uiwidget: )] int m_Value; }";
+        let report =
+            signature_help_report_for_source_position(source, position_after(source, "uiwidget: "));
+        let help = report
+            .help
+            .expect("expected built-in Attribute signature help");
+
+        assert_eq!(report.selected_label.as_deref(), Some("Attribute"));
+        assert_eq!(help.active_parameter, Some(1));
+        assert_eq!(help.signatures.len(), 1);
+        assert_eq!(
+            help.signatures[0].parameters[0].label,
+            "string defvalue = \"\""
+        );
+        assert!(help.signatures[0].label.contains("bool prefabbed = false"));
     }
 
     #[test]

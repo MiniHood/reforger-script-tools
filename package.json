@@ -3,7 +3,7 @@
   "displayName": "Reforger Script Tools",
   "description": "Enfusion Script language support and Workbench compiler integration for Arma Reforger.",
   "publisher": "burn0ut7",
-  "version": "1.0.2",
+  "version": "2.0.0",
   "icon": "images/icon.jpg",
   "repository": {
     "type": "git",
@@ -118,36 +118,40 @@
         "title": "Reforger Script Tools: Insert Space"
       },
       {
-        "command": "reforger-sript-tools.gameData.checkForUpdates",
-        "title": "Reforger Script Tools: Check Game Data Updates"
+        "command": "reforger-sript-tools.gameData.refreshSources",
+        "title": "Reforger Script Tools: Refresh Local Add-on Sources"
       },
       {
         "command": "reforger-sript-tools.gameData.openStorageFolder",
         "title": "Reforger Script Tools: Open Game Data Storage Folder"
       },
       {
-        "command": "reforger-sript-tools.gameData.selectManualFolder",
-        "title": "Reforger Script Tools: Select Manual Game Data Folder"
+        "command": "reforger-sript-tools.gameData.openIndexReport",
+        "title": "Reforger Script Tools: Open Add-on Index Report"
+      },
+      {
+        "command": "reforger-sript-tools.mcp.copyConfiguration",
+        "title": "Reforger Script Tools: Copy MCP Configuration",
+        "category": "Reforger Script Tools"
       },
       {
         "command": "reforger-sript-tools.workbench.validateScripts",
         "title": "Reforger Script Tools: Validate Scripts in Workbench",
+        "category": "Reforger Script Tools"
+      },
+      {
+        "command": "reforger-sript-tools.searchUi",
+        "title": "Search",
         "category": "Reforger Script Tools"
       }
     ],
     "configuration": {
       "title": "Reforger Script Tools",
       "properties": {
-        "reforgerScriptTools.gameData.manualFolder": {
-          "type": "string",
-          "default": "",
-          "title": "Game Data: Manual Folder",
-          "markdownDescription": "Optional manual Reforger game data folder. [Select Folder](command:reforger-sript-tools.gameData.selectManualFolder) opens the native folder picker. You may also enter the folder containing `scripts/` or the `scripts/` folder itself. When set, GitHub game-data checks and downloads are skipped."
-        },
         "reforgerScriptTools.diagnostics.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Write detailed local extension and language-server support logs after the VS Code window is reloaded. Enable only while investigating a problem; logs exclude source text and LSP payloads."
+          "description": "Write detailed local extension and language-server support logs after the VS Code window is reloaded. Enable only while investigating a problem; logs exclude source text and LSP payloads. In the Search UI, Ctrl+F3 records a bounded snapshot of the current query, filters, paging, warnings, and result metadata."
         },
         "reforgerScriptTools.experimentalAutoFormatting": {
           "type": "boolean",
@@ -174,9 +178,9 @@
         },
         "reforgerScriptTools.workbench.enabled": {
           "type": "boolean",
-          "default": true,
-          "title": "Workbench NET API: Enabled",
-          "description": "Enable the configured Workbench NET API integration, including status checks and compiler validation."
+          "default": false,
+          "title": "Workbench: Enabled",
+          "description": "Enable Workbench integration, including NET API status checks, compiler validation, and the consent-gated managed bridge installer. On first activation, the extension asks whether to enable it."
         },
         "reforgerScriptTools.workbench.host": {
           "type": "string",
@@ -193,10 +197,36 @@
           "maximum": 65535,
           "title": "Workbench NET API: Port",
           "description": "Port for the configured Workbench NET API endpoint. The extension never probes other ports."
+        },
+        "reforgerScriptTools.workbench.saveOnIdle": {
+          "type": "boolean",
+          "default": true,
+          "title": "Workbench NET API: Save and Validate On Idle",
+          "description": "Save the active Enforce Script and validate in Workbench after three seconds without typing. Disable to validate only after explicit saves or the Validate Scripts command."
+        },
+        "reforgerScriptTools.workbench.externalIndexMode": {
+          "type": "string",
+          "enum": [
+            "all",
+            "loaded",
+            "none"
+          ],
+          "enumDescriptions": [
+            "Load every compatible external index already available in the local index cache.",
+            "Load the opened project's offline dependency indexes, including the base-game dependency, then replace them with the current Workbench graph when Workbench connects.",
+            "Do not load external add-on indexes. Workspace scripts remain available."
+          ],
+          "default": "loaded",
+          "title": "External Indexes",
+          "description": "Choose which cached external indexes are available when Workbench NET API is unavailable."
         }
       }
     },
     "keybindings": [
+      {
+        "command": "reforger-sript-tools.searchUi",
+        "key": "ctrl+alt+f"
+      },
       {
         "command": "reforger-sript-tools.debug.hoverAtCursor",
         "key": "ctrl+f1",
@@ -253,24 +283,38 @@
         {
           "command": "reforger-sript-tools.input.insertSpace",
           "when": "false"
+        },
+        {
+          "command": "reforger-sript-tools.searchUi",
+          "when": "reforgerScriptTools.searchUi"
         }
       ]
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run package",
-    "compile": "npm run check-types && npm run lint && node tools/build-language-server.mjs && node esbuild.js",
+    "vscode:prepublish": "npm run package:build",
+    "compile": "npm run check-types && npm run lint && node tools/check-workbench-bridge-style.mjs && node tools/build-language-server.mjs && node esbuild.js",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "npm run check-types && npm run lint && node tools/build-language-server.mjs --release && node esbuild.js --production",
+    "package": "npm run package:build && node tools/check-package-contents.mjs",
+    "package:build": "npm run check-types && npm run lint && node tools/check-workbench-bridge-style.mjs && npm run mcp-api:check && node tools/build-language-server.mjs --release && node esbuild.js --production",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint && npm run mcp-api:check",
     "check-types": "tsc --noEmit",
     "build-server": "node tools/build-language-server.mjs",
+    "test:server": "node tools/run-server-tests.mjs",
+    "mcp-api:generate": "node tools/generate-mcp-api.mjs",
+    "mcp-api:check": "node tools/generate-mcp-api.mjs --check",
+    "test:workbench-mcp:runner": "node --test tools/workbench-mcp-conformance.test.mjs",
+    "test:workbench-mcp:contract": "node tools/workbench-mcp-conformance.mjs",
+    "test:mcp-runtime-report": "node --test tools/mcp-runtime-performance-report.test.mjs",
+    "report:mcp-runtime": "node tools/mcp-runtime-performance-report.mjs",
+    "report:text-search": "node tools/text-search-performance.mjs",
+    "test:packaged-official-wiki": "npm run package && node tools/test-packaged-official-wiki.mjs",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test && npm run test:packaged-official-wiki"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -278,8 +322,10 @@
     "@types/vscode": "^1.125.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "3.9.2",
     "esbuild": "^0.28.1",
     "eslint": "^10.5.0",
+    "fflate": "^0.8.3",
     "npm-run-all": "^4.1.5",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.61.1"
@@ -289,7 +335,6 @@
     "serialize-javascript": "^7.0.6"
   },
   "dependencies": {
-    "fflate": "^0.8.3",
     "vscode-languageclient": "^10.1.0"
   }
 }

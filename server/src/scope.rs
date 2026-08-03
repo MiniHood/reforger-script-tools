@@ -495,28 +495,25 @@ fn span_contains(outer: TextSpan, inner: TextSpan) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
-    use crate::model::{SourceFileMetadata, SourceKind, SymbolCatalog};
+    use crate::model::{SourceFileMetadata, SourceKind};
     use crate::parser::parse_source;
     use crate::semantic_file::SemanticFile;
 
     fn index_for(source: &str) -> (Parse, SymbolIndex) {
         let parse = parse_source(source);
-        let ast = AstSourceFile::new(source, &parse);
-        let catalog = SymbolCatalog::from_ast_with_metadata(
-            source,
-            &ast,
+        let semantic = SemanticFile::build(source, &parse);
+        let index = SymbolIndex::from_semantic_files([(
+            &semantic,
             SourceFileMetadata {
                 kind: SourceKind::Workspace,
                 category: crate::model::SourceCategory::Workspace,
                 absolute_path: None,
+                virtual_source: None,
                 root_path: None,
                 relative_path: None,
                 priority: crate::model::SOURCE_PRIORITY_WORKSPACE,
             },
-        );
-        let mut index = SymbolIndex::default();
-        index.add_catalog(&catalog);
+        )]);
         (parse, index)
     }
 
@@ -530,6 +527,7 @@ mod tests {
                 kind: SourceKind::Workspace,
                 category: crate::model::SourceCategory::Workspace,
                 absolute_path: None,
+                virtual_source: None,
                 root_path: None,
                 relative_path: None,
                 priority: crate::model::SOURCE_PRIORITY_WORKSPACE,

@@ -8,14 +8,25 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc, Mutex,
+};
+use std::thread;
 use std::time::{Duration, Instant};
 
+pub const INDEX_BUILD_CANCELLED: &str = "index build cancelled";
 const MAX_RECORDED_LOSSY_FILES: usize = 50;
 const MAX_RECORDED_DIAGNOSTIC_FILES: usize = 100;
 const MAX_RECORDED_DIAGNOSTICS_PER_FILE: usize = 3;
 const SNIPPET_CONTEXT_LINES: usize = 2;
 const REPLACEMENT_CHARACTER: char = '\u{FFFD}';
 const REPLACEMENT_CHARACTER_LABEL: &str = "<U+FFFD>";
+const PARALLEL_SOURCE_BUILD_MIN_FILES: usize = 256;
+
+pub(crate) fn decode_source(bytes: &[u8]) -> Cow<'_, str> {
+    String::from_utf8_lossy(bytes)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexSourceRoot {
@@ -29,10 +40,32 @@ pub struct IndexBuildConfig {
     pub roots: Vec<IndexSourceRoot>,
 }
 
+/// One already-resolved source input. Archive-backed callers provide bytes here
+/// instead of materializing a temporary filesystem tree.
+#[derive(Debug, Clone)]
+pub struct IndexSourceText {
+    pub display_path: PathBuf,
+    pub bytes: Vec<u8>,
+    pub metadata: SourceFileMetadata,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct IndexBuildControl {
+    cancelled: Arc<AtomicBool>,
+}
+
 #[derive(Debug)]
 pub struct IndexBuildResult {
     pub index: SymbolIndex,
+    pub index_shape: IndexBuildShape,
     pub summary: IndexBuildSummary,
+    pub source_line_starts: Vec<Vec<usize>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexBuildShape {
+    Full,
+    RuntimeCache,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +112,9 @@ pub struct ParseDiagnosticDetail {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndexBuildTimings {
     pub file_discovery: Duration,
+    /// Acquisition of bytes selected from an archive or loose source root
+    /// before decoding and parsing begin.
+    pub source_acquisition: Duration,
     pub read_decode: Duration,
     pub parse: Duration,
     pub ast_model_catalog: Duration,
@@ -90,6 +126,13 @@ pub struct IndexBuildTimings {
 struct PendingFileContribution {
     contribution: FileContribution,
     metadata: SourceFileMetadata,
+    source_line_starts: Vec<usize>,
+}
+
+struct CompletedSourceBuild {
+    sequence: usize,
+    pending: Result<PendingFileContribution, String>,
+    summary: IndexBuildSummary,
 }
 
 impl IndexSourceRoot {
@@ -102,16 +145,192 @@ impl IndexSourceRoot {
     }
 }
 
-pub fn build_index(config: &IndexBuildConfig) -> Result<IndexBuildResult, String> {
-    let total_start = Instant::now();
-    let mut summary = IndexBuildSummary {
+impl IndexBuildControl {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub fn check(&self) -> Result<(), String> {
+        if self.is_cancelled() {
+            Err(INDEX_BUILD_CANCELLED.to_string())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn empty_index_build_summary() -> IndexBuildSummary {
+    IndexBuildSummary {
         totals: IndexBuildCounts::default(),
         by_source_kind: BTreeMap::new(),
         timings: IndexBuildTimings::default(),
-    };
+    }
+}
+
+fn build_source_contributions(
+    sources: Vec<IndexSourceText>,
+    control: &IndexBuildControl,
+    worker_count: usize,
+    summary: &mut IndexBuildSummary,
+) -> Result<Vec<PendingFileContribution>, String> {
+    if sources.len() < PARALLEL_SOURCE_BUILD_MIN_FILES || worker_count <= 1 {
+        let mut pending = Vec::with_capacity(sources.len());
+        for source in sources {
+            control.check()?;
+            pending.push(build_source(
+                &source.display_path,
+                source.bytes,
+                source.metadata,
+                summary,
+                control,
+            )?);
+        }
+        return Ok(pending);
+    }
+
+    let task_count = sources.len();
+    let pending = Arc::new(Mutex::new(
+        sources
+            .into_iter()
+            .enumerate()
+            .collect::<Vec<(usize, IndexSourceText)>>(),
+    ));
+    let (sender, receiver) = mpsc::channel();
+    let worker_count = worker_count.min(task_count);
+    let mut workers = Vec::with_capacity(worker_count);
+    for _ in 0..worker_count {
+        let pending = pending.clone();
+        let sender = sender.clone();
+        let control = control.clone();
+        workers.push(thread::spawn(move || loop {
+            let Some((sequence, source)) = pending.lock().unwrap().pop() else {
+                return;
+            };
+            let mut source_summary = empty_index_build_summary();
+            let result = control.check().and_then(|()| {
+                build_source(
+                    &source.display_path,
+                    source.bytes,
+                    source.metadata,
+                    &mut source_summary,
+                    &control,
+                )
+            });
+            let _ = sender.send(CompletedSourceBuild {
+                sequence,
+                pending: result,
+                summary: source_summary,
+            });
+        }));
+    }
+    drop(sender);
+    let mut completed = Vec::with_capacity(task_count);
+    for _ in 0..task_count {
+        completed.push(
+            receiver
+                .recv()
+                .map_err(|error| format!("Source build worker ended unexpectedly: {error}"))?,
+        );
+    }
+    for worker in workers {
+        worker
+            .join()
+            .map_err(|_| "Source build worker panicked".to_string())?;
+    }
+    completed.sort_by_key(|completed| completed.sequence);
+    let mut contributions = Vec::with_capacity(task_count);
+    for completed in completed {
+        merge_index_build_summary(summary, completed.summary);
+        contributions.push(completed.pending?);
+    }
+    Ok(contributions)
+}
+
+fn merge_index_build_summary(target: &mut IndexBuildSummary, source: IndexBuildSummary) {
+    merge_index_build_counts(&mut target.totals, source.totals);
+    for (kind, counts) in source.by_source_kind {
+        merge_index_build_counts(target.by_source_kind.entry(kind).or_default(), counts);
+    }
+    target.timings.file_discovery += source.timings.file_discovery;
+    target.timings.source_acquisition += source.timings.source_acquisition;
+    target.timings.read_decode += source.timings.read_decode;
+    target.timings.parse += source.timings.parse;
+    target.timings.ast_model_catalog += source.timings.ast_model_catalog;
+    target.timings.catalog_build += source.timings.catalog_build;
+    target.timings.index_build += source.timings.index_build;
+}
+
+fn merge_index_build_counts(target: &mut IndexBuildCounts, source: IndexBuildCounts) {
+    target.files += source.files;
+    target.bytes += source.bytes;
+    target.lossy_files += source.lossy_files;
+    let remaining_lossy =
+        MAX_RECORDED_LOSSY_FILES.saturating_sub(target.lossy_decode_details.len());
+    target.lossy_decode_details.extend(
+        source
+            .lossy_decode_details
+            .into_iter()
+            .take(remaining_lossy),
+    );
+    target.parse_diagnostics += source.parse_diagnostics;
+    target.parse_diagnostic_files += source.parse_diagnostic_files;
+    record_parse_diagnostic_details(target, &source.parse_diagnostic_details);
+    target.indexed_files += source.indexed_files;
+    target.indexed_symbols += source.indexed_symbols;
+    target.non_declaration_callable_fragments += source.non_declaration_callable_fragments;
+}
+
+pub fn build_index(config: &IndexBuildConfig) -> Result<IndexBuildResult, String> {
+    build_index_with_control(config, &IndexBuildControl::default())
+}
+
+pub fn build_index_from_sources(
+    sources: impl IntoIterator<Item = IndexSourceText>,
+    control: &IndexBuildControl,
+    worker_count: usize,
+) -> Result<IndexBuildResult, String> {
+    let total_start = Instant::now();
+    let sources = sources.into_iter().collect::<Vec<_>>();
+    let mut summary = empty_index_build_summary();
+    let pending = build_source_contributions(sources, control, worker_count, &mut summary)?;
+    let index_build_start = Instant::now();
+    let mut index = SymbolIndex::default();
+    index
+        .add_runtime_cache_file_contributions(
+            pending
+                .iter()
+                .map(|file| (&file.contribution, file.metadata.clone())),
+        )
+        .map_err(|error| {
+            format!("Invalid semantic contribution during index aggregation: {error:?}")
+        })?;
+    summary.timings.index_build = index_build_start.elapsed();
+    summary.timings.total = total_start.elapsed();
+    Ok(IndexBuildResult {
+        index,
+        index_shape: IndexBuildShape::RuntimeCache,
+        summary,
+        source_line_starts: pending
+            .into_iter()
+            .map(|file| file.source_line_starts)
+            .collect(),
+    })
+}
+
+pub fn build_index_with_control(
+    config: &IndexBuildConfig,
+    control: &IndexBuildControl,
+) -> Result<IndexBuildResult, String> {
+    let total_start = Instant::now();
+    let mut summary = empty_index_build_summary();
     let mut pending_contributions = Vec::new();
 
     for root in &config.roots {
+        control.check()?;
         if !root.root_path.is_dir() {
             return Err(format!(
                 "Index source root does not exist or is not a folder: {}",
@@ -121,15 +340,17 @@ pub fn build_index(config: &IndexBuildConfig) -> Result<IndexBuildResult, String
 
         let file_discovery_start = Instant::now();
         let mut files = Vec::new();
-        collect_script_files(&root.root_path, &mut files)?;
+        collect_script_files(&root.root_path, &mut files, control)?;
         files.sort();
         summary.timings.file_discovery += file_discovery_start.elapsed();
 
         for file in files {
-            pending_contributions.push(build_file(root, &file, &mut summary)?);
+            control.check()?;
+            pending_contributions.push(build_file(root, &file, &mut summary, control)?);
         }
     }
 
+    control.check()?;
     let index_build_start = Instant::now();
     let mut index = SymbolIndex::default();
     index
@@ -141,32 +362,65 @@ pub fn build_index(config: &IndexBuildConfig) -> Result<IndexBuildResult, String
         .map_err(|error| {
             format!("Invalid semantic contribution during index aggregation: {error:?}")
         })?;
+    control.check()?;
     summary.timings.index_build += index_build_start.elapsed();
 
     summary.timings.total = total_start.elapsed();
-    Ok(IndexBuildResult { index, summary })
+    Ok(IndexBuildResult {
+        index,
+        index_shape: IndexBuildShape::Full,
+        summary,
+        source_line_starts: pending_contributions
+            .into_iter()
+            .map(|pending| pending.source_line_starts)
+            .collect(),
+    })
 }
 
 fn build_file(
     root: &IndexSourceRoot,
     file: &Path,
     summary: &mut IndexBuildSummary,
+    control: &IndexBuildControl,
 ) -> Result<PendingFileContribution, String> {
-    let semantic_file_build_start = Instant::now();
     let read_decode_start = Instant::now();
     let bytes =
         fs::read(file).map_err(|error| format!("Failed to read {}: {error}", file.display()))?;
+    let file_read = read_decode_start.elapsed();
+    summary.timings.read_decode += file_read;
+    summary.timings.catalog_build += file_read;
+    build_source(
+        file,
+        bytes,
+        source_metadata(&root.root_path, file, root.kind, root.priority),
+        summary,
+        control,
+    )
+}
+
+fn build_source(
+    file: &Path,
+    bytes: Vec<u8>,
+    metadata: SourceFileMetadata,
+    summary: &mut IndexBuildSummary,
+    control: &IndexBuildControl,
+) -> Result<PendingFileContribution, String> {
+    control.check()?;
+    let semantic_file_build_start = Instant::now();
     let byte_count = bytes.len();
-    let source = String::from_utf8_lossy(&bytes);
+    let decode_started = Instant::now();
+    let source = decode_source(&bytes);
     let lossy = matches!(source, Cow::Owned(_));
     let source = source.into_owned();
-    summary.timings.read_decode += read_decode_start.elapsed();
+    summary.timings.read_decode += decode_started.elapsed();
 
+    control.check()?;
     let parse_start = Instant::now();
     let parse = parse_source(&source);
     let parse_diagnostics = parse.diagnostics.len();
     summary.timings.parse += parse_start.elapsed();
 
+    control.check()?;
     let ast_model_catalog_start = Instant::now();
     let semantic_file = SemanticFile::build(&source, &parse);
     semantic_file.contribution().validate().map_err(|error| {
@@ -180,9 +434,10 @@ fn build_file(
     summary.timings.ast_model_catalog += ast_model_catalog_start.elapsed();
     summary.timings.catalog_build += semantic_file_build_start.elapsed();
 
+    control.check()?;
     record_file_counts(
         summary,
-        root.kind,
+        metadata.kind,
         file,
         byte_count,
         lossy,
@@ -195,9 +450,21 @@ fn build_file(
     );
 
     Ok(PendingFileContribution {
-        contribution: semantic_file.contribution().clone(),
-        metadata: source_metadata(&root.root_path, file, root.kind, root.priority),
+        contribution: semantic_file.contribution(),
+        metadata,
+        source_line_starts: line_starts(&source),
     })
+}
+
+fn line_starts(source: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    starts.extend(
+        source
+            .bytes()
+            .enumerate()
+            .filter_map(|(offset, byte)| (byte == b'\n').then_some(offset + 1)),
+    );
+    starts
 }
 
 fn record_file_counts(
@@ -379,13 +646,19 @@ fn source_metadata(
         kind,
         category: source_category_for_path(kind, Some(&relative_path)),
         absolute_path: Some(file.to_path_buf()),
+        virtual_source: None,
         root_path: Some(root.to_path_buf()),
         relative_path: Some(relative_path),
         priority,
     }
 }
 
-fn collect_script_files(folder: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+fn collect_script_files(
+    folder: &Path,
+    files: &mut Vec<PathBuf>,
+    control: &IndexBuildControl,
+) -> Result<(), String> {
+    control.check()?;
     for entry in fs::read_dir(folder)
         .map_err(|error| format!("Failed to read folder {}: {error}", folder.display()))?
     {
@@ -393,10 +666,11 @@ fn collect_script_files(folder: &Path, files: &mut Vec<PathBuf>) -> Result<(), S
             .map_err(|error| format!("Failed to read entry in {}: {error}", folder.display()))?;
         let path = entry.path();
         if path.is_dir() {
-            collect_script_files(&path, files)?;
+            collect_script_files(&path, files, control)?;
         } else if path.extension().is_some_and(|extension| extension == "c") {
             files.push(path);
         }
+        control.check()?;
     }
 
     Ok(())
@@ -644,6 +918,33 @@ mod tests {
             .any(|detail| detail.snippet.contains("class Broken")));
 
         cleanup(&root);
+    }
+
+    #[test]
+    fn parallel_source_build_matches_sequential_source_build() {
+        let sources = (0..PARALLEL_SOURCE_BUILD_MIN_FILES)
+            .map(|index| IndexSourceText {
+                display_path: PathBuf::from(format!("Game/Source{index:04}.c")),
+                bytes: format!("class Source{index:04} {{ int m_Value; }}").into_bytes(),
+                metadata: SourceFileMetadata::unknown(),
+            })
+            .collect::<Vec<_>>();
+        let control = IndexBuildControl::default();
+
+        let sequential = build_index_from_sources(sources.clone(), &control, 1).unwrap();
+        let parallel = build_index_from_sources(sources, &control, 4).unwrap();
+
+        assert_eq!(parallel.summary.totals, sequential.summary.totals);
+        assert_eq!(
+            parallel.summary.by_source_kind,
+            sequential.summary.by_source_kind
+        );
+        assert_eq!(parallel.index.files(), sequential.index.files());
+        assert_eq!(parallel.index.symbols(), sequential.index.symbols());
+        assert_eq!(
+            parallel.index.classes_by_name("Source0255"),
+            sequential.index.classes_by_name("Source0255")
+        );
     }
 
     #[test]

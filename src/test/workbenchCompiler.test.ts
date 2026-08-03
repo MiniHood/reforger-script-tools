@@ -6,11 +6,21 @@ import * as vscode from 'vscode';
 import {
 	workbenchCommands,
 	workbenchConfig,
+	workbenchDefaults,
 	workbenchDiagnostics,
 	workbenchTestCommands,
 } from '../extensionConfig/workbench';
-import type { WorkbenchCompilerObservation } from '../workbenchCompiler/workbenchCompiler';
-import { startNetApiPeer } from './netApiPeer';
+import {
+	shouldRefreshWorkbenchGraph,
+	workbenchConnectionStarted,
+	type WorkbenchCompilerObservation,
+} from '../workbenchNetApi/compiler/workbenchCompiler';
+import {
+	startNetApiPeer,
+	type NetApiPeer,
+	type NetApiPeerRequest,
+	type NetApiPeerResponse,
+} from './netApiPeer';
 
 const workbenchFixtureSource = 'class WorkbenchCompilerFixture\n{\n}\n';
 let temporaryScriptCounter = 0;
@@ -29,6 +39,7 @@ suite('Workbench compiler validation', () => {
 			}
 			await configuration.update(setting, undefined, vscode.ConfigurationTarget.Global);
 		}
+		await vscode.commands.executeCommand(workbenchTestCommands.resetFailureNotification);
 	});
 
 	test('manual validation publishes compiler diagnostics from the configured endpoint', async () => {
@@ -39,7 +50,7 @@ suite('Workbench compiler validation', () => {
 		const validationGate = new Promise<void>(resolve => {
 			releaseValidation = resolve;
 		});
-		const peer = await startNetApiPeer(async request => {
+		const peer = await startCompilerPeer(async request => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc === 'IsWorkbenchRunning') {
 				return {
@@ -151,7 +162,7 @@ suite('Workbench compiler validation', () => {
 	});
 
 	test('replaces the waiting output when Workbench does not return a validation result', async () => {
-		const peer = await startNetApiPeer(request => {
+		const peer = await startCompilerPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			return payload.APIFunc === 'IsWorkbenchRunning'
 				? {
@@ -189,7 +200,7 @@ suite('Workbench compiler validation', () => {
 		);
 		await vscode.commands.executeCommand(workbenchTestCommands.restartCompiler);
 		await vscode.commands.executeCommand(workbenchTestCommands.armStartupValidation);
-		const peer = await startNetApiPeer(request => {
+		const peer = await startCompilerPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			return payload.APIFunc === 'IsWorkbenchRunning'
 				? {
@@ -228,12 +239,48 @@ suite('Workbench compiler validation', () => {
 		}
 	});
 
+	test('treats Workbench starting after a reachable closed state as a new connection', () => {
+		assert.strictEqual(
+			workbenchConnectionStarted(
+				{ isRunning: false, scriptsCompiled: true },
+				{ isRunning: true, scriptsCompiled: true },
+			),
+			true,
+		);
+		assert.strictEqual(
+			workbenchConnectionStarted(
+				undefined,
+				{ isRunning: false, scriptsCompiled: true },
+			),
+			false,
+		);
+		assert.strictEqual(
+			workbenchConnectionStarted(
+				{ isRunning: true, scriptsCompiled: true },
+				{ isRunning: true, scriptsCompiled: false },
+			),
+			false,
+		);
+	});
+
+	test('refreshes the Workbench graph only on connection or while recovering an inactive bridge', () => {
+		const running = { isRunning: true, scriptsCompiled: true };
+		assert.strictEqual(shouldRefreshWorkbenchGraph(undefined, running, false), true);
+		assert.strictEqual(shouldRefreshWorkbenchGraph(running, running, false), false);
+		assert.strictEqual(shouldRefreshWorkbenchGraph(running, running, true), true);
+		assert.strictEqual(shouldRefreshWorkbenchGraph(
+			running,
+			{ isRunning: false, scriptsCompiled: false },
+			true,
+		), false);
+	});
+
 	test('idle validation saves only the active script before compiling', async function () {
 		this.timeout(7_000);
 		const workspace = onlyWorkspaceFolder();
 		const active = await createTemporaryScript(workspace, 'Active');
 		const other = await createTemporaryScript(workspace, 'Other');
-		const peer = await startNetApiPeer(request => {
+		const peer = await startCompilerPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			return payload.APIFunc === 'IsWorkbenchRunning'
 				? { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } }
@@ -260,8 +307,16 @@ suite('Workbench compiler validation', () => {
 			assert.match(await fs.readFile(active.filePath, 'utf8'), /\/\/ active edit/);
 			assert.strictEqual(await fs.readFile(other.filePath, 'utf8'), workbenchFixtureSource);
 			assert.strictEqual(otherDocument.isDirty, true);
+			const completed = await waitFor(async () => {
+				const observation = await observeWorkbenchCompiler();
+				return observation.tooltip.includes(
+					'may be out of date because other scripts still have unsaved edits',
+				)
+					? observation
+					: undefined;
+			});
 			assert.match(
-				(await observeWorkbenchCompiler()).tooltip,
+				completed.tooltip,
 				/may be out of date because other scripts still have unsaved edits/,
 			);
 		} finally {
@@ -278,7 +333,7 @@ suite('Workbench compiler validation', () => {
 		this.timeout(4_000);
 		const workspace = onlyWorkspaceFolder();
 		const source = await createTemporaryScript(workspace, 'ImmediateSave');
-		const peer = await startNetApiPeer(request => {
+		const peer = await startCompilerPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			return payload.APIFunc === 'IsWorkbenchRunning'
 				? { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } }
@@ -310,7 +365,7 @@ suite('Workbench compiler validation', () => {
 		this.timeout(7_000);
 		const workspace = onlyWorkspaceFolder();
 		const source = await createTemporaryScript(workspace, 'DefaultDelay');
-		const peer = await startNetApiPeer(request => {
+		const peer = await startCompilerPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			return payload.APIFunc === 'IsWorkbenchRunning'
 				? { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } }
@@ -360,6 +415,39 @@ suite('Workbench compiler validation', () => {
 		}
 	});
 
+	test('does not save or validate idle edits when saved-idle validation is disabled', async function () {
+		this.timeout(5_000);
+		const workspace = onlyWorkspaceFolder();
+		const source = await createTemporaryScript(workspace, 'SavedIdleDisabled');
+		const peer = await startCompilerPeer(request => {
+			const payload = request.payload as { APIFunc?: string };
+			return payload.APIFunc === 'IsWorkbenchRunning'
+				? { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } }
+				: { errorCode: 'Ok', payload: { Errors: [], Warnings: [], Success: true } };
+		});
+		try {
+			await configurePeer(peer.port);
+			const configuration = vscode.workspace.getConfiguration(workbenchConfig.section);
+			await configuration.update(
+				workbenchConfig.settings.saveOnIdle,
+				false,
+				vscode.ConfigurationTarget.Global,
+			);
+			const document = await vscode.workspace.openTextDocument(source.filePath);
+			await vscode.window.showTextDocument(document);
+			await applyAppend(document, '// keep dirty when saved-idle validation is disabled');
+
+			await new Promise(resolve => setTimeout(resolve, 3_300));
+
+			assert.strictEqual(document.isDirty, true);
+			assert.strictEqual(validationRequests(peer).length, 0);
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+			await source.remove();
+			await peer.close();
+		}
+	});
+
 	test('coalesces triggers during a slow compile into one non-overlapping follow-up', async () => {
 		let activeValidations = 0;
 		let maximumConcurrentValidations = 0;
@@ -368,7 +456,7 @@ suite('Workbench compiler validation', () => {
 		const firstValidationGate = new Promise<void>(resolve => {
 			releaseFirstValidation = resolve;
 		});
-		const peer = await startNetApiPeer(async request => {
+		const peer = await startCompilerPeer(async request => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc === 'IsWorkbenchRunning') {
 				return { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } };
@@ -416,7 +504,7 @@ suite('Workbench compiler validation', () => {
 		provisional.source = 'Provisional Parser';
 		parserDiagnostics.set(sourceUri, [provisional]);
 		let validationCount = 0;
-		const peer = await startNetApiPeer(request => {
+		const peer = await startCompilerPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc === 'IsWorkbenchRunning') {
 				return { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } };
@@ -486,7 +574,7 @@ suite('Workbench compiler validation', () => {
 	});
 
 	test('applies enablement immediately and presents the configured status without probing', async () => {
-		const peer = await startNetApiPeer(() => ({
+		const peer = await startCompilerPeer(() => ({
 			errorCode: 'Ok',
 			payload: { IsRunning: true, ScriptsCompiled: true },
 		}));
@@ -519,7 +607,7 @@ suite('Workbench compiler validation', () => {
 	});
 
 	test('presents the Workbench API as connected when scripts did not compile', async () => {
-		const peer = await startNetApiPeer(() => ({
+		const peer = await startCompilerPeer(() => ({
 			errorCode: 'Ok',
 			payload: { IsRunning: true, ScriptsCompiled: false },
 		}));
@@ -545,7 +633,7 @@ suite('Workbench compiler validation', () => {
 			releaseProbe = resolve;
 		});
 		let statusRequests = 0;
-		const peer = await startNetApiPeer(async request => {
+		const peer = await startCompilerPeer(async request => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc !== 'IsWorkbenchRunning') {
 				return { errorCode: 'Ok', payload: { Errors: [], Warnings: [], Success: true } };
@@ -591,7 +679,7 @@ suite('Workbench compiler validation', () => {
 			'Example.c',
 		));
 		let scriptsCompiled = true;
-		const peer = await startNetApiPeer(request => {
+		const peer = await startCompilerPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc === 'IsWorkbenchRunning') {
 				return {
@@ -645,7 +733,7 @@ suite('Workbench compiler validation', () => {
 		const source = await createTemporaryScript(workspace, 'SaveFailure');
 		const sourceUri = source.uri;
 		let validationCount = 0;
-		const peer = await startNetApiPeer(request => {
+		const peer = await startCompilerPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc === 'IsWorkbenchRunning') {
 				return { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } };
@@ -691,7 +779,8 @@ suite('Workbench compiler validation', () => {
 		}
 	});
 
-	test('retains findings as stale when the configured Workbench endpoint becomes unavailable', async () => {
+	test('retains findings as stale when the configured Workbench endpoint becomes unavailable', async function () {
+		this.timeout(7_000);
 		const workspace = onlyWorkspaceFolder();
 		const sourceUri = vscode.Uri.file(path.join(
 			workspace.uri.fsPath,
@@ -699,7 +788,7 @@ suite('Workbench compiler validation', () => {
 			'Game',
 			'Example.c',
 		));
-		const peer = await startNetApiPeer(request => {
+		const peer = await startCompilerPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			return payload.APIFunc === 'IsWorkbenchRunning'
 				? { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } }
@@ -716,7 +805,7 @@ suite('Workbench compiler validation', () => {
 					},
 				};
 		});
-		const unavailablePeer = await startNetApiPeer(() => ({ silent: true }));
+		const unavailablePeer = await startCompilerPeer(() => ({ silent: true }));
 		const unavailablePort = unavailablePeer.port;
 		await unavailablePeer.close();
 		try {
@@ -771,7 +860,7 @@ suite('Workbench compiler validation', () => {
 		));
 		const externalPath = path.join(externalDirectory, 'ExternalCompilerLocation.c');
 		await fs.writeFile(externalPath, 'class ExternalCompilerLocation {}\n', 'utf8');
-		const peer = await startNetApiPeer(request => {
+		const peer = await startCompilerPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			return payload.APIFunc === 'IsWorkbenchRunning'
 				? { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } }
@@ -858,7 +947,7 @@ suite('Workbench compiler validation', () => {
 			releaseValidation = resolve;
 		});
 		let validationStarted = false;
-		const peer = await startNetApiPeer(async request => {
+		const peer = await startCompilerPeer(async request => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc === 'IsWorkbenchRunning') {
 				return { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } };
@@ -935,7 +1024,7 @@ suite('Workbench compiler validation', () => {
 			releaseOldValidation = resolve;
 		});
 		let oldValidationStarted = false;
-		const oldPeer = await startNetApiPeer(async request => {
+		const oldPeer = await startCompilerPeer(async request => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc === 'IsWorkbenchRunning') {
 				return { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } };
@@ -955,7 +1044,7 @@ suite('Workbench compiler validation', () => {
 				},
 			};
 		});
-		const newPeer = await startNetApiPeer(() => ({
+		const newPeer = await startCompilerPeer(() => ({
 			errorCode: 'Ok',
 			payload: { IsRunning: true, ScriptsCompiled: true },
 		}));
@@ -988,11 +1077,36 @@ suite('Workbench compiler validation', () => {
 	});
 });
 
+async function startCompilerPeer(
+	handle: (request: NetApiPeerRequest) => NetApiPeerResponse | Promise<NetApiPeerResponse>,
+): Promise<NetApiPeer> {
+	return startNetApiPeer(async request => {
+		const payload = request.payload as { APIFunc?: string };
+		if (payload.APIFunc === 'RST_WorkbenchLoadedAddonGraph') {
+			return {
+				errorCode: 'Ok',
+				payload: {
+					bridgeVersion: '1.52.12',
+					protocolVersion: 1,
+					graphJson: '[]',
+				},
+			};
+		}
+		const response = await handle(request);
+		return response;
+	});
+}
+
 async function configurePeer(port: number): Promise<void> {
 	const configuration = vscode.workspace.getConfiguration(workbenchConfig.section);
 	await configuration.update(workbenchConfig.settings.enabled, false, vscode.ConfigurationTarget.Global);
 	await configuration.update(workbenchConfig.settings.host, '127.0.0.1', vscode.ConfigurationTarget.Global);
 	await configuration.update(workbenchConfig.settings.port, port, vscode.ConfigurationTarget.Global);
+	await configuration.update(
+		workbenchConfig.settings.saveOnIdle,
+		workbenchDefaults.saveOnIdle,
+		vscode.ConfigurationTarget.Global,
+	);
 	await configuration.update(workbenchConfig.settings.enabled, true, vscode.ConfigurationTarget.Global);
 }
 

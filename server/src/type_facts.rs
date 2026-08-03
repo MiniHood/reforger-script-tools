@@ -114,16 +114,14 @@ impl<'index> TypeFacts<'index> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
-    use crate::model::{SourceFileMetadata, SymbolCatalog};
+    use crate::model::SourceFileMetadata;
     use crate::parser::parse_source;
+    use crate::semantic_file::SemanticFile;
 
     fn index_for_source(source: &str) -> SymbolIndex {
         let parse = parse_source(source);
-        let ast = AstSourceFile::new(source, &parse);
-        let catalog =
-            SymbolCatalog::from_ast_with_metadata(source, &ast, SourceFileMetadata::unknown());
-        SymbolIndex::from_catalogs([&catalog])
+        let semantic_file = SemanticFile::build(source, &parse);
+        SymbolIndex::from_semantic_files([(&semantic_file, SourceFileMetadata::unknown())])
     }
 
     fn only_named(index: &SymbolIndex, name: &str) -> GlobalSymbolId {

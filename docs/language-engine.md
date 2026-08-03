@@ -1,351 +1,287 @@
 # Language Engine
 
-`server/` is the repository's language authority. It turns Enfusion source,
-workspace scripts, and resolved game data into the language facts consumed by
-LSP features. The TypeScript extension transports those results and applies
-editor-only behavior; it does not duplicate parsing or semantic decisions.
+`server/` is the repository's Enfusion language authority. It turns Enfusion
+source, workspace scripts, and resolved game data into facts consumed by LSP
+and MCP projections. The TypeScript extension transports those facts and
+applies editor-only behaviour; it does not duplicate parsing or semantic
+decisions.
+
+PAC1 archive inspection is also Rust-owned. Its pack module builds a bounded
+logical file catalogue and reads only caller-selected entries, either from an
+inspection or from previously validated locators. The add-on
+source module receives the Workbench-loaded graph, reads loose source only
+from each add-on's top-level `Scripts` directory, and composes that
+mechanism with canonical `(GUID, source-root)` instance identity, pack-set and
+loose-source fingerprints, one persisted current cache revision per instance,
+and virtual source
+reads. The pack module itself does not infer add-on identity, load order, cache
+keys, or indexing policy.
 
 ## Contract
 
-The engine accepts source snapshots and external source layers, then provides
-diagnostics, formatting, symbols, completion, hover, definition, signature
-help, and semantic tokens. Features project shared analysis facts instead of
-building independent text-based models.
-
-Class-like language keywords, currently `string` and `vector`, retain keyword
-spelling but are indexed runtime classes. Semantic tokens, hover, and
-definition use that shared classification even while an editor line is an
-incomplete declaration; scalar primitive keywords remain keyword-classified.
-
-Its common analysis path is:
+The engine accepts source snapshots and external source layers, then projects
+shared facts into diagnostics, formatting, symbols, completion, hover,
+definition, signature help, and semantic tokens. A feature should use a shared
+layer whenever the fact can serve more than one feature; adapters only project
+those facts to a client protocol.
 
 ```text
 source text
-  -> lex and parse
-  -> semantic file, scopes, and symbol index
+  -> lexer and parser
+  -> syntax, scopes, and symbols
   -> resolver and type facts
-  -> LSP feature result
+  -> LSP or MCP feature projection
 ```
 
-New language behavior belongs in the appropriate shared layer when more than
-one feature can benefit. A feature-specific adapter is appropriate only when
-it projects existing facts into an LSP response.
-
-The semantic-token legend is a classification contract, not a color palette.
-It uses the standard `function` token for both global and class functions while
-retaining their distinct `Function` and `Method` symbol kinds inside the
-language model. Reforger-facing custom types are `reforgerField`,
-`reforgerPunctuation`, and `reforgerPreprocessor`; their VS Code supertypes are
-`property`, `operator`, and `keyword`. Attribute expressions keep their
-detailed class, function, enum-value, variable, and field classifications
-rather than collapsing to a decorator token when those roles resolve. The
-settled rich projection emits an identifier token only for a declaration, a
-proven local or parameter reference, or a resolver-selected symbol compatible
-with its context. Type references, generic arguments, constructor operands,
-attributes, static/member access, and call shapes remain provisional syntax
-facts rather than classification proof. An unresolved identifier therefore
-receives no semantic token and keeps the editor's default foreground. A
-value-only symbol found in a type position is likewise left unclassified.
-Callable, constructor, attribute, member-call, and member-owner contexts reject
-same-name symbols of an incompatible kind before hover, definition, or semantic
-tokens select them. Rich projection resolves every non-declaration identifier
-in the snapshot; cancellation and the final token-output cap bound the work
-without dropping a fixed suffix of an otherwise valid file.
-Parser recovery must not promote an unresolved statement to a declaration type
-by consuming a structurally separate following statement. The Rust engine emits
-no foreground values. `package.json` owns the Enforce-qualified default
-palette, which users may override through native VS Code semantic-token
-settings.
-For hover Markdown, Rust emits the same semantic type names as inert
-`data-semantic-token` role markers. The TypeScript hover bridge resolves and
-applies the effective native foreground rules because VS Code does not project
-editor semantic tokens into Markdown content. Rust still owns classification,
-the client still owns presentation, and neither layer carries a second color
-table.
-During incomplete editing, a statement-leading `Name(...)` shape remains a
-call expression even before its terminating semicolon is present. Declaration
-recovery must not consume a following statement or reclassify that callable
-name as a type. The call name receives function coloring only when resolution
-proves a callable symbol.
-
-Scope delimiters are one shared syntax projection used by semantic tokens and
-the active-pair request. Parser-proven `{}`, `()`, `[]`, and generic `<>`
-inherit the semantic token kind of their immediate owner; when a construct has
-no distinct owner, it inherits the nearest enclosing semantic scope. This
-keeps declaration bodies, control bodies, calls, constructors, indexing,
-attributes, initializers, and nested generic types aligned with theme-defined
-semantic colors without hard-coded foregrounds. Comments and strings remain
-lexical, preprocessor directives are excluded, and comparison operators are
-not reclassified as generic delimiters. A parser-proven unmatched opener may
-be colored for recovery, but only matched pairs can become active.
-Call, construction, and index anchors are admitted only after the resolver
-selects a compatible symbol; unresolved or category-invalid candidates remain
-`reforgerPunctuation`. Attribute delimiters inherit the attribute class
-classification without changing the attribute expression's detailed token
-roles.
-
-`reforgerScriptTools.bracketColoring` selects one presentation for the whole
-projection. `semantic`, the default, uses the owner classification above.
-`punctuation` emits every code delimiter as `reforgerPunctuation` while
-retaining parser-proven active-pair matching.
-`vscode` omits code delimiters from the custom semantic-token projection so
-VS Code owns both their foreground colors and matching presentation. No mode
-hard-codes a foreground color in Rust, so the manifest palette and user
-customization remain authoritative.
-
-`reforger/activeScopeDelimiters` is a bounded, version-aware projection for all
-current carets. It selects the innermost matched semantic pair at each caret,
-coalesces duplicate pairs, and may use the current foreground parse while
-whole-document semantic analysis is pending. The response contains the document
-version, foreground-readiness state, and delimiter ranges; semantic ownership
-and classification remain in Rust tokens while VS Code owns their foreground
-presentation. The editor bridge retries a current pending snapshot until its
-foreground projection is ready. While a request or foreground retry is
-pending, the bridge preserves the settled active-pair decoration; only a
-current terminal response atomically replaces or clears it. A stale response
-does not alter the visible pair. A rejected foreground task returns a terminal
-empty result rather than a retry signal.
-After every source edit, foreground analysis, semantic analysis, and rich-token
-projection advance as soon as their dependencies are ready. There is no idle
-delay and rich work is never gated on the editor's first semantic-token
-request. A completed rich projection requests an editor refresh immediately.
-Protocol input, worker completions, transport closure, and external-index
-publication wake the same coordinator event stream. No periodic channel poll
-stands between foreground, semantic, and rich publication.
-The external-index worker also publishes its existing cache/build phase names
-through `reforger/externalIndexProgress`. Its terminal `complete` notification
-is emitted only after the new immutable external-index generation is
-published. Before the client's `initialized` notification, the composition
-root retains only the latest phase and publishes it after the client has
-installed its handler. The TypeScript client translates the phase and terminal
-status into editor progress text without inferring index state.
-Rich-token projection reuses identifier classifications only for exact,
-byte-identical callable regions when the current file-visible declaration
-structure and external-index generation still match. Edited and root-level
-regions resolve against the current snapshot, and the runtime log records
-reused identifier results plus reused, invalidated, and recomputed region
-counts.
-If an editor request outruns that work, the current snapshot's lexical baseline
-is materialized only as an internal fallback; the request remains pending and
-publishes the rich overlay as one replacement. This keeps the editor's settled
-semantic presentation visible instead of briefly replacing it with lexical or
-theme-default colors. A newer edit, an external-index
-generation change, worker overload, or document close rejects the superseded
-pending request with `Content modified`; waiting is revision- and
-generation-bounded and never moves parsing or resolution onto the request
-path. The lexical cache classifies lexical facts only; it never guesses an
-identifier's class, function, field, variable, or enum role from text shape.
-Rich projection uses a workspace-index view that excludes the active
-document's own indexed contribution. Capturing that view on the request path
-records only immutable per-file contributions; the rich worker constructs the
-excluded aggregate lazily, and the result is cached in a small bounded set for
-the workspace generation. When the file watcher then publishes a save for the
-same canonical file URI with text identical to the open snapshot, and that
-save is the sole generation transition, the runtime carries a ready rich
-overlay into the new generation or retargets matching in-flight work. The
-workspace refresh still invalidates other open documents. Missing exclusion
-proof, mismatched text, skipped generations, and unrelated workspace changes
-all use normal invalidation and reprojection. Runtime telemetry records the
-URI, revision, generation transition, ready or pending state, and the reused
-rich job's observed elapsed time as reference evidence. The elapsed value is
-not presented as a counterfactual CPU-savings measurement because it includes
-the original job's scheduling time.
-For punctuation and native VS Code modes, that baseline consumes parser-proven
-generic-angle offsets only when the foreground worker has published them for
-the current snapshot. While foreground syntax is pending, angle operators keep
-their lexical operator classification in the cached projection; the request
-path neither reparses nor reuses stale delimiter facts.
-For each settled response, the TypeScript bridge derives zero-width guards at
-both edges of every encoded semantic token. A guard uses the editor's default
-foreground and expands only over text inserted at that exact boundary. The
-current response replaces all guard positions. This keeps a retained opener,
-comment, string, identifier, or other semantic range from briefly lending its
-old foreground to new text while the richer projection is pending; it does not
-change the server's classifications or create a client-side language model.
-Active-pair requests decline documents larger than 128 KiB and cap caret input.
-Pair selection depends only on parser-proven structure, so foreground and
-analyzed snapshots return the same active ranges; resolver-dependent foreground
-classification remains `reforgerPunctuation` until matching analysis exists.
-Background semantic projection retains its existing cancellation contract and
-bounded token output.
-Rich semantic-token telemetry separates identifier resolution,
-declaration-symbol overlays, and scope-delimiter overlays. It also records
-identifier and delimiter resolver-call counts without source text or token
-payloads, so large-file cost can be attributed without weakening the semantic
-projection. Identifier-resolution timing is further divided into context,
-declaration, lexical-scope, member, file-top-level, external-top-level, and
-candidate-selection phases. Member resolution uses a name-bounded view of the
-preferred class and its base chain; it does not construct the full completion
-member projection when resolving one identifier.
-The extension diagnostic log records the source-free interval from its latest
-observed document version to semantic-token middleware invocation, the next
-event-loop-turn delay, and middleware completion time. The runtime performance
-report separately correlates accepted server revisions with rich convergence
-and records whether convergence finished before the editor's request.
-Rich workers retain one revision-tagged delimiter-owner cache per open
-document. Resolver-dependent owners are grouped by stable callable identity,
-exact callable source, and the file-local declaration structure that can
-change resolution. A later revision may reuse only groups whose identity and
-source remain exact under the same external-index generation; ranges always
-come from the current parse, so edits that shift an unchanged callable do not
-reuse stale offsets. An intersecting callable edit, a structural declaration
-change, or an external generation change recomputes the affected owners.
-Telemetry reports delimiter owners reused, invalidated, and recomputed beside
-the remaining resolver-call count.
+Semantic-token classification is a language contract, not a colour palette.
+Rust identifies language roles; VS Code settings and the TypeScript shell own
+their presentation, including hover rendering where editor token colours are
+not available.
+Search preview Auto context follows the same boundary. Rust selects the nearest
+enclosing indexed declaration and returns a bounded line range; fields and
+other value declarations remain one line, while callable and type scopes may
+expand to at most 80 lines around the match. The TypeScript shell requests that
+range and renders it, while explicit numeric context remains a presentation
+control.
+The fixed collection type names `array`, `set`, and `map` retain their class
+role in type positions even when no external index is available; other
+source-backed class names still require indexed facts.
 
 ## Snapshot Rules
 
 Open documents are immutable, revisioned snapshots. The analysis runtime owns
-admission, cancellation, and publication of those snapshots. A request may use
-local semantic facts only when they are known to match its current snapshot;
-recovery-quality results are usable only where the feature explicitly permits
-them.
+their admission, cancellation, and publication. A request may use local facts
+only when they match the snapshot it captured.
 
-Workspace and game-data indexes are immutable external layers. Each request
-uses the layer snapshot it captured, even if background indexing publishes a
-newer generation while the request is running. Do not introduce competing
-revision tables or mutable shared feature state.
+Workspace and game-data indexes are separate immutable external layers. The
+game-data layer retains its per-loaded-add-on indexes and composes only their
+stable lookup identities; it never eagerly copies all symbol records into a
+second merged index. A request captures one layer generation, so background
+indexing cannot change the meaning of an in-flight response. Do not introduce
+per-feature revision tables or mutable shared feature state that bypasses this
+model.
 
-The game-data disk cache stores the validated canonical symbol facts, not a
-second query model. A warm load borrows entries from the cache string table
-while decoding, projects those facts directly into the immutable runtime
-index, and then builds the authoritative lookup maps. Large, independent
-lookup-map families may be built concurrently; their contents and per-key
-symbol order must remain identical to sequential construction. This preserves
-all query features while avoiding an intermediate `FileContribution` graph and
-duplicate string ownership during startup.
+Workspace-file notifications build one compiler-owned contribution on the
+incoming path and enqueue it for a coalescing workspace-generation worker.
+Multiple changes to the same batch are aggregated once, then published as one
+new immutable generation and external-index event. Request handling never
+rebuilds the workspace-wide index synchronously.
+
+The base-game layer is published from the current Workbench graph. On an
+offline warm start, the dependency scope uses each exact `(GUID, source-root)`
+instance key to locate its self-describing `symbols.bin` directly. The binary
+header establishes format compatibility and embedded add-on identity without a
+separate manifest read. The hydrated layer is reference-counted at construction
+and published without cloning its symbol graph. Cache hydration registers the
+cache's source identity without reading the locator-rich `manifest.json`;
+hover and definition navigation lazily materialize that registry on the first
+`reforger-pak:` source read, which still validates its PAC artifacts at
+navigation time.
+Explicit Game Data full-text search uses that same immutable locator registry
+as one batch: it validates each referenced source revision once, groups entries
+by PAC archive, opens each archive once without reparsing its catalogue, and
+reads selected scripts in archive offset order before scanning. Independent
+add-on batches use at most four source-read workers; each worker still streams
+only the selected entries, never a complete PAC archive. Entry bounds,
+archive identity, expansion limits, and the captured compressed-payload digest
+remain verified at read time. Its bounded result statistics report source-read
+wall time separately from scan time, along with per-add-on read time and failures.
+After the first full-text query, the catalogue may retain one decoded source
+corpus for the exact catalogue revision and selected add-on GUIDs. Retention is
+limited to 64 MiB including source identity metadata; another scope replaces
+the slot, and an oversized corpus is not retained. Later distinct queries and
+their pages may share those immutable strings. The cache is filled only by an
+explicit text query, so it adds no startup work and never retains a PAC archive
+or an unselected payload.
+Individual navigation remains a one-entry lazy
+read through the same validated-locator path. The matcher uses case-insensitive
+literal substrings by default and
+accepts explicit match-case, whole-word, and regular-expression options. Those
+options and the selected add-on GUIDs are part of both the bounded result-cache
+identity and opaque paging cursor, so pages from different matching modes or
+scopes cannot be combined. Search exposes at most 10,000 results. Text search
+stops after detecting match 10,001; semantic search must examine every symbol
+to preserve ranking, but selects and sorts only the best 10,000 candidates.
+Both result shapes report truncation rather than presenting the bound as an
+exact total. Semantic Game Data search follows the same scope
+identity: candidates are filtered by loaded add-on GUID before ranking, opaque
+symbol references include that GUID, and Game Data source reads require the
+returned GUID for every handoff so path uniqueness is never assumed. Layered
+queries iterate the immutable child
+indexes directly rather than relying on an eagerly flattened symbol allocation.
+
+Exact Source Relationship queries compose one captured Workspace generation
+with one captured Game Data generation. Broad symbol search remains the
+discovery path; a relationship request begins only from the returned opaque,
+revision-bound Symbol Reference and its source authority. The catalogues expose
+minimal immutable snapshots to `source_relationships`; they do not expose
+storage, synchronization, physical-path, or mutation responsibilities.
+
+The relationship owner lazily builds one compact projection cache entry keyed
+only by the complete Workspace/Game Data revision tuple. A class projection can
+upgrade once to the method-capable projection; alternating class and method
+requests do not evict or rebuild it, while Direct-only facts need no retained
+graph. The projection retains class and method identity plus proven structural
+edges, not source strings or cloned symbol records. Explicit inheritance,
+`modded` overlays, and callable overrides remain different edges. Explicit
+inheritance resolves a unique canonical ordinary declaration across script
+modules. Modded classes require the same script-module identity; overrides
+require the exact callable shape and a proven inheritance or modded owner
+chain. Ambiguous edges are omitted with a warning. Loaded Workbench add-on
+order may support overlay evidence. Offline dependency order can prove the
+matching modded class family but never a predecessor method edge or exact
+overlay sequence.
+
+One-level queries return immediate neighbors. All-level queries use bounded,
+cancellable breadth-first traversal with cycle detection. Each public composed
+query captures every available Workspace and Game Data snapshot for resolution;
+a source explicitly requested for output but unavailable returns structured
+recovery. The selected Workspace/add-on scope and result-kind filter are then
+applied only to emitted declarations, so a hidden intermediate cannot break a
+proven edge. A warning reports visible relationships whose semantic distance
+crosses scope-hidden declarations. Results retain source authority, add-on identity, exact
+Symbol Reference, ranges, relationship evidence and distance, and a matching
+source-read handoff. Ordering, page limits, totals, and cursors are deterministic;
+the opaque cursor is bound to both source revisions, anchor, scope, relationship
+kinds, result kinds, and depth. Restricted legacy structural relationship tools
+delegate to this owner rather than maintaining a parallel implementation.
+Legacy structural and usage relationships retain distinct evidence and
+pagination contracts. When the workspace compatibility API requests both, the
+catalogue merges their independently owned results before applying its legacy
+ordering and paging contract. Legacy `implementation` is projected from the
+same proven override graph.
+
+Within the same semantic match-quality tier, original declarations rank before
+`modded` or `override` declarations and before members declared inside those
+overlays. Remaining ties use the stable symbol identity and source ordering.
+The later authoritative Workbench graph validates the exact packed and loose
+sources and atomically replaces only changed instances. Unchanged validation
+inspects bounded PAC catalogues and hashes only selected compressed script
+payloads, not the full multi-gigabyte archives. The resulting strong revision
+identity detects same-size script changes. A changed artifact decodes only
+selected `.c` entries. The semantic cache and locator data are written directly
+at the exact loaded-instance root. `symbols.bin` contains a required
+semantic-index section and an optional binary locator section; the latter is
+read lazily when a packed source URI is first materialized. The locator section
+omits derived URIs, interns repeated pack paths, and stores payload digests in
+raw form. The full `manifest.json` remains available for repair/debug, while
+`manifest-header.json` is the compact warm-validation record. Legacy cache roots
+without the binary locator section fall back to the full manifest shape. Retired
+revision/pointer layouts are discarded and rebuilt rather than read as a
+compatibility path. Cache roots not named by the current Workbench graph are
+also removed before indexing. A loaded add-on whose graph source root contains
+a workspace root is supplied only through the live workspace layer; any packed
+cache for that exact instance is removed. If the authoritative Workbench graph
+is unavailable, malformed, cancelled, or fails to acquire an instance, the
+Workbench-sourced layer is unavailable; the engine never reuses an earlier graph
+or substitutes a local source.
+
+The cache root also maintains a compact `cache-catalogue.json` for exact
+instance selection. Enumerating cache roots is restricted to catalogue
+recovery and maintenance; the normal dependency warm path does not inspect
+every cache directory.
+
+The extension's explicit `loaded` startup path provides a provisional dependency
+scope derived from the opened project's `.gproj` dependency GUIDs. Rust uses
+the Workbench project-list registry (`.projectList_app1874910_*`) as the offline
+source catalogue, follows the transitive dependency closure, and uses the same
+Workbench-owned game-install discovery for installed base projects. It always
+includes the base-game GUID, resolves one source candidate per GUID, and
+prefers an unpacked source root over a packed-only duplicate. The offline cycle
+first loads compatible cached indexes by exact `(GUID, source-root)` identity.
+If the scope has no usable cache entries, it builds the selected dependency
+sources before publishing the first semantic layer; this is the cold/offline
+fallback rather than a second warm path. A valid warm scope does not scan or
+inspect source roots. The result is explicitly labelled
+`project-dependencies-provisional`, is not a live Workbench graph, and is
+replaced by the next authoritative graph publication. That second cycle
+compares the live loaded add-on instances, performs a delta load/build for
+different or missing roots, and validates changed sources before replacing the
+warm generation. If the graph has the same canonical `(GUID, source-root)`
+sequence as the warm scope, the existing immutable layer remains published and
+graph scope authority is promoted without decoding or composing a replacement
+snapshot. Source validation retains the warm snapshot if validation fails.
+
+The binary payload persists canonical public symbol facts, source metadata, and
+source line starts; dense symbol IDs and lookup maps are structural or derived
+runtime facts and are not duplicated in the payload. Cache-sized integers use
+fixed-width `u32` records, symbol option/list presence shares one flag word,
+and line starts use fixed-width positive deltas. Cold indexing builds the final
+runtime-cache projection from compiler-owned `SemanticFile` declaration facts
+and encodes that index without constructing a second declaration model or cache
+object graph. Warm hydration decodes directly into runtime records
+and builds lookup maps once, so neither path materializes an intermediate copy
+of every symbol.
+
+An empty add-on cache store is an offline cold build. Instances without a
+compatible current cache pair are built from the selected project-list sources
+before the first offline layer is published; the later Workbench reconciliation
+can then replace only instances whose live source identity differs. After
+authoritative inspection has measured each loaded instance's script count, at
+most four workers rebuild the largest sets first.
+Within a sufficiently large add-on, source parsing and semantic modelling use
+that add-on's bounded share of the same logical-CPU budget; small add-ons keep
+the lower-overhead sequential path. The outer worker count and each inner
+source-build share multiply to no more than the available logical CPUs, so a
+large base-game add-on can use idle cores without an unbounded nested pool.
+Completed instances are restored to canonical graph order before immutable
+layering and publication. Authoritative source inspection is bounded to four
+independent workers. A compact manifest header validates cache format, exact
+instance, strong revision, archive facts, and cache bytes before the
+locator-rich manifest is materialized and published for a rebuild. A valid warm
+hit does not rewrite that already-validated manifest.
+
+Packed files carry a typed virtual-source identity in semantic metadata rather
+than overloading a filesystem path. The identity includes the loaded add-on
+instance (GUID and canonical source root through its revision), semantic
+revision, logical script path, and URI. Definition and hover links preserve
+that identity so navigation opens the indexed source rather than the requesting
+document. Class references navigate to the original non-`modded` declaration;
+the effective `modded` overlay remains authoritative for semantic lookup,
+completion, and member behavior. Definition serving retains immutable revision
+registries. Indexing and definition serving hash and decode each entry from the
+same captured compressed bytes, so a concurrent pack update cannot apply an
+old symbol span to newer bytes.
+
+The language-server diagnostic log records each external-index startup as a
+bounded performance trace: end-to-end game-data, workspace, and publication
+durations; graph-read, strong source-inspection, cache-load-or-build, and
+layer-composition durations; and one record per non-workspace
+loaded add-on. An add-on record identifies its cache outcome and rebuild
+reason, source and cache sizes, and inspection, cache read/decode/validation,
+runtime-map reconstruction, rebuild, and cache-write durations. Rebuilt
+add-ons further split source rebuilding into file discovery, source acquisition,
+read/decode, parsing, semantic modelling, and index aggregation, and separately
+record runtime-cache preparation before encoding/writing and metadata
+publication after it. It contains no
+source text or filesystem paths, so a fresh and warm start can be compared
+from the same diagnostic-log stream.
 
 ## Boundaries and Evidence
 
-The engine owns language behavior, not VS Code UI, extension settings, or
-game-data downloads. Enfusion behavior must be established from
-Workbench/compiler evidence first; see the [system overview](overview.md) for
-the complete evidence order.
+The engine owns language behaviour, not VS Code UI, extension settings, or
+game-data downloads. Enfusion behaviour follows the evidence hierarchy in the
+[system overview](overview.md): Workbench/compiler behaviour first, then
+official documentation, verified extracted data, and labelled examples.
 
-For control-header keyword completions (`if`, `for`, `foreach`, `while`, and
-`switch`), Rust owns the parenthesized snippet and an opaque caret-local
-Space-commit contract. The TypeScript client may remove only the single
-committed Space identified by that contract, whether VS Code applies it before
-or after the snippet edit; it must not infer or rewrite ordinary source.
+Typing assists and completion edits are Rust-authored structural decisions;
+the TypeScript client can screen impossible editor states, apply a versioned
+result, and use an explicit native fallback. It must not infer Enfusion source
+shape or recreate an edit after the fact. The enduring editor-input ownership
+policy is in [Key input routing](key-input-routing.md).
 
-The Enter typing-assist request is a bounded structural edit, not a formatter.
-For `for`, `foreach`, `while`, and `switch` headers with a matched closing
-parenthesis, Rust may append a braced body only while the caret remains on the
-header's physical line, preserving the header exactly.
-It declines existing-brace, non-header, comment/string, multi-caret, stale, and
-disabled-setting cases. A generated `switch` body begins with a Rust-authored
-`default` snippet: typing replaces its selected arm, while Tab retains it and
-moves to the body. At that arm, Rust offers the structural `case value` snippet
-and opens ordinary value completion for its selected value. The client owns only
-applying the returned versioned edit and snippet, never inferring source shape.
+## Change Rules
 
-Collection type completion is a parser/resolver-backed type-position feature.
-`array<T>`, `set<T>`, and `map<K, V>` insert snippets with selected type slots;
-the client opens ordinary type completion at each slot and, after the final
-type is accepted, places the caret after the closing `>`. Exact and prefix
-matches retain priority, then the engine ranks standard value types, `ref`,
-nested collections, and indexed enums/classes. `void` is excluded from a
-collection type argument. Recovery recognizes only an incomplete operand of
-`new`, a lone prospective callable-parameter type before its required
-parameter name, and an empty slot of an indexed generic class, so completion remains available while the user is
-constructing these otherwise valid type positions. The same prospective
-parameter-type recovery runs on the current-snapshot completion lane before
-argument-label lookup, so its initial character receives the generic snippet
-rather than a plain indexed class completion.
+- Put new language behaviour in the shared layer that owns its facts.
+- Preserve one language model across LSP and MCP projections.
+- Keep request results bounded and revision-correct rather than guessing from
+  stale or partial text.
+- Keep hover payloads valid and bounded at complete presentation entries; when
+  a repeated member summary exceeds its budget, report the exact omitted count
+  instead of allowing the client to truncate markup.
+- Keep presentation, storage, configuration, and process lifecycle outside the
+  engine.
 
-Indexed generic classes use their declared type-parameter count to supply type
-slots through the same type-completion and final-caret bridge as collections.
-That includes base-game tuples and game-defined generic classes such as
-`SCR_BTParam<T>`; only collections receive collection construction or
-declaration-tail behavior.
-
-Constructor completion is a semantic projection at a proven `new` operand.
-It begins on the exact partial keyword prefixes `n` and `ne`, remains active
-on a bare `new`, and continues after the operand space. This lets the first
-word-completion request carry the full constructor preview while VS Code
-locally filters the same list through the remaining keyword characters. The
-server also advertises Space as a completion trigger, but returns a list for
-that trigger only when the current snapshot establishes one contextual type
-from a declaration, resolved assignment target, callable return, call
-argument, or collection-initializer element. The exact accessible class is
-preselected; compatible classes with accessible constructors follow.
-Inaccessible or unindexed contextual classes have no default, but compatible
-constructible subtypes remain available. Dynamic collections preserve their
-complete generic spelling.
-
-Constructor edits contain only the parenthesized expression. Required
-parameters become ordered named snippet fields, optional parameters are
-omitted, and a class without an indexed constructor signature remains
-available as `Type()`. The label plus label details previews that accepted
-source text. When completion is invoked on a partial or bare typed `new`, the
-item instead previews the whole `new Type(...)` expression and atomically
-replaces the typed prefix; after `new `, it edits only the operand. No
-constructor item owns a semicolon, assignment, initializer brace, or fluent
-suffix. Space-triggered requests outside this exact context return an empty
-complete list; manual prefix and explicit completion retain their existing
-behavior.
-
-When a user retypes an already-present completion label, Rust keeps the
-existing syntax authoritative. A type completion immediately before a generic
-closer replaces that closer and uses its final tabstop; this also handles the
-inner half of a lexed `>>` closer. A callable or control-header completion
-replaces an immediately following empty `()` with its authored snippet, while
-a non-empty existing argument list is preserved and only the label changes.
-Active named-argument labels already insert only their name, preserving a
-following `:`. Plain values and members do not receive structural replacement
-edits because they do not author a structural suffix.
-
-### Completion gotchas
-
-- Inside an overriding method, the `super` prefix is an override-aware callable
-  completion rather than a plain keyword: it inserts the matching indexed base
-  call, including required parameter placeholders (for example,
-  `super.OnPostInit(${1:owner})`). The bounded current-snapshot path uses the
-  enclosing class/method shape and external index signature so this remains
-  available before whole-document analysis publishes; the analyzed path
-  produces the same result.
-
-- A completion produced without matching current-document semantic facts is a
-  provisional fallback, even when it has fewer items than the normal cap. It
-  must set LSP `isIncomplete: true` and preserve that state through every
-  merge. Otherwise VS Code can retain a plain callable label after analysis is
-  ready, hiding the callable snippet's parentheses, parameters, and follow-up
-  command. Treat `isIncomplete` as result-fidelity metadata, not only as an
-  overflow signal.
-- Normal `textDocument/completion` requests wait for and replay against the
-  matching document analysis. Bounded foreground recovery may prove names,
-  but it cannot generally prove callable signatures; sending that partial list
-  first lets a plain identifier completion race and replace the parameterized
-  snippet in the UI. Keep that recovery for explicitly provisional paths and
-  debug inspection, never as the final normal-completion response.
-- An active positional `func` parameter is slot metadata, not a function
-  candidate. Exclude its parameter-label item before argument labels merge
-  with ordinary value completion; do not solve that category error by adding
-  an RPC-specific rank or changing the general completion ranking.
-- An empty generic slot is a type position, not a value position. Returning
-  value completion there exposes statement keywords and hides the standard
-  types, `ref`, and indexed classes.
-- Do not grow a hard-coded owner-name list when another generic class is
-  discovered. Generic snippet arity and empty-slot recovery come from the
-  indexed generic-owner declaration. Built-in collection keyword completion
-  remains a lexical bridge because those names are language keywords as well
-  as source-defined classes.
-- Collection-only construction and declaration-tail behavior remains limited to
-  `array`, `set`, and `map`; generic classes and tuples receive type slots only.
-
-The collection declaration-tail owner is similarly bounded: it lexically
-proves a complete single `array`, `set`, or `map` field/local (including nested
-generic arguments such as `array<array<int>>`) and rejects all other contexts
-before returning the one native Space edit plus a suggestion request. The tail
-choices are Rust-authored completion edits, not a formatter or a client-side
-post-edit rewrite.
-
-Document-symbol responses enforce the LSP invariant that a symbol's full range
-contains its selection range, including parser-recovery states. When recovery
-requires that range repair, the server emits a bounded structured diagnostic
-record with only structural range coordinates and symbol kinds; it never logs
-source text or symbol names.
-
-Run focused Rust tests while iterating and `cargo test` from `server/` for the
-engine suite. Use the [development guide](development.md) for extension-level
-verification.
+Code and tests define exact parsing recovery, ranking, token classes, limits,
+and editor transactions. This document preserves why those details share one
+language authority and where changes belong.

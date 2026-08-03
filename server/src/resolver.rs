@@ -2,12 +2,13 @@ use crate::ast::{
     member_access_for_member_name_at_offset, named_argument_label_at_offset, Expression,
 };
 use crate::expression_type::{
-    base_owner_type_from_symbol, member_lookup_owners, owner_type_from_type_text, ExpressionType,
-    ExpressionTypeEnvironment,
+    base_owner_type_from_symbol, enum_member_ids_for_owner, has_modifier,
+    is_pseudo_class_member_name, matching_members_for_exact_owner, member_lookup_owners,
+    ExpressionType, ExpressionTypeEnvironment,
 };
 use crate::index::{GlobalSymbolId, IndexedFile, IndexedSymbol, SymbolIndex};
 use crate::lexer::{lex, Keyword, Operator, TextSpan, Token, TokenKind};
-use crate::model::{SourceCategory, SourceKind, SymbolKind};
+use crate::model::{SourceCategory, SourceKind, SymbolKind, VirtualSourceIdentity};
 use crate::parser::parse_source;
 use crate::scope::LexicalScopeModel;
 use crate::syntax::{Parse, SyntaxElement, SyntaxKind, SyntaxNode};
@@ -75,10 +76,12 @@ pub struct ReferenceCandidate {
     pub source_priority: u16,
     pub relative_path: Option<PathBuf>,
     pub absolute_path: Option<PathBuf>,
+    pub virtual_source: Option<VirtualSourceIdentity>,
     /// Normalized callable shape used by definition navigation to distinguish
     /// an override's inherited declaration from unrelated overloads.
     pub callable_override_key: Option<String>,
     pub is_override: bool,
+    pub is_modded: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1452,12 +1455,14 @@ fn candidate_from_symbol(
         source_priority: file.metadata.priority,
         relative_path: file.metadata.relative_path.clone(),
         absolute_path: file.metadata.absolute_path.clone(),
+        virtual_source: file.metadata.virtual_source.clone(),
         callable_override_key: callable_override_key(index, id),
         is_override: has_modifier(symbol, "override"),
+        is_modded: has_modifier(symbol, "modded"),
     }
 }
 
-fn callable_override_key(index: &SymbolIndex, id: GlobalSymbolId) -> Option<String> {
+pub(crate) fn callable_override_key(index: &SymbolIndex, id: GlobalSymbolId) -> Option<String> {
     let symbol = index.symbol(id)?;
     (symbol.kind == SymbolKind::Method).then_some(())?;
     let return_type = symbol.detail.return_type_text.as_deref().unwrap_or("");
@@ -1691,81 +1696,11 @@ fn collect_receiver_expression_before_dot<'source, 'tree>(
     }
 }
 
-fn enum_member_ids_for_owner(
-    index: &SymbolIndex,
-    owner: &str,
-    member: &str,
-) -> Vec<GlobalSymbolId> {
-    let mut ids = Vec::new();
-    collect_enum_member_ids_for_owner(index, owner, member, &mut BTreeSet::new(), &mut ids);
-    ids
-}
-
-fn collect_enum_member_ids_for_owner(
-    index: &SymbolIndex,
-    owner: &str,
-    member: &str,
-    visited: &mut BTreeSet<String>,
-    ids: &mut Vec<GlobalSymbolId>,
-) {
-    if !visited.insert(owner.to_string()) {
-        return;
-    }
-
-    for expanded_owner in member_lookup_owners(index, owner) {
-        if expanded_owner == owner {
-            continue;
-        }
-        collect_enum_member_ids_for_owner(index, &expanded_owner, member, visited, ids);
-    }
-
-    for enum_id in index.top_level_symbols_for_name(owner) {
-        let Some(enum_symbol) = index.symbol(*enum_id) else {
-            continue;
-        };
-        if enum_symbol.kind != SymbolKind::Enum {
-            continue;
-        }
-        for child in index.children(*enum_id) {
-            let Some(symbol) = index.symbol(*child) else {
-                continue;
-            };
-            if symbol.kind == SymbolKind::EnumMember && symbol.name.as_deref() == Some(member) {
-                push_unique_id(ids, *child);
-            }
-        }
-        if let Some(base_type) = enum_symbol
-            .detail
-            .base_type
-            .as_deref()
-            .and_then(owner_type_from_type_text)
-        {
-            collect_enum_member_ids_for_owner(index, &base_type, member, visited, ids);
-        }
-    }
-}
-
-fn matching_members_for_exact_owner(
-    index: &SymbolIndex,
-    owner: &str,
-    name: &str,
-) -> Vec<GlobalSymbolId> {
-    index.preferred_members_named_for_class(owner, name)
-}
-
 fn is_member_lookup_kind(kind: SymbolKind) -> bool {
     matches!(
         kind,
         SymbolKind::Field | SymbolKind::Method | SymbolKind::Constructor | SymbolKind::Destructor
     )
-}
-
-fn is_pseudo_class_member_name(name: &str) -> bool {
-    matches!(name, "ClassName" | "IsInherited" | "ToString" | "Type")
-}
-
-fn has_modifier(symbol: &IndexedSymbol, modifier: &str) -> bool {
-    symbol.modifiers.iter().any(|value| value == modifier)
 }
 
 fn span_contains(span: TextSpan, offset: usize) -> bool {
@@ -1962,12 +1897,12 @@ fn push_unique_id(ids: &mut Vec<GlobalSymbolId>, id: GlobalSymbolId) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
     use crate::model::{
-        source_category_for_path, SourceFileMetadata, SymbolCatalog, SOURCE_PRIORITY_GAME_DATA,
+        source_category_for_path, SourceFileMetadata, SOURCE_PRIORITY_GAME_DATA,
         SOURCE_PRIORITY_WORKSPACE,
     };
     use crate::parser::parse_source;
+    use crate::semantic_file::SemanticFile;
 
     #[test]
     fn declaration_identifier_resolves_to_itself() {
@@ -4749,9 +4684,8 @@ class Example
     fn index_for_source(source: &str, metadata: SourceFileMetadata) -> SymbolIndex {
         let parse = parse_source(source);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
-        let ast = AstSourceFile::new(source, &parse);
-        let catalog = SymbolCatalog::from_ast_with_metadata(source, &ast, metadata);
-        SymbolIndex::from_catalogs([&catalog])
+        let semantic_file = SemanticFile::build(source, &parse);
+        SymbolIndex::from_semantic_files([(&semantic_file, metadata)])
     }
 
     fn workspace_metadata(path: &str) -> SourceFileMetadata {
@@ -4759,6 +4693,7 @@ class Example
             kind: SourceKind::Workspace,
             category: SourceCategory::Workspace,
             absolute_path: Some(PathBuf::from("C:/workspace").join(path)),
+            virtual_source: None,
             root_path: Some(PathBuf::from("C:/workspace")),
             relative_path: Some(PathBuf::from(path)),
             priority: SOURCE_PRIORITY_WORKSPACE,
@@ -4771,6 +4706,7 @@ class Example
             kind: SourceKind::GameData,
             category: source_category_for_path(SourceKind::GameData, Some(&relative_path)),
             absolute_path: Some(PathBuf::from("C:/game").join(path)),
+            virtual_source: None,
             root_path: Some(PathBuf::from("C:/game")),
             relative_path: Some(relative_path),
             priority: SOURCE_PRIORITY_GAME_DATA,

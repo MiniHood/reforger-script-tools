@@ -2,14 +2,17 @@
 //!
 //! This module validates one envelope and assigns it to a runtime contract.
 //! It does not read document state or perform transport work.
-use super::workspace_requests::{WorkspaceFileChangedParams, WorkspaceFileDeletedParams};
+use super::workspace_requests::{
+    LoadedAddonGraphParams, WorkspaceFileChangedParams, WorkspaceFileDeletedParams,
+};
 use super::{
     validate_message_params, ActiveScopeDelimiterParams, BlockCommentPairParams, CompletionParams,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DocumentSymbolParams, HoverParams, InputRouteParams, RangeFormattingParams, RpcMessage,
     ACTIVE_SCOPE_DELIMITERS_METHOD, BLOCK_COMMENT_PAIR_METHOD, CONTROL_HEADER_ENTER_METHOD,
-    DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD, RANGE_FORMATTING_METHOD,
-    WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
+    DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD, LOADED_ADDON_GRAPH_METHOD, PREVIEW_CONTEXT_METHOD,
+    RANGE_FORMATTING_METHOD, READ_PACK_SOURCE_METHOD, WORKSPACE_FILE_CHANGED_METHOD,
+    WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::Value;
 
@@ -43,6 +46,7 @@ pub(super) enum DocumentCommand {
 pub(super) enum WorkspaceIndexCommand {
     Changed(Option<WorkspaceFileChangedParams>),
     Deleted(Option<WorkspaceFileDeletedParams>),
+    LoadedAddonGraph(Option<LoadedAddonGraphParams>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +63,8 @@ pub(super) enum FeatureCommand {
     BlockCommentPair(Option<BlockCommentPairParams>),
     InputRoute(Option<InputRouteParams>),
     ActiveScopeDelimiters(Option<ActiveScopeDelimiterParams>),
+    PreviewContext(Option<HoverParams>),
+    ReadPackSource(Option<super::ReadPackSourceParams>),
     OtherTextDocument,
 }
 
@@ -93,6 +99,9 @@ pub(super) fn classify_request(value: Value) -> Result<RoutedRequest, String> {
         ),
         Some(WORKSPACE_FILE_DELETED_METHOD) => RequestCommand::WorkspaceIndex(
             WorkspaceIndexCommand::Deleted(parse_typed_params(&message.params)),
+        ),
+        Some(LOADED_ADDON_GRAPH_METHOD) => RequestCommand::WorkspaceIndex(
+            WorkspaceIndexCommand::LoadedAddonGraph(parse_typed_params(&message.params)),
         ),
         Some("textDocument/documentSymbol") => RequestCommand::Feature(
             FeatureCommand::DocumentSymbols(parse_typed_params(&message.params)),
@@ -130,6 +139,12 @@ pub(super) fn classify_request(value: Value) -> Result<RoutedRequest, String> {
         Some(ACTIVE_SCOPE_DELIMITERS_METHOD) => RequestCommand::Feature(
             FeatureCommand::ActiveScopeDelimiters(parse_typed_params(&message.params)),
         ),
+        Some(PREVIEW_CONTEXT_METHOD) => RequestCommand::Feature(FeatureCommand::PreviewContext(
+            parse_typed_params(&message.params),
+        )),
+        Some(READ_PACK_SOURCE_METHOD) => RequestCommand::Feature(FeatureCommand::ReadPackSource(
+            parse_typed_params(&message.params),
+        )),
         Some(method) if method.starts_with("textDocument/") => {
             RequestCommand::Feature(FeatureCommand::OtherTextDocument)
         }
@@ -180,6 +195,10 @@ mod tests {
                 RequestCommand::WorkspaceIndex(WorkspaceIndexCommand::Changed(None)),
             ),
             (
+                json!({"method": "reforger/loadedAddonGraph"}),
+                RequestCommand::WorkspaceIndex(WorkspaceIndexCommand::LoadedAddonGraph(None)),
+            ),
+            (
                 json!({"method": "$/cancelRequest"}),
                 RequestCommand::Cancellation,
             ),
@@ -203,6 +222,35 @@ mod tests {
         };
         assert_eq!(params.text_document.uri, "file:///script.c");
         assert_eq!(params.position.line, 2);
+
+        let routed = classify_request(json!({
+            "method": "reforger/previewContext",
+            "params": {
+                "textDocument": {"uri": "file:///script.c"},
+                "position": {"line": 8, "character": 0}
+            }
+        }))
+        .unwrap();
+        let RequestCommand::Feature(FeatureCommand::PreviewContext(Some(params))) = routed.command
+        else {
+            panic!("preview context must retain its document position");
+        };
+        assert_eq!(params.text_document.uri, "file:///script.c");
+        assert_eq!(params.position.line, 8);
+
+        let routed = classify_request(json!({
+            "method": "reforger/readPackSource",
+            "params": {"uri": "reforger-pak://58D0FB3206B6F859/scripts/Game/Example.c"}
+        }))
+        .unwrap();
+        let RequestCommand::Feature(FeatureCommand::ReadPackSource(Some(params))) = routed.command
+        else {
+            panic!("pack source requests must retain their typed URI");
+        };
+        assert_eq!(
+            params.uri,
+            "reforger-pak://58D0FB3206B6F859/scripts/Game/Example.c"
+        );
 
         let routed = classify_request(json!({
             "method": "textDocument/hover",

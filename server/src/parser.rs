@@ -739,7 +739,15 @@ impl Parser<'_> {
             } else if self.at(TokenKind::LeftBrace) {
                 children.push(self.parse_initializer_expression());
             } else if self.at_operator(Operator::Equal) {
+                let assignment = self.current();
                 children.push(self.bump_token());
+                if self.next_line_starts_local_decl_statement() {
+                    self.error_at_span(
+                        "Expected expression",
+                        TextSpan::new(assignment.span.end, assignment.span.end),
+                    );
+                    break;
+                }
                 children.push(self.parse_expression_until(&local_decl_expression_stops(stop), 0));
             } else {
                 match self.current().kind {
@@ -1611,14 +1619,38 @@ impl Parser<'_> {
     }
 
     fn looks_like_local_decl_statement(&self) -> bool {
-        if !is_declaration_start(self.current().kind) || self.at_keyword(Keyword::New) {
+        self.looks_like_local_decl_statement_from(self.position)
+    }
+
+    fn next_line_starts_local_decl_statement(&self) -> bool {
+        let mut index = self.position;
+        let mut saw_newline = false;
+        while let Some(token) = self.tokens.get(index) {
+            if !token.kind.is_trivia() {
+                break;
+            }
+            saw_newline |= self.token_text(*token).contains('\n');
+            index += 1;
+        }
+
+        saw_newline && self.looks_like_local_decl_statement_from(index)
+    }
+
+    fn looks_like_local_decl_statement_from(&self, start: usize) -> bool {
+        let Some(start_token) = self.tokens.get(start) else {
+            return false;
+        };
+        if !is_declaration_start(start_token.kind)
+            || start_token.kind == TokenKind::Keyword(Keyword::New)
+        {
             return false;
         }
 
-        let mut index = self.position;
+        let mut index = start;
         let mut saw_name_after_type = false;
         let mut saw_equal = false;
         let mut saw_newline_after_name = false;
+        let mut saw_newline_before_name = false;
         let mut paren_depth = 0usize;
         let mut bracket_depth = 0usize;
         let mut brace_depth = 0usize;
@@ -1636,11 +1668,25 @@ impl Parser<'_> {
                 continue;
             }
 
+            if at_top_level && !saw_name_after_type && kind.is_trivia() {
+                saw_newline_before_name |= self.token_text(token).contains('\n');
+                index += 1;
+                continue;
+            }
+
             if at_top_level
                 && saw_newline_after_name
                 && token_kind_can_start_statement_after_local(kind)
             {
-                return true;
+                return !saw_newline_before_name;
+            }
+
+            if at_top_level
+                && saw_name_after_type
+                && !saw_equal
+                && kind == TokenKind::Operator(Operator::Less)
+            {
+                return false;
             }
 
             if at_top_level && matches!(kind, TokenKind::Semicolon | TokenKind::RightParen) {
@@ -1671,7 +1717,7 @@ impl Parser<'_> {
                 return false;
             }
 
-            if at_top_level && index > self.position && kind == TokenKind::Identifier {
+            if at_top_level && index > start && kind == TokenKind::Identifier {
                 if matches!(
                     self.next_non_trivia_kind_after(index + 1),
                     Some(TokenKind::Operator(
@@ -2449,10 +2495,11 @@ fn collect_significant_declarator_tokens(element: &SyntaxElement, tokens: &mut V
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
+    use crate::ast::{AstSourceFile, ClassMember, Declaration};
     use crate::index::SymbolIndex;
     use crate::lexer::{lex, TokenKind};
-    use crate::model::SymbolCatalog;
+    use crate::model::SourceFileMetadata;
+    use crate::semantic_file::SemanticFile;
     use crate::syntax::SyntaxKind;
 
     fn count_kind(node: &SyntaxNode, kind: SyntaxKind) -> usize {
@@ -2824,9 +2871,9 @@ ArmaReforgerScripted g_ARGame;
         assert_eq!(count_kind(&parse.root, SyntaxKind::ClassDecl), 2);
         assert_eq!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement), 1);
 
-        let ast = AstSourceFile::new(&source, &parse);
-        let catalog = SymbolCatalog::from_ast(&source, &ast);
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let semantic_file = SemanticFile::build(&source, &parse);
+        let index =
+            SymbolIndex::from_semantic_files([(&semantic_file, SourceFileMetadata::unknown())]);
         assert!(!index.files().is_empty());
     }
 
@@ -3083,6 +3130,102 @@ class AfterInvalid
             );
             assert_eq!(count_kind(&parse.root, following_kind), 1);
         }
+    }
+
+    #[test]
+    fn consecutive_unfinished_identifier_lines_do_not_form_a_local_declaration() {
+        let source = r#"class Example
+{
+    void Run()
+    {
+        int testnum = 5;
+        array<string> extra = {};
+
+        SCR_BaseGameMode
+
+        PS_PlayersList
+
+        map<int, string> testmap = new map<int, string>();
+    }
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement), 3);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ExpressionStatement), 2);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::Declarator), 3);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::Error), 0);
+
+        let ast = AstSourceFile::new(source, &parse);
+        let Declaration::Class(class) = ast.declarations()[0] else {
+            panic!("expected class");
+        };
+        let ClassMember::Method(method) = class.members()[0] else {
+            panic!("expected method");
+        };
+        let local_names = method
+            .local_variables()
+            .iter()
+            .map(|local| local.name().text())
+            .collect::<Vec<_>>();
+        assert_eq!(local_names, vec!["testnum", "extra", "testmap"]);
+    }
+
+    #[test]
+    fn dangling_assignment_does_not_consume_the_next_local_declaration() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		IEntity testEntity =
+
+		map<int, string> testmap = new map<int, string>();
+	}
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert_eq!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement), 2);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::Declarator), 2);
+        assert_eq!(parse.diagnostics.len(), 1, "{:?}", parse.diagnostics);
+
+        let ast = AstSourceFile::new(source, &parse);
+        let Declaration::Class(class) = ast.declarations()[0] else {
+            panic!("expected class");
+        };
+        let ClassMember::Method(method) = class.members()[0] else {
+            panic!("expected method");
+        };
+        let local_names = method
+            .local_variables()
+            .iter()
+            .map(|local| local.name().text())
+            .collect::<Vec<_>>();
+        assert_eq!(local_names, vec!["testEntity", "testmap"]);
+    }
+
+    #[test]
+    fn multiline_local_initializer_remains_part_of_its_declaration() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		IEntity testEntity =
+			FindEntity();
+		map<int, string> testmap = new map<int, string>();
+	}
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement), 2);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::Declarator), 2);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::CallExpression), 1);
     }
 
     #[test]

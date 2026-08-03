@@ -7,6 +7,8 @@
 /.cache/
 /coverage/
 /tools/reports/
+/tools/fixtures/workbench-mcp/profile/
+/tools/fixtures/workbench-mcp/project/resourceDatabase.rdb
 
 # Local editor and operating-system state
 /.vs/
@@ -29,3 +31,7 @@ yarn-error.log*
 .env
 .env.*
 !.env.example
+/.codex
+/server/.vscode-test
+/server/target-validation
+/server/.cache

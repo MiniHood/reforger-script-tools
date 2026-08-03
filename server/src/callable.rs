@@ -5,6 +5,118 @@ use crate::lexer::{lex, Operator, TextSpan, TokenKind};
 use crate::syntax::{SyntaxElement, SyntaxKind, SyntaxNode};
 use std::collections::BTreeSet;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BuiltinCallableParameter {
+    pub(crate) name: &'static str,
+    pub(crate) type_and_modifiers: &'static str,
+    pub(crate) default_text: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BuiltinCallableFact {
+    pub(crate) name: &'static str,
+    pub(crate) return_type: &'static str,
+    pub(crate) parameters: &'static [BuiltinCallableParameter],
+}
+
+impl BuiltinCallableFact {
+    pub(crate) fn signature_parts(&self) -> CallableSignatureParts {
+        let parameters_info = self
+            .parameters
+            .iter()
+            .map(|parameter| CallableParameter {
+                raw: parameter.signature_text(),
+                name: parameter.name.to_string(),
+                type_and_modifiers: parameter.type_and_modifiers.to_string(),
+                default_text: parameter.default_text.map(str::to_owned),
+            })
+            .collect::<Vec<_>>();
+        CallableSignatureParts {
+            parameters: parameters_info
+                .iter()
+                .map(|parameter| parameter.raw.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            parameters_info,
+            result: Some(self.return_type.to_string()),
+        }
+    }
+
+    pub(crate) fn signature(&self) -> String {
+        let parts = self.signature_parts();
+        format!("{} {}({})", self.return_type, self.name, parts.parameters)
+    }
+}
+
+impl BuiltinCallableParameter {
+    fn signature_text(&self) -> String {
+        let mut text = format!("{} {}", self.type_and_modifiers, self.name);
+        if let Some(default) = self.default_text {
+            text.push_str(" = ");
+            text.push_str(default);
+        }
+        text
+    }
+}
+
+const ATTRIBUTE_PARAMETERS: &[BuiltinCallableParameter] = &[
+    BuiltinCallableParameter {
+        name: "defvalue",
+        type_and_modifiers: "string",
+        default_text: Some("\"\""),
+    },
+    BuiltinCallableParameter {
+        name: "uiwidget",
+        type_and_modifiers: "string",
+        default_text: Some("\"auto\""),
+    },
+    BuiltinCallableParameter {
+        name: "desc",
+        type_and_modifiers: "string",
+        default_text: Some("\"\""),
+    },
+    BuiltinCallableParameter {
+        name: "params",
+        type_and_modifiers: "string",
+        default_text: Some("\"\""),
+    },
+    BuiltinCallableParameter {
+        name: "enums",
+        type_and_modifiers: "ParamEnumArray",
+        default_text: Some("NULL"),
+    },
+    BuiltinCallableParameter {
+        name: "category",
+        type_and_modifiers: "string",
+        default_text: Some("\"\""),
+    },
+    BuiltinCallableParameter {
+        name: "precision",
+        type_and_modifiers: "int",
+        default_text: Some("3"),
+    },
+    BuiltinCallableParameter {
+        name: "enumType",
+        type_and_modifiers: "typename",
+        default_text: Some("void"),
+    },
+    BuiltinCallableParameter {
+        name: "prefabbed",
+        type_and_modifiers: "bool",
+        default_text: Some("false"),
+    },
+];
+
+const ATTRIBUTE_CALLABLE: BuiltinCallableFact = BuiltinCallableFact {
+    name: "Attribute",
+    return_type: "void",
+    parameters: ATTRIBUTE_PARAMETERS,
+};
+
+pub(crate) fn builtin_callable_fact(name: &str) -> Option<&'static BuiltinCallableFact> {
+    (name == "Attribute").then_some(&ATTRIBUTE_CALLABLE)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CallableSignatureParts {
     pub(crate) parameters: String,
@@ -770,6 +882,31 @@ mod tests {
         assert_eq!(
             parts.parameters_info[0].default_text.as_deref(),
             Some(r#""comma, close ) and \"quote\"""#)
+        );
+    }
+
+    #[test]
+    fn builtin_attribute_signature_and_parameters_share_one_structured_fact() {
+        let fact = builtin_callable_fact("Attribute").unwrap();
+        let parts = fact.signature_parts();
+
+        assert_eq!(
+            fact.signature(),
+            format!("void Attribute({})", parts.parameters)
+        );
+        assert_eq!(parts.parameters_info.len(), 9);
+        assert_eq!(parts.parameters_info[0].name, "defvalue");
+        assert_eq!(
+            parts.parameters_info[0].default_text.as_deref(),
+            Some("\"\"")
+        );
+        assert_eq!(
+            parts.parameters_info[4].type_and_modifiers,
+            "ParamEnumArray"
+        );
+        assert_eq!(
+            parts.parameters_info[8].default_text.as_deref(),
+            Some("false")
         );
     }
 

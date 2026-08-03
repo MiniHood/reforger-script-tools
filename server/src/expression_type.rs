@@ -1218,7 +1218,7 @@ fn enum_member_exists(index: &SymbolIndex, owner: &str, member: &str) -> bool {
     !enum_member_ids_for_owner(index, owner, member).is_empty()
 }
 
-fn enum_member_ids_for_owner(
+pub(crate) fn enum_member_ids_for_owner(
     index: &SymbolIndex,
     owner: &str,
     member: &str,
@@ -1360,7 +1360,7 @@ fn member_result_type_for_exact_owner_with_receiver(
     None
 }
 
-fn matching_members_for_exact_owner(
+pub(crate) fn matching_members_for_exact_owner(
     index: &SymbolIndex,
     owner: &str,
     name: &str,
@@ -1384,11 +1384,11 @@ fn simple_callee_name(expression: Expression<'_, '_>) -> Option<String> {
     Some(text[token.span.start..token.span.end].to_string())
 }
 
-fn is_pseudo_class_member_name(name: &str) -> bool {
+pub(crate) fn is_pseudo_class_member_name(name: &str) -> bool {
     matches!(name, "ClassName" | "IsInherited" | "ToString" | "Type")
 }
 
-fn has_modifier(symbol: &IndexedSymbol, modifier: &str) -> bool {
+pub(crate) fn has_modifier(symbol: &IndexedSymbol, modifier: &str) -> bool {
     symbol.modifiers.iter().any(|value| value == modifier)
 }
 
@@ -1514,25 +1514,22 @@ fn looks_like_numeric_expression(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
-    use crate::model::{SourceFileMetadata, SymbolCatalog};
+    use crate::model::SourceFileMetadata;
     use crate::parser::parse_source;
     use crate::scope::LexicalScopeModel;
+    use crate::semantic_file::SemanticFile;
 
     fn index_for_source(source: &str) -> SymbolIndex {
         let parse = parse_source(source);
-        let ast = AstSourceFile::new(source, &parse);
-        let catalog =
-            SymbolCatalog::from_ast_with_metadata(source, &ast, SourceFileMetadata::unknown());
-        SymbolIndex::from_catalogs([&catalog])
+        let semantic_file = SemanticFile::build(source, &parse);
+        SymbolIndex::from_semantic_files([(&semantic_file, SourceFileMetadata::unknown())])
     }
 
     fn analysis_for_source(source: &str) -> (Parse, SymbolIndex, LexicalScopeModel) {
         let parse = parse_source(source);
-        let ast = AstSourceFile::new(source, &parse);
-        let catalog =
-            SymbolCatalog::from_ast_with_metadata(source, &ast, SourceFileMetadata::unknown());
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let semantic_file = SemanticFile::build(source, &parse);
+        let index =
+            SymbolIndex::from_semantic_files([(&semantic_file, SourceFileMetadata::unknown())]);
         let scope = LexicalScopeModel::from_parse_and_index(&parse, &index);
         (parse, index, scope)
     }

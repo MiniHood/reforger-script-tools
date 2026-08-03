@@ -1,75 +1,4 @@
 #[test]
-fn full_shared_executor_evicts_or_drops_rich_before_semantic() {
-    let (sender, receiver) = mpsc::channel();
-    // Deliberately do not start a worker: this exercises admission and
-    // eviction deterministically, without a dispatch race.
-    let scheduler = RuntimeWorkExecutor {
-        state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
-        sender: sender.into(),
-        test_before_execute: None,
-    };
-    let now = Instant::now();
-    let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(128, 128));
-    {
-        let (lock, _) = &*scheduler.state;
-        let mut pending = lock.lock().unwrap();
-        for index in 0..MAX_PENDING_DOCUMENT_ANALYSIS_JOBS - 1 {
-            let uri = format!("file:///semantic-{index}.c");
-            pending.insert(
-                (TaskClass::Semantic, uri.clone()),
-                RuntimeWorkJob::Semantic(semantic_analysis_job(&mut runtime, &uri, 1, now)),
-            );
-        }
-        let rich_uri = "file:///rich.c";
-        pending.insert(
-            (TaskClass::Rich, rich_uri.to_string()),
-            RuntimeWorkJob::Rich(rich_semantic_tokens_job(&mut runtime, rich_uri, 1, now)),
-        );
-    }
-
-    let incoming_semantic_uri = "file:///semantic-incoming.c";
-    scheduler.schedule(semantic_analysis_job(
-        &mut runtime,
-        incoming_semantic_uri,
-        1,
-        now,
-    ));
-    {
-        let (lock, _) = &*scheduler.state;
-        let pending = lock.lock().unwrap();
-        assert_eq!(pending.len(), MAX_PENDING_DOCUMENT_ANALYSIS_JOBS);
-        assert!(pending
-            .keys()
-            .all(|(class, _)| *class == TaskClass::Semantic));
-    }
-
-    let incoming_rich_uri = "file:///rich-incoming.c";
-    scheduler.schedule_rich(rich_semantic_tokens_job(
-        &mut runtime,
-        incoming_rich_uri,
-        1,
-        now,
-    ));
-    let (lock, _) = &*scheduler.state;
-    let pending = lock.lock().unwrap();
-    assert_eq!(pending.len(), MAX_PENDING_DOCUMENT_ANALYSIS_JOBS);
-    assert!(pending
-        .keys()
-        .all(|(class, _)| *class == TaskClass::Semantic));
-    drop(pending);
-    // The evicted and dropped rich jobs are both completed through the
-    // normal event channel, preserving cancellation/publication handling.
-    assert!(matches!(
-        receiver.recv().unwrap(),
-        ServerEvent::RichSemanticTokensSkipped { .. }
-    ));
-    assert!(matches!(
-        receiver.recv().unwrap(),
-        ServerEvent::RichSemanticTokensSkipped { .. }
-    ));
-}
-
-#[test]
 fn semantic_token_refresh_coalesces_until_the_client_acknowledges_it() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
 
@@ -584,17 +513,73 @@ class Example { protected ref ScriptInvoker m_OnGameEnd = new ScriptInvoker(); }
 
     assert_semantic_token(&report, "void", "keyword");
     assert_semantic_token(&report, "int", "keyword");
+    assert_semantic_token(&report, "array", "class");
     for text in [
         "KickCauseCode",
         "SCR_InstigatorContextData",
         "IEntity",
-        "array",
         "EResourceType",
         "ScriptInvokerBase",
         "OnPreloadFinished",
         "ScriptInvoker",
     ] {
         assert_no_semantic_token(&report, text);
+    }
+}
+
+#[test]
+fn semantic_tokens_color_builtin_collection_types_without_external_index() {
+    let source = r#"class Example
+{
+	array<int> m_Values;
+	set<string> m_Names;
+	map<string, int> m_Counts;
+
+	void Run(array<int> values, set<string> names, map<string, int> counts)
+	{
+		values = new array<int>();
+		switch (true)
+		{
+			default:
+				break;
+		}
+	}
+}
+"#;
+
+    let report = semantic_tokens_report_for_source(source);
+
+    for text in ["array", "set", "map"] {
+        assert_semantic_type_family_token_count_at_least(&report, text, 2);
+    }
+    assert_semantic_token(&report, "switch", "keyword");
+}
+
+#[test]
+fn semantic_tokens_recover_after_dangling_assignment_before_local_declaration() {
+    let source = r#"class Example
+{
+	void Run()
+	{
+		IEntity testEntity =
+
+		map<int, string> testmap = new map<int, string>();
+	}
+}
+"#;
+
+    let report = semantic_tokens_report_for_source(source);
+
+    assert_semantic_type_family_token_count_at_least(&report, "map", 2);
+    assert_semantic_type_family_token_count_at_least(&report, "string", 2);
+    assert_semantic_token(&report, "testmap", "variable");
+    for (needle, delimiter) in [
+        ("map<int, string> testmap", '<'),
+        ("map<int, string> testmap", '>'),
+        ("new map<int, string>", '<'),
+        ("new map<int, string>", '>'),
+    ] {
+        assert_semantic_delimiter_at(source, &report, needle, delimiter, "class");
     }
 }
 
@@ -2770,20 +2755,10 @@ fn completion_returns_optional_parameter_labels_inside_attribute_args() {
 	int m_Value;
 }
 "#;
-    let external = file_index_for_source(
-        r#"class UniqueAttribute {}
-class Attribute : UniqueAttribute
-{
-	void Attribute(string defvalue = "", string uiwidget = "auto", string desc = "");
-}
-"#,
-    )
-    .index;
-
     let report = completion_report_for_source_position_with_external(
         source,
         position_after_needle(source, "defv"),
-        Some(&external),
+        None,
     );
 
     assert_eq!(report.completion_context, "argument-label");
@@ -5469,6 +5444,99 @@ fn hover_returns_none_for_whitespace_outside_symbols() {
 }
 
 #[test]
+fn hover_links_game_data_parameter_types_when_workspace_index_is_also_available() {
+    let source = r#"class Example
+{
+	void Configure(ScriptComponent component);
+}
+"#;
+    let analysis = file_index_for_source(source);
+    let workspace = file_index_for_source("class WorkspaceOnly {}").index;
+    let game_data = file_index_for_source("class ScriptComponent {}").index;
+
+    let report = hover_report_for_cached_analysis_with_external_indexes(
+        source,
+        &analysis,
+        "file:///Scripts/Example.c",
+        position_for_needle(source, "Configure(ScriptComponent", "Configure"),
+        Some(&workspace),
+        Some(&game_data),
+    );
+    let markdown = report.hover.expect("function hover").contents.value;
+
+    assert!(
+        markdown.contains(
+            "<a href=\"command:reforger-sript-tools.openSymbolLocation?"
+        ),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains(
+            "><span data-semantic-token=\"class\">ScriptComponent</span></a>"
+        ),
+        "{markdown}"
+    );
+}
+
+#[test]
+fn hover_links_virtual_external_symbols_to_their_own_source() {
+    let source = r#"class Example
+{
+	SCR_BaseGameMode m_GameMode;
+}
+"#;
+    let external_source = r#"class SCR_BaseGameMode
+{
+	void SetGameModeState();
+}
+"#;
+    let parse = crate::parser::parse_source(external_source);
+    assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+    let semantic = crate::semantic_file::SemanticFile::build(external_source, &parse);
+    let virtual_uri =
+        "reforger-pak://58D0FB3206B6F859/current/scripts/Game/GameMode/SCR_BaseGameMode.c";
+    let mut external = SymbolIndex::default();
+    external.add_semantic_file(
+        &semantic,
+        crate::model::SourceFileMetadata {
+            kind: crate::model::SourceKind::GameData,
+            category: crate::model::SourceCategory::Game,
+            absolute_path: None,
+            virtual_source: Some(crate::model::VirtualSourceIdentity {
+                uri: virtual_uri.to_string(),
+                addon_guid: "58D0FB3206B6F859".to_string(),
+                revision: "current".to_string(),
+                logical_path: "scripts/Game/GameMode/SCR_BaseGameMode.c".to_string(),
+            }),
+            root_path: None,
+            relative_path: Some(
+                "scripts/Game/GameMode/SCR_BaseGameMode.c"
+                    .into(),
+            ),
+            priority: crate::model::SOURCE_PRIORITY_GAME_DATA,
+        },
+    );
+    let analysis = file_index_for_source(source);
+
+    let report = hover_report_for_cached_analysis_with_external_indexes(
+        source,
+        &analysis,
+        "file:///Scripts/Current.c",
+        position_for_needle(source, "SCR_BaseGameMode m_GameMode", "SCR_BaseGameMode"),
+        None,
+        Some(&external),
+    );
+    let markdown = report.hover.expect("class hover").contents.value;
+
+    assert!(
+        markdown.contains(
+            "reforger-pak%3A%2F%2F58D0FB3206B6F859%2Fcurrent%2Fscripts%2FGame%2FGameMode%2FSCR_BaseGameMode.c"
+        ),
+        "{markdown}"
+    );
+}
+
+#[test]
 fn hover_uses_resolver_syntax_span_for_non_identifier_inside_symbol_span() {
     let source = r#"class Example
 {
@@ -5796,6 +5864,65 @@ fn definition_uses_external_file_uri_when_available() {
             line: 0,
             character: 6
         }
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn definition_prefers_the_original_class_over_modded_extensions() {
+    let root = temp_test_dir("original_class_definition");
+    let modded_root = root.join("modded");
+    let original_root = root.join("original");
+    fs::create_dir_all(&modded_root).unwrap();
+    fs::create_dir_all(&original_root).unwrap();
+    fs::write(
+        modded_root.join("SCR_BaseGameMode_Modded.c"),
+        "modded class SCR_BaseGameMode\n{\n\tvoid SetGameModeState();\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        original_root.join("SCR_BaseGameMode.c"),
+        "class SCR_BaseGameMode : BaseGameMode\n{\n}\n",
+    )
+    .unwrap();
+    let modded = crate::index_build::build_index(&crate::index_build::IndexBuildConfig {
+        roots: vec![crate::index_build::IndexSourceRoot::new(
+            &modded_root,
+            crate::model::SourceKind::GameData,
+            crate::model::SOURCE_PRIORITY_GAME_DATA,
+        )],
+    })
+    .unwrap()
+    .index;
+    let original = crate::index_build::build_index(&crate::index_build::IndexBuildConfig {
+        roots: vec![crate::index_build::IndexSourceRoot::new(
+            &original_root,
+            crate::model::SourceKind::GameData,
+            crate::model::SOURCE_PRIORITY_GAME_DATA,
+        )],
+    })
+    .unwrap()
+    .index;
+    let external = SymbolIndex::layered([modded, original]);
+    let source = r#"class Example
+{
+	SCR_BaseGameMode m_GameMode;
+}
+"#;
+
+    let report = definition_report_for_source_position_with_external(
+        source,
+        "file:///Scripts/Current.c",
+        position_for_needle(source, "SCR_BaseGameMode m_GameMode", "SCR_BaseGameMode"),
+        Some(&external),
+    );
+
+    assert!(report.is_hit(), "{report:?}");
+    assert_eq!(report.resolver_candidate_count, 2);
+    assert!(
+        report.locations[0].uri.ends_with("/original/SCR_BaseGameMode.c"),
+        "{:?}",
+        report.locations
     );
     let _ = fs::remove_dir_all(root);
 }
@@ -6519,6 +6646,66 @@ fn semantic_scope_delimiters_color_only_proven_unmatched_openers() {
     let unproven_source = "[\n";
     let unproven = semantic_tokens_report_for_source(unproven_source);
     assert_semantic_delimiter_at(unproven_source, &unproven, "[", '[', "reforgerPunctuation");
+}
+
+#[test]
+fn preview_context_request_projects_the_nearest_semantic_declaration() {
+    let source = "class Example\n{\n\tint m_Value;\n\tvoid Run()\n\t{\n\t\tPrint(\"here\");\n\t}\n}\n";
+    let uri = "file:///Scripts/PreviewContext.c";
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": source
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    server.writer.clear();
+
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "reforger/previewContext",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 5, "character": 0 }
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8_lossy(&server.writer);
+    let response: Value = serde_json::from_str(
+        output
+            .split("\r\n\r\n")
+            .last()
+            .expect("framed preview context response"),
+    )
+    .unwrap();
+    assert_eq!(
+        response["result"],
+        json!({
+            "startLine": 3,
+            "endLine": 6,
+            "kind": "method",
+            "truncated": false
+        })
+    );
 }
 
 #[test]

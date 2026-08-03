@@ -9,13 +9,12 @@ use super::{
     signature_help_debug_markdown, signature_help_report_for_cached_analysis_with_external_indexes,
     BracketColoringMode, ExternalIndexSnapshot, ExternalIndexStatusSummary, FileIndexAnalysis,
     FileIndexAnalysisTimings, LspPosition, DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD,
-    FOREGROUND_RUNTIME_WORKERS, MAX_BACKGROUND_RUNTIME_WORKERS, MAX_PENDING_DOCUMENT_ANALYSIS_JOBS,
+    FOREGROUND_RUNTIME_WORKERS, MAX_BACKGROUND_RUNTIME_WORKERS,
 };
 use crate::analysis_runtime::{AnalysisTask, PositionIndex, TaskClass, TaskIdentity};
 use crate::lexer::{lex, Token};
 use crate::parser::parse_source;
 use serde_json::Value;
-use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
@@ -157,13 +156,6 @@ impl DebugRequestJob {
         match self {
             Self::Hover(job) => &job.task,
             Self::Completion(job) => &job.task,
-        }
-    }
-
-    pub(super) fn scheduled_at(&self) -> Instant {
-        match self {
-            Self::Hover(job) => job.scheduled_at,
-            Self::Completion(job) => job.scheduled_at,
         }
     }
 
@@ -345,22 +337,6 @@ impl RuntimeWorkJob {
             Self::Debug(job) => job.task(),
         }
     }
-
-    pub(super) fn scheduled_at(&self) -> Instant {
-        match self {
-            Self::Foreground(job) => job.scheduled_at,
-            Self::Semantic(job) => job.scheduled_at,
-            Self::Rich(job) => job.scheduled_at,
-            Self::Debug(job) => job.scheduled_at(),
-        }
-    }
-
-    pub(super) fn due_at(&self) -> Instant {
-        // Every job is immediately runnable once admitted. Foreground work
-        // still wins through task-class priority and reserved capacity, while
-        // latest-wins cancellation suppresses obsolete background results.
-        self.scheduled_at()
-    }
 }
 
 impl RuntimeWorkExecutor {
@@ -436,38 +412,10 @@ impl RuntimeWorkExecutor {
             job.task().identity().class(),
             job.task().identity().uri().to_string(),
         );
-        if !pending.contains_key(&key) && pending.len() >= MAX_PENDING_DOCUMENT_ANALYSIS_JOBS {
-            // A higher-priority incoming job may displace only equal- or
-            // lower-priority queued work. Foreground edits therefore retain a
-            // path to their reserved worker while rich/debug work remains
-            // best-effort.
-            let eviction = pending
-                .iter()
-                .filter(|((class, _), _)| *class >= key.0)
-                .min_by_key(|((class, uri), job)| {
-                    (Reverse(*class), job.scheduled_at(), uri.as_str())
-                })
-                .map(|(key, _)| key.clone());
-            if let Some(evicted_key) = eviction {
-                let evicted = pending
-                    .remove(&evicted_key)
-                    .expect("selected pending job exists");
-                evicted.task().cancel();
-                self.send_skipped(evicted, "scheduler-capacity-evicted");
-            } else {
-                let reason = match key.0 {
-                    TaskClass::Foreground => "scheduler-capacity-dropped-foreground",
-                    TaskClass::Semantic => "scheduler-capacity-dropped-semantic",
-                    TaskClass::Rich => "scheduler-capacity-dropped-rich",
-                };
-                self.send_skipped(job, reason);
-                return;
-            }
-        }
-        if let Some(previous) = pending.insert(key, job) {
-            previous.task().cancel();
-            self.send_skipped(previous, "superseded-before-dispatch");
-        }
+        // AnalysisRuntime already owns replacement, cancellation, and
+        // retained-work capacity. Replacing a queued key only removes a task
+        // that the runtime has already made ineligible for publication.
+        pending.insert(key, job);
         // Workers serve disjoint lanes. A single wake-up can choose the wrong
         // idle lane, so every newly admitted job wakes both fixed workers.
         wake.notify_all();
@@ -478,19 +426,11 @@ impl RuntimeWorkExecutor {
         loop {
             let mut pending = lock.lock().unwrap();
             let key = loop {
-                let now = Instant::now();
-                if let Some(key) = next_runnable_work_key_for_lane(&pending, now, lane) {
+                if let Some(key) = next_runnable_work_key_for_lane(&pending, lane) {
                     break key;
                 }
                 pending = wake.wait(pending).unwrap();
             };
-            let due_at = pending[&key].due_at();
-            let now = Instant::now();
-            if now < due_at {
-                let (pending_after_wait, _) = wake.wait_timeout(pending, due_at - now).unwrap();
-                pending = pending_after_wait;
-                continue;
-            }
             let Some(job) = pending.remove(&key) else {
                 continue;
             };
@@ -665,37 +605,26 @@ impl RuntimeWorkExecutor {
     }
 }
 
-// Compatibility name for focused scheduler tests. Production only constructs
-// `RuntimeWorkExecutor`; the former semantic-only worker no longer exists.
-#[cfg(test)]
-pub(super) type OpenDocumentAnalysisScheduler = RuntimeWorkExecutor;
-
 #[cfg(test)]
 pub(super) fn next_runnable_work_key(
     pending: &BTreeMap<(TaskClass, String), RuntimeWorkJob>,
-    now: Instant,
 ) -> Option<(TaskClass, String)> {
-    next_runnable_work_key_for_lane(pending, now, RuntimeWorkerLane::Background)
+    next_runnable_work_key_for_lane(pending, RuntimeWorkerLane::Background)
 }
 
 pub(super) fn next_runnable_work_key_for_lane(
     pending: &BTreeMap<(TaskClass, String), RuntimeWorkJob>,
-    now: Instant,
     lane: RuntimeWorkerLane,
 ) -> Option<(TaskClass, String)> {
     let idle_background = lane == RuntimeWorkerLane::ForegroundWithIdleBackground
         && !pending
             .iter()
-            .any(|((class, _), job)| *class == TaskClass::Foreground && job.due_at() <= now);
+            .any(|((class, _), _)| *class == TaskClass::Foreground);
     pending
         .iter()
         .filter(|((class, _), _)| {
             lane.accepts(*class) || (idle_background && *class != TaskClass::Foreground)
         })
-        .min_by_key(|((class, uri), job)| {
-            // A ready higher-priority class always runs first. Until it is
-            // ready, an older lower-priority job may use the idle worker.
-            (job.due_at() > now, *class, job.due_at(), uri.as_str())
-        })
+        .min_by_key(|((class, uri), _)| (*class, uri.as_str()))
         .map(|(key, _)| key.clone())
 }

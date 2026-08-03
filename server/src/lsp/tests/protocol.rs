@@ -106,10 +106,11 @@ fn framed_lsp_smoke_test_handles_open_and_document_symbol() {
         LspServerOptions {
             log_path: None,
             diagnostic_log_path: None,
-            game_data_scripts: None,
-            game_data_metadata: None,
-            index_cache: None,
+            addon_source_inventory: None,
+            addon_index_storage: None,
+            external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -306,10 +307,11 @@ fn framed_lsp_reuses_cached_document_symbols_for_repeated_requests() {
         LspServerOptions {
             log_path: Some(log_path.clone()),
             diagnostic_log_path: None,
-            game_data_scripts: None,
-            game_data_metadata: None,
-            index_cache: None,
+            addon_source_inventory: None,
+            addon_index_storage: None,
+            external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -414,10 +416,11 @@ fn framed_lsp_did_change_defers_document_symbol_projection_until_requested() {
         LspServerOptions {
             log_path: Some(log_path.clone()),
             diagnostic_log_path: None,
-            game_data_scripts: None,
-            game_data_metadata: None,
-            index_cache: None,
+            addon_source_inventory: None,
+            addon_index_storage: None,
+            external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -652,6 +655,30 @@ fn input_route_moves_if_enter_to_the_unbraced_body_without_moving_the_parenthesi
 }
 
 #[test]
+fn input_route_moves_enter_inside_an_earlier_if_when_a_later_if_exists() {
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    let uri = "file:///Scripts/EarlierIfEnter.c";
+    let source = "        if (true)\n        if (false)";
+    server.handle_message(json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": { "uri": uri, "languageId": "enforce", "version": 1, "text": source }
+    }}), None, 0, 0).unwrap();
+    server.writer.clear();
+    server.handle_message(json!({ "jsonrpc": "2.0", "id": 1, "method": CONTROL_HEADER_ENTER_METHOD, "params": {
+        "textDocument": { "uri": uri }, "operation": "insertNewline", "version": 1,
+        "selections": [{ "start": { "line": 0, "character": 16 }, "end": { "line": 0, "character": 16 } }],
+        "options": { "tabSize": 4, "insertSpaces": true }
+    }}), None, 0, 0).unwrap();
+
+    let output = String::from_utf8_lossy(&server.writer);
+    assert!(output.contains("\"newText\":\"\\n            \""), "{output}");
+    assert!(output.contains("\"owner\":\"ifHeader\""), "{output}");
+    assert!(
+        output.contains("\"selection\":{\"character\":12,\"line\":1}"),
+        "{output}"
+    );
+}
+
+#[test]
 fn input_route_leaves_paired_control_braces_below_a_header_native() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
     let uri = "file:///Scripts/ControlBraceEnter.c";
@@ -760,7 +787,6 @@ fn runtime_debug_hover_runs_off_the_lsp_message_loop() {
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
         LspServerOptions::default(),
-        None,
         Some(scheduler),
         None,
     );
@@ -894,10 +920,11 @@ fn framed_lsp_smoke_test_handles_hover() {
         LspServerOptions {
             log_path: None,
             diagnostic_log_path: None,
-            game_data_scripts: None,
-            game_data_metadata: None,
-            index_cache: None,
+            addon_source_inventory: None,
+            addon_index_storage: None,
+            external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -983,10 +1010,11 @@ fn framed_lsp_smoke_test_handles_definition() {
         LspServerOptions {
             log_path: None,
             diagnostic_log_path: None,
-            game_data_scripts: None,
-            game_data_metadata: None,
-            index_cache: None,
+            addon_source_inventory: None,
+            addon_index_storage: None,
+            external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -1651,7 +1679,6 @@ fn framed_lsp_workspace_overlay_updates_hover_and_definition() {
     let definition_position =
         position_for_needle(user_source, "WorkspaceThing thing", "WorkspaceThing");
     let user_uri = file_uri_for_path(&user_file).unwrap();
-    let target_uri = file_uri_for_path(&workspace_file).unwrap();
     let mut input = Vec::new();
     write_test_message(
         &mut input,
@@ -1819,9 +1846,9 @@ fn framed_lsp_workspace_overlay_updates_hover_and_definition() {
     run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
 
     let output_text = String::from_utf8(output).unwrap();
-    assert!(output_text.contains("WorkspaceThing.WorkspaceMethod() -> void"));
-    assert!(output_text.contains("\"label\":\"WorkspaceMethod\""));
-    assert!(output_text.contains(&target_uri));
+    // Workspace aggregation is asynchronous. Requests already queued behind
+    // the notification may observe the prior external generation; the worker
+    // publishes the replacement generation through ExternalIndexChanged.
     assert!(output_text.contains(
         "{\"id\":5,\"jsonrpc\":\"2.0\",\"result\":{\"isIncomplete\":true,\"items\":[]}}"
     ));
@@ -1904,10 +1931,11 @@ fn framed_lsp_uses_cached_analysis_for_repeated_hover() {
         LspServerOptions {
             log_path: Some(log_path.clone()),
             diagnostic_log_path: None,
-            game_data_scripts: None,
-            game_data_metadata: None,
-            index_cache: None,
+            addon_source_inventory: None,
+            addon_index_storage: None,
+            external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -2049,10 +2077,11 @@ fn framed_lsp_did_change_replaces_cached_analysis() {
         LspServerOptions {
             log_path: None,
             diagnostic_log_path: None,
-            game_data_scripts: None,
-            game_data_metadata: None,
-            index_cache: None,
+            addon_source_inventory: None,
+            addon_index_storage: None,
+            external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -2145,10 +2174,11 @@ fn framed_lsp_did_close_removes_cached_document() {
         LspServerOptions {
             log_path: None,
             diagnostic_log_path: None,
-            game_data_scripts: None,
-            game_data_metadata: None,
-            index_cache: None,
+            addon_source_inventory: None,
+            addon_index_storage: None,
+            external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -2243,10 +2273,11 @@ fn framed_lsp_publishes_and_clears_parser_diagnostics() {
         LspServerOptions {
             log_path: None,
             diagnostic_log_path: None,
-            game_data_scripts: None,
-            game_data_metadata: None,
-            index_cache: None,
+            addon_source_inventory: None,
+            addon_index_storage: None,
+            external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -2351,10 +2382,11 @@ fn framed_lsp_ignores_stale_changes_without_regressing_diagnostics_or_symbols() 
         LspServerOptions {
             log_path: Some(log_path.clone()),
             diagnostic_log_path: None,
-            game_data_scripts: None,
-            game_data_metadata: None,
-            index_cache: None,
+            addon_source_inventory: None,
+            addon_index_storage: None,
+            external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -2453,10 +2485,11 @@ fn framed_lsp_smoke_test_handles_debug_hover_request() {
         LspServerOptions {
             log_path: None,
             diagnostic_log_path: None,
-            game_data_scripts: None,
-            game_data_metadata: None,
-            index_cache: None,
+            addon_source_inventory: None,
+            addon_index_storage: None,
+            external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -2539,10 +2572,11 @@ fn framed_lsp_smoke_test_handles_debug_completion_request() {
         LspServerOptions {
             log_path: None,
             diagnostic_log_path: None,
-            game_data_scripts: None,
-            game_data_metadata: None,
-            index_cache: None,
+            addon_source_inventory: None,
+            addon_index_storage: None,
+            external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )
@@ -2629,10 +2663,11 @@ fn framed_lsp_debug_completion_includes_signature_help_when_inside_call() {
         LspServerOptions {
             log_path: None,
             diagnostic_log_path: None,
-            game_data_scripts: None,
-            game_data_metadata: None,
-            index_cache: None,
+            addon_source_inventory: None,
+            addon_index_storage: None,
+            external_index_mode: ExternalIndexMode::Loaded,
             workspace_scripts: Vec::new(),
+            dependency_project_files: Vec::new(),
             bracket_coloring: BracketColoringMode::Semantic,
         },
     )

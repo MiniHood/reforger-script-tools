@@ -251,15 +251,15 @@ fn rename_analysis_without_target(reason: impl Into<String>) -> FileLocalRenameA
 mod tests {
     use super::*;
     use crate::index::SymbolIndex;
-    use crate::model::{SourceFileMetadata, SymbolCatalog, SymbolKind};
+    use crate::model::{SourceFileMetadata, SymbolKind};
     use crate::parser::parse_source;
+    use crate::semantic_file::SemanticFile;
 
     fn analysis(source: &str) -> (Parse, SymbolIndex, LexicalScopeModel) {
         let parse = parse_source(source);
-        let ast = crate::ast::AstSourceFile::new(source, &parse);
-        let catalog =
-            SymbolCatalog::from_ast_with_metadata(source, &ast, SourceFileMetadata::unknown());
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let semantic_file = SemanticFile::build(source, &parse);
+        let index =
+            SymbolIndex::from_semantic_files([(&semantic_file, SourceFileMetadata::unknown())]);
         let scope = LexicalScopeModel::from_parse_and_index(&parse, &index);
         (parse, index, scope)
     }

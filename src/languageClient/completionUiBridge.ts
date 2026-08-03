@@ -9,14 +9,8 @@ let pendingSnippetSuggestTransaction: SnippetSuggestTransaction | undefined;
 let pendingEmptyCompletionRefresh: EmptyCompletionRefresh | undefined;
 let pendingIfSpaceCommit: IfSpaceCommit | undefined;
 let latestEditorDocumentChange: EditorDocumentChange | undefined;
-const completionLifecycleTraceLimit = 80;
-const completionLifecycleTrace: CompletionLifecycleTraceEvent[] = [];
 const completionPresentationObservations = new Map<string, CompletionPresentationObservation>();
-
-// TEMPORARY: release-gated forensic trace for the RplRpc multi-placeholder
-// bridge. OpenSpec task 3.3 tracks removing this once live editor behavior is
-// proven. It records only counts, lengths, and state transitions.
-const snippetSuggestTraceVersion = 3;
+const completionRequestPositions = new Map<string, { line: number; character: number }>();
 const maxSnippetSuggestSelectionProbes = 8;
 
 interface SnippetSuggestTransaction {
@@ -56,12 +50,6 @@ interface EditorDocumentChange {
 	hasDeletion: boolean;
 }
 
-interface CompletionLifecycleTraceEvent {
-	documentUri: string;
-	event: string;
-	fields: Record<string, string | number | boolean | undefined>;
-}
-
 interface CompletionPresentationObservation {
 	requestVersion: number;
 	responseVersion: number;
@@ -75,16 +63,6 @@ function registerEmptyCompletionRefresh(): vscode.Disposable {
 	return vscode.workspace.onDidChangeTextDocument(event => {
 		const documentUri = event.document.uri.toString();
 		const hasDeletion = event.contentChanges.some(change => change.rangeLength > change.text.length);
-		if (event.document.languageId === languageClientLanguage.id) {
-			recordCompletionLifecycle(documentUri, 'documentChange', {
-				version: event.document.version,
-				changeCount: event.contentChanges.length,
-				hasDeletion,
-				insertedCharacters: event.contentChanges.reduce((total, change) => total + change.text.length, 0),
-				deletedCharacters: event.contentChanges.reduce((total, change) => total + change.rangeLength, 0),
-				activeDocument: isActiveEnforceDocument(event.document),
-			});
-		}
 		latestEditorDocumentChange = {
 			documentUri,
 			version: event.document.version,
@@ -97,9 +75,6 @@ function registerEmptyCompletionRefresh(): vscode.Disposable {
 		}
 		pendingEmptyCompletionRefresh = undefined;
 		if (!hasDeletion || !isActiveEnforceDocument(event.document)) {
-			recordCompletionLifecycle(documentUri, 'emptyRefreshCancelled', {
-				reason: hasDeletion ? 'inactiveDocument' : 'nonDeletion',
-			});
 			diagnostic('completion.emptyRefresh.cancelled', {
 				reason: hasDeletion ? 'inactiveDocument' : 'nonDeletion',
 			});
@@ -131,7 +106,6 @@ function armEmptyCompletionRefresh(
 		return;
 	}
 	pendingEmptyCompletionRefresh = { documentUri, requestVersion };
-	recordCompletionLifecycle(documentUri, 'emptyRefreshArmed', { requestVersion });
 	diagnostic('completion.emptyRefresh.armed', { requestVersion });
 }
 
@@ -145,39 +119,23 @@ function isRefreshableEmptyCompletion(
 		&& result.isIncomplete === true;
 }
 
-function recordCompletionLifecycle(
-	documentUri: string,
-	event: string,
-	fields: Record<string, string | number | boolean | undefined>,
-): void {
-	completionLifecycleTrace.push({ documentUri, event, fields });
-	if (completionLifecycleTrace.length > completionLifecycleTraceLimit) {
-		completionLifecycleTrace.shift();
-	}
-	diagnostic(`completion.lifecycle.${event}`, fields);
-}
-
 function isActiveEnforceDocument(document: vscode.TextDocument): boolean {
 	return document.languageId === languageClientLanguage.id
 		&& vscode.window.activeTextEditor?.document.uri.toString() === document.uri.toString();
 }
 
 function dispatchEmptyCompletionRefresh(document: vscode.TextDocument, source: 'deletion' | 'staleEmptyResponseAfterDeletion'): void {
-	recordCompletionLifecycle(document.uri.toString(), 'emptyRefreshDispatchRequested', { source });
 	diagnostic('completion.emptyRefresh.dispatched', { source });
 	queueMicrotask(() => {
 		if (!isActiveEnforceDocument(document)) {
-			recordCompletionLifecycle(document.uri.toString(), 'emptyRefreshCancelled', { reason: 'activeEditorChanged' });
 			diagnostic('completion.emptyRefresh.cancelled', { reason: 'activeEditorChanged' });
 			return;
 		}
 		void vscode.commands.executeCommand('editor.action.triggerSuggest').then(
 			() => {
-				recordCompletionLifecycle(document.uri.toString(), 'emptyRefreshSuggestDispatched', { source });
 				diagnostic('completion.emptyRefresh.suggestDispatched', { source });
 			},
 			() => {
-				recordCompletionLifecycle(document.uri.toString(), 'emptyRefreshSuggestDispatchError', { source });
 				diagnostic('completion.emptyRefresh.suggestDispatchError', { source });
 			},
 		);
@@ -192,7 +150,6 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 		? expectedSelectionTexts.slice(0, -1)
 		: expectedSelectionTexts;
 	diagnostic('completion.transaction.commandReceived', {
-		traceVersion: snippetSuggestTraceVersion,
 		placeholderCount: placeholderArguments.length,
 		finalTabstop,
 	});
@@ -295,7 +252,6 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 	resetSnippetSuggestTransactionTimeout(pendingSnippetSuggestTransaction, 'placeholderNotObserved');
 	diagnostic('completion.transaction.armed', {
 		transactionId: id,
-		traceVersion: snippetSuggestTraceVersion,
 		placeholderCount: expectedSelectionTextSequence.length,
 	});
 	// An empty tabstop can be published after the completion command can run.
@@ -630,29 +586,6 @@ function clearSnippetSuggestTransaction(expectedId?: number): void {
 	pendingSnippetSuggestTransaction = undefined;
 }
 
-export function completionLifecycleTraceForDocument(documentUri: string): string {
-	const events = completionLifecycleTrace.filter(event => event.documentUri === documentUri);
-	const lines = [
-		'## Extension Completion Lifecycle Trace (temporary)',
-		'',
-		'Bounded to the latest 80 Enforce events in this extension host. It records no source text, cursor text, or completion payloads.',
-		'',
-	];
-	if (events.length === 0) {
-		lines.push('No lifecycle events were captured for this document.');
-		return lines.join('\n');
-	}
-	lines.push('| Event | Fields |', '| --- | --- |');
-	for (const event of events) {
-		const fields = Object.entries(event.fields)
-			.filter(([, value]) => value !== undefined)
-			.map(([key, value]) => `${key}=${String(value)}`)
-			.join(', ');
-		lines.push(`| ${event.event} | ${fields || '<none>'} |`);
-	}
-	return lines.join('\n');
-}
-
 /** Diagnostic-only snapshot of the latest completion result handed to VS Code's suggest pipeline. */
 export function completionPresentationObservationForDocument(documentUri: string): string {
 	const observation = completionPresentationObservations.get(documentUri);
@@ -686,20 +619,16 @@ export function completionPresentationObservationForDocument(documentUri: string
 export const completionUiMiddlewareCallbacks: CompletionMiddlewareCallbacks = {
 	begin: (document, position, triggerKind) => {
 		const transaction = pendingSnippetSuggestTransaction;
-		recordCompletionLifecycle(document.uri.toString(), 'request', {
-			requestVersion: document.version,
+		completionRequestPositions.set(document.uri.toString(), {
 			line: position.line,
 			character: position.character,
-			triggerKind,
 		});
 		return { transactionId: transaction?.documentUri === document.uri.toString() && transaction.awaitingCompletionResponse ? transaction.id : undefined };
 	},
 	respond: (document, triggerKind, requestVersion, transactionId, result, elapsedMs) => {
-		const latestRequest = [...completionLifecycleTrace]
-			.reverse()
-			.find(event => event.documentUri === document.uri.toString() && event.event === 'request');
-		const line = typeof latestRequest?.fields.line === 'number' ? latestRequest.fields.line : -1;
-		const character = typeof latestRequest?.fields.character === 'number' ? latestRequest.fields.character : -1;
+		const latestRequest = completionRequestPositions.get(document.uri.toString());
+		const line = latestRequest?.line ?? -1;
+		const character = latestRequest?.character ?? -1;
 		const items = completionPresentationItems(result);
 		completionPresentationObservations.set(document.uri.toString(), {
 			requestVersion,
@@ -709,7 +638,6 @@ export const completionUiMiddlewareCallbacks: CompletionMiddlewareCallbacks = {
 			triggerKind,
 			items,
 		});
-		recordCompletionLifecycle(document.uri.toString(), 'response', { requestVersion, currentVersion: document.version, triggerKind, itemCount: completionItemCount(result), isIncomplete: isCompletionListIncomplete(result), elapsedMs, ...completionPresentationMetadata(result) });
 		armEmptyCompletionRefresh(document, requestVersion, result);
 		const transaction = pendingSnippetSuggestTransaction;
 		if (transaction && transaction.id === transactionId && transaction.documentUri === document.uri.toString() && transaction.awaitingCompletionResponse) {
@@ -719,7 +647,6 @@ export const completionUiMiddlewareCallbacks: CompletionMiddlewareCallbacks = {
 		}
 	},
 	fail: (document, triggerKind, requestVersion, transactionId, elapsedMs) => {
-		recordCompletionLifecycle(document.uri.toString(), 'responseError', { requestVersion, triggerKind, elapsedMs });
 		const transaction = pendingSnippetSuggestTransaction;
 		if (transaction && transaction.id === transactionId && transaction.documentUri === document.uri.toString() && transaction.awaitingCompletionResponse) {
 			diagnostic('completion.transaction.responseError', { transactionId: transaction.id, triggerKind, elapsedMs });

@@ -1,4 +1,8 @@
-use crate::index::{CompletionMemberLookup, GlobalSymbolId, IndexedConditionalBranch, SymbolIndex};
+use crate::callable::{CallableParameter, CallableSignatureParts};
+use crate::index::{
+    parameter_signature_text, CompletionMemberLookup, GlobalSymbolId, IndexedConditionalBranch,
+    SymbolIndex,
+};
 use crate::lexer::TextSpan;
 use crate::model::{CallableForm, SourceCategory, SourceKind, SymbolKind};
 use crate::symbol_display::{SymbolDisplay, SymbolDisplayInfo};
@@ -25,6 +29,7 @@ pub struct EditorCompletionCandidate {
     pub detail: Option<String>,
     pub signature: Option<String>,
     pub constructor_signature: Option<String>,
+    pub(crate) callable_signature_parts: Option<CallableSignatureParts>,
     pub span: TextSpan,
     pub selection_span: TextSpan,
     pub source_kind: SourceKind,
@@ -154,8 +159,7 @@ impl<'index> IndexQuery<'index> {
     pub fn completion_preprocessor_macros(&self, prefix: &str) -> Vec<EditorCompletionCandidate> {
         let mut candidates = self
             .index
-            .symbols()
-            .iter()
+            .symbol_iter()
             .filter(|symbol| symbol.kind == SymbolKind::PreprocessorMacro)
             .filter(|symbol| {
                 symbol
@@ -236,7 +240,7 @@ impl<'index> IndexQuery<'index> {
         ids: impl IntoIterator<Item = GlobalSymbolId>,
         limit: usize,
     ) -> Vec<EditorCompletionCandidate> {
-        let mut ids_by_key = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
+        let mut ids_by_key = ahash::AHashMap::<String, Vec<GlobalSymbolId>>::new();
 
         for id in ids {
             let Some(symbol) = self.index.symbol(id) else {
@@ -264,37 +268,54 @@ impl<'index> IndexQuery<'index> {
         }
 
         // Rank the cheap indexed facts first so doc-rich editor displays are built
-        // only for candidates that can survive the completion cap.
-        preferred_ids.sort_by(|left, right| {
-            let left_symbol = self.index.symbol(*left);
-            let right_symbol = self.index.symbol(*right);
-            let left_name = left_symbol
-                .and_then(|symbol| symbol.name.as_deref())
-                .unwrap_or("");
-            let right_name = right_symbol
-                .and_then(|symbol| symbol.name.as_deref())
-                .unwrap_or("");
-            let left_kind = left_symbol
-                .map(|symbol| symbol.kind)
-                .unwrap_or(SymbolKind::Class);
-            let right_kind = right_symbol
-                .map(|symbol| symbol.kind)
-                .unwrap_or(SymbolKind::Class);
-
-            completion_name_match_rank(left_name, prefix)
-                .unwrap_or(u16::MAX)
-                .cmp(&completion_name_match_rank(right_name, prefix).unwrap_or(u16::MAX))
-                .then_with(|| left_name.cmp(right_name))
-                .then_with(|| {
-                    completion_kind_rank(left_kind).cmp(&completion_kind_rank(right_kind))
-                })
-                .then_with(|| self.compare_symbol_preference(*left, *right))
+        // only for candidates that can survive the completion cap. Partitioning
+        // before the final sort keeps a bounded editor request from sorting the
+        // complete fuzzy-match universe.
+        if preferred_ids.len() > limit {
+            preferred_ids.select_nth_unstable_by(limit, |left, right| {
+                self.compare_top_level_completion_ids(prefix, *left, *right)
+            });
+            preferred_ids.truncate(limit);
+        }
+        preferred_ids.sort_unstable_by(|left, right| {
+            self.compare_top_level_completion_ids(prefix, *left, *right)
         });
         preferred_ids
             .into_iter()
-            .filter_map(|id| self.editor_top_level_completion_candidate(id))
+            .filter_map(|id| {
+                self.editor_symbol_completion_candidate(id, EditorCompletionOrigin::Unknown)
+            })
             .take(limit)
             .collect()
+    }
+
+    fn compare_top_level_completion_ids(
+        &self,
+        prefix: &str,
+        left: GlobalSymbolId,
+        right: GlobalSymbolId,
+    ) -> std::cmp::Ordering {
+        let left_symbol = self.index.symbol(left);
+        let right_symbol = self.index.symbol(right);
+        let left_name = left_symbol
+            .and_then(|symbol| symbol.name.as_deref())
+            .unwrap_or("");
+        let right_name = right_symbol
+            .and_then(|symbol| symbol.name.as_deref())
+            .unwrap_or("");
+        let left_kind = left_symbol
+            .map(|symbol| symbol.kind)
+            .unwrap_or(SymbolKind::Class);
+        let right_kind = right_symbol
+            .map(|symbol| symbol.kind)
+            .unwrap_or(SymbolKind::Class);
+
+        completion_name_match_rank(left_name, prefix)
+            .unwrap_or(u16::MAX)
+            .cmp(&completion_name_match_rank(right_name, prefix).unwrap_or(u16::MAX))
+            .then_with(|| left_name.cmp(right_name))
+            .then_with(|| completion_kind_rank(left_kind).cmp(&completion_kind_rank(right_kind)))
+            .then_with(|| self.compare_symbol_preference(left, right))
     }
 
     pub fn completion_symbols(
@@ -478,42 +499,11 @@ impl<'index> IndexQuery<'index> {
         preferred_class: Option<GlobalSymbolId>,
         id: GlobalSymbolId,
     ) -> Option<EditorCompletionCandidate> {
-        let symbol = self.index.symbol(id)?;
-        let file = self.index.file(id.file_id)?;
-        let origin = self.completion_origin(owner, preferred_class, symbol.parent);
-        let display = self.symbol_display(id)?;
-        let detail = display.detail.clone();
-        let constructor_signature = self.class_constructor_signature(symbol.id, symbol.kind);
-        let is_attribute_like = self.is_attribute_like_class(symbol.id, symbol.kind);
-
-        Some(EditorCompletionCandidate {
-            id,
-            name: symbol.name.clone(),
-            kind: symbol.kind,
-            detail,
-            signature: display.signature.clone(),
-            constructor_signature,
-            span: symbol.span,
-            selection_span: symbol.selection_span,
-            source_kind: file.metadata.kind,
-            source_category: file.metadata.category,
-            source_priority: file.metadata.priority,
-            relative_path: file.metadata.relative_path.clone(),
-            absolute_path: file.metadata.absolute_path.clone(),
-            is_attribute_like,
-            origin,
-            conditional_context: symbol.conditional_context.clone(),
-            callable_form: symbol.callable_form,
-            generic_type_parameter_count: self.generic_type_parameter_count(symbol.id, symbol.kind),
-            display,
-        })
-    }
-
-    fn editor_top_level_completion_candidate(
-        &self,
-        id: GlobalSymbolId,
-    ) -> Option<EditorCompletionCandidate> {
-        self.editor_symbol_completion_candidate(id, EditorCompletionOrigin::Unknown)
+        let origin = self
+            .index
+            .symbol(id)
+            .map(|symbol| self.completion_origin(owner, preferred_class, symbol.parent))?;
+        self.editor_symbol_completion_candidate(id, origin)
     }
 
     fn enum_member_completion_candidates(&self, name: &str) -> Vec<EditorCompletionCandidate> {
@@ -534,7 +524,9 @@ impl<'index> IndexQuery<'index> {
                 if !self.is_editor_completion_source(*child_id) {
                     continue;
                 }
-                if let Some(candidate) = self.editor_static_completion_candidate(*child_id) {
+                if let Some(candidate) = self
+                    .editor_symbol_completion_candidate(*child_id, EditorCompletionOrigin::Unknown)
+                {
                     candidates.push(candidate);
                 }
             }
@@ -616,13 +608,6 @@ impl<'index> IndexQuery<'index> {
             .collect()
     }
 
-    fn editor_static_completion_candidate(
-        &self,
-        id: GlobalSymbolId,
-    ) -> Option<EditorCompletionCandidate> {
-        self.editor_symbol_completion_candidate(id, EditorCompletionOrigin::Unknown)
-    }
-
     fn editor_symbol_completion_candidate(
         &self,
         id: GlobalSymbolId,
@@ -642,6 +627,7 @@ impl<'index> IndexQuery<'index> {
             detail,
             signature: display.signature.clone(),
             constructor_signature,
+            callable_signature_parts: self.callable_signature_parts(symbol.id, symbol.kind),
             span: symbol.span,
             selection_span: symbol.selection_span,
             source_kind: file.metadata.kind,
@@ -707,6 +693,75 @@ impl<'index> IndexQuery<'index> {
                 .symbol(*child_id)
                 .filter(|symbol| symbol.kind == SymbolKind::Constructor)
                 .and_then(|symbol| self.index.callable_signature(symbol.id))
+        })
+    }
+
+    fn callable_signature_parts(
+        &self,
+        id: GlobalSymbolId,
+        kind: SymbolKind,
+    ) -> Option<CallableSignatureParts> {
+        if kind == SymbolKind::Class {
+            return self.index.children(id).iter().find_map(|child_id| {
+                self.index
+                    .symbol(*child_id)
+                    .filter(|symbol| symbol.kind == SymbolKind::Constructor)
+                    .and_then(|symbol| self.callable_signature_parts(symbol.id, symbol.kind))
+            });
+        }
+        if !matches!(
+            kind,
+            SymbolKind::Function
+                | SymbolKind::Method
+                | SymbolKind::Constructor
+                | SymbolKind::Destructor
+        ) {
+            return None;
+        }
+        let symbol = self.index.symbol(id)?;
+        let parameters_info = self
+            .index
+            .children(id)
+            .iter()
+            .filter_map(|child_id| self.index.symbol(*child_id))
+            .filter(|parameter| parameter.kind == SymbolKind::Parameter)
+            .map(|parameter| {
+                let raw = parameter_signature_text(parameter);
+                let mut type_and_modifiers = parameter.modifiers.join(" ");
+                if let Some(type_text) = &parameter.detail.type_text {
+                    if !type_and_modifiers.is_empty() {
+                        type_and_modifiers.push(' ');
+                    }
+                    type_and_modifiers.push_str(type_text);
+                }
+                CallableParameter {
+                    raw,
+                    name: parameter
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| "<unknown>".to_string()),
+                    type_and_modifiers,
+                    default_text: parameter.detail.default_text.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let parameters = format!(
+            "({})",
+            parameters_info
+                .iter()
+                .map(|parameter| parameter.raw.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let result = symbol
+            .detail
+            .return_type_text
+            .clone()
+            .map(|return_type| format!("-> {return_type}"));
+        Some(CallableSignatureParts {
+            parameters,
+            parameters_info,
+            result,
         })
     }
 
@@ -957,13 +1012,13 @@ fn subsequence_match_score(value: &str, prefix: &str) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
     use crate::index::SymbolIndex;
     use crate::model::{
-        source_category_for_path, SourceCategory, SourceFileMetadata, SymbolCatalog,
-        SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE,
+        source_category_for_path, SourceCategory, SourceFileMetadata, SOURCE_PRIORITY_GAME_DATA,
+        SOURCE_PRIORITY_WORKSPACE,
     };
     use crate::parser::parse_source;
+    use crate::semantic_file::SemanticFile;
     use std::path::PathBuf;
 
     #[test]
@@ -982,7 +1037,7 @@ void ExampleFn(int value);
 "#,
             workspace_metadata("Workspace.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
         let query = IndexQuery::new(&index);
 
         for id in [
@@ -1019,7 +1074,7 @@ void FactionKey(int value);
 "#,
             workspace_metadata("FactionKey.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let conflicts = query.top_level_conflicts("FactionKey");
@@ -1050,7 +1105,7 @@ int SCR_Global;
 "#,
             workspace_metadata("Types.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_top_level("SCR_", EditorTopLevelCompletionMode::Type);
@@ -1076,13 +1131,17 @@ int SCR_Global;
         }
         source.push_str("class RplProp {}\n");
         let catalog = catalog(&source, game_metadata("Game.c"));
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion =
             query.completion_top_level_limited("rp", EditorTopLevelCompletionMode::Type, 250);
+        let mut authoritative =
+            query.completion_top_level("rp", EditorTopLevelCompletionMode::Type);
+        authoritative.truncate(250);
 
         assert_eq!(completion.len(), 250);
+        assert_eq!(completion, authoritative);
         assert_eq!(completion.first().unwrap().name.as_deref(), Some("RplProp"));
         assert!(completion
             .iter()
@@ -1098,7 +1157,7 @@ int SCR_Global;
         source.push_str("class scr_lowercase {}\n");
         source.push_str("class SpecialCandidateReference {}\n");
         let catalog = catalog(&source, game_metadata("Game.c"));
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         for mode in [
@@ -1121,7 +1180,7 @@ class RenderPipeline {}
 "#,
             game_metadata("Game.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let accelerated =
@@ -1153,7 +1212,7 @@ int SCR_A;
         }
         let game = catalog(&game_source, game_metadata("Game.c"));
         let workspace = catalog("class SCR_A {}\n", workspace_metadata("Workspace.c"));
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
         let query = IndexQuery::new(&index);
 
         let completion =
@@ -1193,7 +1252,7 @@ class LooksLikeAttribute : NotAttributeBase {}
 "#,
             game_metadata("Game/Attributes.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_top_level("Custom", EditorTopLevelCompletionMode::Type);
@@ -1230,7 +1289,7 @@ void SCR_WorkspaceOnly();
 "#,
             workspace_metadata("Workspace.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_top_level("SCR_", EditorTopLevelCompletionMode::Value);
@@ -1278,7 +1337,7 @@ class SCR_BaseGameMode : BaseMode
 "#,
             workspace_metadata("Workspace.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_members_for_class("SCR_BaseGameMode");
@@ -1357,7 +1416,7 @@ class SCR_BaseGameMode : BaseMode
 "#,
             workspace_metadata("Workspace.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
         let query = IndexQuery::new(&index);
 
         let raw = query.raw_completion_members_for_owner_name("SCR_BaseGameMode");
@@ -1397,7 +1456,7 @@ class SCR_BaseGameMode : BaseMode
 "#,
             game_metadata("Game/Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&docs, &workbench, &runtime]);
+        let index = index_from([&docs, &workbench, &runtime]);
         let query = IndexQuery::new(&index);
 
         let raw = query.raw_completion_members_for_owner_name("Example");
@@ -1430,7 +1489,7 @@ class WorldSystem
 "#,
             game_metadata("GameLib/WorldSystemsDocs.c"),
         );
-        let index = SymbolIndex::from_catalogs([&docs]);
+        let index = index_from([&docs]);
         let query = IndexQuery::new(&index);
 
         let editor = query.completion_members_for_class("HelloWorldSystem");
@@ -1459,7 +1518,7 @@ class WorldSystem
 "#,
             game_metadata("Game/Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&docs, &runtime]);
+        let index = index_from([&docs, &runtime]);
         let query = IndexQuery::new(&index);
 
         let editor = query.completion_members_for_class("Example");
@@ -1486,7 +1545,7 @@ class Example
 "#,
             game_metadata("Game/Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_members_for_class("Example");
@@ -1516,7 +1575,7 @@ class Example
 "#,
             game_metadata("Game/Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_members_for_class("Example");
@@ -1549,7 +1608,7 @@ typedef LogLevel ELogLevel;
 "#,
             game_metadata("Game/LogLevel.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let direct = query.completion_static_members_for_type("LogLevel");
@@ -1587,7 +1646,7 @@ typedef LogLevel ELogLevel;
 "#,
             game_metadata("Game/Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_static_members_for_type("Example");
@@ -1618,7 +1677,7 @@ class Example
 "#,
             game_metadata("Game/Class.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_static_members_for_type("Example");
@@ -1645,7 +1704,7 @@ typedef array<int> TIntArray;
 "#,
             game_metadata("Game/Arrays.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_members_for_class("TIntArray");
@@ -1675,7 +1734,7 @@ class Example
 "#,
             workspace_metadata("Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         assert_eq!(
@@ -1720,7 +1779,7 @@ class Example
 "#,
             workspace_metadata("Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
         let method = find(&index, SymbolKind::Method, "Run");
 
@@ -1752,7 +1811,7 @@ class Example
 "#,
             workspace_metadata("Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         let completion = query.completion_members_for_class("Example");
@@ -1774,7 +1833,7 @@ class Example
     #[test]
     fn missing_names_are_empty_and_do_not_panic() {
         let catalog = catalog("class Example {}", workspace_metadata("Example.c"));
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let query = IndexQuery::new(&index);
 
         assert_eq!(query.preferred_class("Missing"), None);
@@ -1799,11 +1858,26 @@ class Example
             .unwrap_or_else(|| panic!("missing {kind:?} {name}"))
     }
 
-    fn catalog(source: &str, metadata: SourceFileMetadata) -> SymbolCatalog<'_> {
+    struct TestSemanticFile {
+        semantic: SemanticFile,
+        metadata: SourceFileMetadata,
+    }
+
+    fn catalog(source: &str, metadata: SourceFileMetadata) -> TestSemanticFile {
         let parse = parse_source(source);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
-        let ast = AstSourceFile::new(source, &parse);
-        SymbolCatalog::from_ast_with_metadata(source, &ast, metadata)
+        TestSemanticFile {
+            semantic: SemanticFile::build(source, &parse),
+            metadata,
+        }
+    }
+
+    fn index_from<'a>(files: impl IntoIterator<Item = &'a TestSemanticFile>) -> SymbolIndex {
+        SymbolIndex::from_semantic_files(
+            files
+                .into_iter()
+                .map(|file| (&file.semantic, file.metadata.clone())),
+        )
     }
 
     fn game_metadata(path: &str) -> SourceFileMetadata {
@@ -1816,6 +1890,7 @@ class Example
             kind: SourceKind::GameData,
             category,
             absolute_path: Some(PathBuf::from("C:/game").join(path)),
+            virtual_source: None,
             root_path: Some(PathBuf::from("C:/game")),
             relative_path: Some(relative_path),
             priority: SOURCE_PRIORITY_GAME_DATA,
@@ -1828,6 +1903,7 @@ class Example
             kind: SourceKind::Workspace,
             category: SourceCategory::Workspace,
             absolute_path: Some(PathBuf::from("C:/workspace").join(path)),
+            virtual_source: None,
             root_path: Some(PathBuf::from("C:/workspace")),
             relative_path: Some(relative_path),
             priority: SOURCE_PRIORITY_WORKSPACE,

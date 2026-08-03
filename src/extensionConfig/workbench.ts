@@ -4,13 +4,20 @@ export const workbenchConfig = {
 		enabled: 'enabled',
 		host: 'host',
 		port: 'port',
+		saveOnIdle: 'saveOnIdle',
+		externalIndexMode: 'externalIndexMode',
 	},
 } as const;
 
+export const externalIndexModes = ['all', 'loaded', 'none'] as const;
+export type ExternalIndexMode = typeof externalIndexModes[number];
+
 export const workbenchDefaults = {
-	enabled: true,
+	enabled: false,
 	host: '127.0.0.1',
 	port: 5775,
+	saveOnIdle: true,
+	externalIndexMode: 'loaded' as ExternalIndexMode,
 } as const;
 
 export const workbenchCommands = {
@@ -23,6 +30,7 @@ export const workbenchTestCommands = {
 	disposeCompiler: 'reforger-sript-tools.test.disposeWorkbenchCompiler',
 	restartCompiler: 'reforger-sript-tools.test.restartWorkbenchCompiler',
 	armStartupValidation: 'reforger-sript-tools.test.armWorkbenchStartupValidation',
+	resetFailureNotification: 'reforger-sript-tools.test.resetWorkbenchFailureNotification',
 } as const;
 
 export const workbenchDiagnostics = {

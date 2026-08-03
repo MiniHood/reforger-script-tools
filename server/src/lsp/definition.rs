@@ -213,6 +213,17 @@ fn definition_target_for_resolution(
     resolution: &crate::resolver::ReferenceResolution,
 ) -> Option<&ReferenceCandidate> {
     let selected = resolution.selected.as_ref()?;
+    if selected.kind == SymbolKind::Class && selected.is_modded {
+        return resolution
+            .candidates
+            .iter()
+            .find(|candidate| {
+                candidate.kind == SymbolKind::Class
+                    && candidate.name == selected.name
+                    && !candidate.is_modded
+            })
+            .or(Some(selected));
+    }
     if !(selected.source == CandidateSource::FileLocal
         && selected.reason == ResolutionReason::DeclarationHit
         && selected.kind == SymbolKind::Method
@@ -262,11 +273,18 @@ fn definition_link_for_candidate(
             target_selection_range: range_for_span(current_source, candidate.selection_span),
         }),
         CandidateSource::External => {
-            let path = candidate.absolute_path.as_ref()?;
-            let source = fs::read_to_string(path).ok()?;
+            let (target_uri, source) = if let Some(identity) = &candidate.virtual_source {
+                (
+                    identity.uri.clone(),
+                    crate::addon_sources::read_virtual_source(&identity.uri).ok()?,
+                )
+            } else {
+                let path = candidate.absolute_path.as_ref()?;
+                (file_uri_for_path(path)?, fs::read_to_string(path).ok()?)
+            };
             Some(LspLocationLink {
                 origin_selection_range,
-                target_uri: file_uri_for_path(path)?,
+                target_uri,
                 target_range: range_for_span(&source, candidate.span),
                 target_selection_range: range_for_span(&source, candidate.selection_span),
             })

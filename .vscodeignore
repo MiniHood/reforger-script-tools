@@ -3,6 +3,7 @@
 .github/**
 .vscode/**
 .vscode-test/**
+.cache/**
 .vs/**
 docs/**
 node_modules/**

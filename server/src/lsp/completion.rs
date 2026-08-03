@@ -1,11 +1,12 @@
 use crate::analysis_runtime::QueryQuality;
+#[cfg(test)]
+use crate::callable::callable_signature_parts;
 use crate::callable::{
-    callable_argument_context_at_offset, callable_signature_parts, callable_type_owner,
+    builtin_callable_fact, callable_argument_context_at_offset, callable_type_owner,
     CallableParameter, CallableSignatureParts, CallableTarget,
 };
 use crate::construction::{
-    compatible_construction_candidates, lexical_construction_context_at_operand,
-    ConstructionQuery,
+    compatible_construction_candidates, lexical_construction_context_at_operand, ConstructionQuery,
 };
 use crate::expression_type::{expression_type_from_index_symbol, strip_all_type_prefixes};
 use crate::index::SymbolIndex;
@@ -164,8 +165,7 @@ pub struct LspCompletionReport {
     /// The candidate guarantee for this current-revision result. This is an
     /// internal contract/logging field, not an LSP `isIncomplete` surrogate.
     pub query_quality: QueryQuality,
-    /// Why a non-exact result was selected. `RecoveryExact` is deliberately
-    /// unused until a recovery query can prove candidate equivalence.
+    /// Why a non-exact result was selected.
     pub recovery_reason: Option<String>,
     pub parse_diagnostics: usize,
     pub completion_context: String,
@@ -256,7 +256,8 @@ pub(crate) fn completion_report_for_cached_analysis_with_external_indexes(
     if completion_cursor_is_in_comment_or_string(&analysis.lexer_tokens, offset) {
         return empty_completion_report(analysis.parse_diagnostics);
     }
-    let mut report = completion_report_for_offset(source, analysis, offset, workspace_index, game_data_index);
+    let mut report =
+        completion_report_for_offset(source, analysis, offset, workspace_index, game_data_index);
     apply_retyped_completion_suffix_replacements(source, offset, &mut report);
     report
 }
@@ -1066,10 +1067,18 @@ fn super_call_completion_report_for_indexes(
     let context = region.current_super_call_context(source, offset)?;
     let mut candidates = completion_candidates_for_owner(local_index, &context.base_type, false);
     if let Some(index) = workspace_index {
-        candidates.extend(completion_candidates_for_owner(index, &context.base_type, false));
+        candidates.extend(completion_candidates_for_owner(
+            index,
+            &context.base_type,
+            false,
+        ));
     }
     if let Some(index) = game_data_index {
-        candidates.extend(completion_candidates_for_owner(index, &context.base_type, false));
+        candidates.extend(completion_candidates_for_owner(
+            index,
+            &context.base_type,
+            false,
+        ));
     }
     let candidates = combine_completion_candidates(
         candidates
@@ -1148,18 +1157,27 @@ pub(crate) fn completion_report_for_current_argument_labels_at_offset_with_exter
         );
     }
     let callable_candidates = combine_completion_candidates(callable_candidates);
+    let builtin_parts = builtin_callable_fact(&context.callee).map(|fact| fact.signature_parts());
     if start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE {
         return None;
     }
-    if callable_candidates.is_empty() {
+    if callable_candidates.is_empty() && builtin_parts.is_none() {
         let labels =
             BoundedCompletionFacts::callable_parameter_names(source, &region, &context.callee)?;
         return (start.elapsed() <= LOCAL_SCOPE_QUERY_DEADLINE).then_some(
             bounded_argument_label_report(source, context, labels, start),
         );
     }
-    let parameter_candidates =
-        parameter_label_candidates_for_callables(&callable_candidates, &context);
+    let indexed_candidates = if builtin_parts.is_some() {
+        &[][..]
+    } else {
+        callable_candidates.as_slice()
+    };
+    let parameter_candidates = parameter_label_candidates_for_callables(
+        indexed_candidates,
+        builtin_parts.as_ref(),
+        &context,
+    );
     let edit_range = range_for_span(source, context.prefix_span);
     let empty_local_index = SymbolIndex::default();
     let (items, source_kind_counts, origin_counts) = completion_items_for_parameter_labels(
@@ -1478,8 +1496,11 @@ impl BoundedCompletionRegion {
         let before_body = &tokens[..body_open];
         (before_body.last()?.kind == TokenKind::RightParen).then_some(())?;
         let mut depth = 0usize;
-        let parameters_open = before_body.iter().enumerate().rev().find_map(|(index, token)| {
-            match token.kind {
+        let parameters_open = before_body
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, token)| match token.kind {
                 TokenKind::RightParen => {
                     depth += 1;
                     None
@@ -1490,13 +1511,10 @@ impl BoundedCompletionRegion {
                     None
                 }
                 _ => None,
-            }
-        })?;
+            })?;
         let method = before_body.get(parameters_open.checked_sub(1)?)?;
         (method.kind == TokenKind::Identifier).then_some(())?;
-        let method_name = source
-            .get(method.span.start..method.span.end)?
-            .to_string();
+        let method_name = source.get(method.span.start..method.span.end)?.to_string();
 
         let mut class_bases = BTreeMap::new();
         for window in tokens.windows(5) {
@@ -2459,8 +2477,7 @@ fn top_level_fallback_report_for_prefix_span(
             None,
             workspace_index,
             game_data_index,
-        )
-    {
+        ) {
         EditorTopLevelCompletionMode::Type
     } else {
         EditorTopLevelCompletionMode::Value
@@ -2754,9 +2771,7 @@ fn completion_report_for_offset(
             total_start,
         );
     }
-    if let Some(new_operand) =
-        new_operand_before_offset(source, &analysis.lexer_tokens, offset)
-    {
+    if let Some(new_operand) = new_operand_before_offset(source, &analysis.lexer_tokens, offset) {
         let query = ConstructionQuery::new(
             source,
             &analysis.parse,
@@ -3058,11 +3073,7 @@ struct NewOperand {
     replaces_typed_prefix: bool,
 }
 
-fn new_operand_before_offset(
-    source: &str,
-    tokens: &[Token],
-    offset: usize,
-) -> Option<NewOperand> {
+fn new_operand_before_offset(source: &str, tokens: &[Token], offset: usize) -> Option<NewOperand> {
     let operand = tokens
         .iter()
         .rev()
@@ -3648,8 +3659,22 @@ fn argument_label_completion_report_for_indexes(
         workspace_index,
         game_data_index,
     );
-    let parameter_candidates =
-        parameter_label_candidates_for_callables(&callable_candidates, &context);
+    let builtin_parts = match &context.target {
+        CallableTarget::Attribute { name } => {
+            builtin_callable_fact(name).map(|fact| fact.signature_parts())
+        }
+        _ => None,
+    };
+    let indexed_candidates = if builtin_parts.is_some() {
+        &[][..]
+    } else {
+        callable_candidates.as_slice()
+    };
+    let parameter_candidates = parameter_label_candidates_for_callables(
+        indexed_candidates,
+        builtin_parts.as_ref(),
+        &context,
+    );
     timings.candidate_lookup = lookup_start.elapsed();
 
     let render_start = Instant::now();
@@ -3677,7 +3702,7 @@ fn argument_label_completion_report_for_indexes(
         prefix: context.prefix,
         source_kind_counts,
         origin_counts,
-        failure_reason: if callable_candidates.is_empty() {
+        failure_reason: if callable_candidates.is_empty() && builtin_parts.is_none() {
             Some("callable target was not resolved".to_string())
         } else {
             None
@@ -3789,27 +3814,27 @@ struct ParameterLabelCandidate {
 
 fn parameter_label_candidates_for_callables(
     callables: &[EditorCompletionCandidate],
+    builtin_parts: Option<&CallableSignatureParts>,
     context: &ArgumentLabelCompletionContext,
 ) -> Vec<ParameterLabelCandidate> {
     let mut by_name = BTreeMap::<String, ParameterLabelCandidate>::new();
     let mut order = 0usize;
 
-    for callable in callables {
-        let label = callable
-            .name
-            .as_deref()
-            .unwrap_or(callable.display.label.as_str());
-        let signature = callable
-            .signature
-            .as_deref()
-            .or(callable.constructor_signature.as_deref());
-        let Some(signature) = signature else {
-            continue;
-        };
-        let Some(parts) = callable_signature_parts(label, signature) else {
-            continue;
-        };
-        for (parameter_index, parameter) in parts.parameters_info.into_iter().enumerate() {
+    let callable_parts = callables
+        .iter()
+        .filter_map(|callable| {
+            callable
+                .callable_signature_parts
+                .as_ref()
+                .map(|parts| (parts, callable.source_kind, callable.origin))
+        })
+        .chain(
+            builtin_parts
+                .map(|parts| (parts, SourceKind::GameData, EditorCompletionOrigin::Direct)),
+        );
+
+    for (parts, source_kind, origin) in callable_parts {
+        for (parameter_index, parameter) in parts.parameters_info.iter().cloned().enumerate() {
             // The active positional `func` parameter describes the callable
             // reference slot. It is not itself a callable value, so it must
             // not enter the value list ahead of ordinary scoped completion.
@@ -3834,8 +3859,8 @@ fn parameter_label_candidates_for_callables(
                     parameter,
                     required,
                     active_positional: parameter_index == context.argument_index,
-                    source_kind: callable.source_kind,
-                    origin: callable.origin,
+                    source_kind,
+                    origin,
                     sort_index: order,
                 };
                 order += 1;
@@ -4313,9 +4338,9 @@ fn generic_type_argument_closing_span_after_prefix(
         _ => return None,
     };
     if !source
-            .get(prefix_span.end..closing.span.start)?
-            .chars()
-            .all(char::is_whitespace)
+        .get(prefix_span.end..closing.span.start)?
+        .chars()
+        .all(char::is_whitespace)
     {
         return None;
     }
@@ -4425,8 +4450,9 @@ fn generic_type_slot_owner_before_offset(source: &str, offset: usize) -> Option<
     let generic_type = opener_index
         .checked_sub(1)
         .and_then(|index| tokens.get(index))?;
-    (generic_type.kind == TokenKind::Identifier || matches!(generic_type.kind, TokenKind::Keyword(_)))
-        .then(|| &source[generic_type.span.start..generic_type.span.end])
+    (generic_type.kind == TokenKind::Identifier
+        || matches!(generic_type.kind, TokenKind::Keyword(_)))
+    .then(|| &source[generic_type.span.start..generic_type.span.end])
 }
 
 /// Recovers a lone prospective parameter type while a callable declaration is
@@ -4448,18 +4474,24 @@ fn incomplete_callable_parameter_type_before_offset(source: &str, offset: usize)
         return false;
     }
     let mut parenthesis_depth = 0usize;
-    let Some(open_index) = tokens.iter().enumerate().rev().find_map(|(index, token)| match token.kind {
-        TokenKind::RightParen => {
-            parenthesis_depth += 1;
-            None
-        }
-        TokenKind::LeftParen if parenthesis_depth == 0 => Some(index),
-        TokenKind::LeftParen => {
-            parenthesis_depth -= 1;
-            None
-        }
-        _ => None,
-    }) else {
+    let Some(open_index) =
+        tokens
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, token)| match token.kind {
+                TokenKind::RightParen => {
+                    parenthesis_depth += 1;
+                    None
+                }
+                TokenKind::LeftParen if parenthesis_depth == 0 => Some(index),
+                TokenKind::LeftParen => {
+                    parenthesis_depth -= 1;
+                    None
+                }
+                _ => None,
+            })
+    else {
         return false;
     };
     let Some(method_name_index) = open_index.checked_sub(1) else {
@@ -4483,10 +4515,12 @@ fn incomplete_callable_parameter_type_before_offset(source: &str, offset: usize)
     let Some((type_token, modifiers)) = parameter.split_last() else {
         return false;
     };
-    matches!(type_token.kind, TokenKind::Identifier | TokenKind::Keyword(_))
-        && modifiers
-            .iter()
-            .all(|token| is_incomplete_parameter_type_modifier(token.kind))
+    matches!(
+        type_token.kind,
+        TokenKind::Identifier | TokenKind::Keyword(_)
+    ) && modifiers
+        .iter()
+        .all(|token| is_incomplete_parameter_type_modifier(token.kind))
 }
 
 fn is_incomplete_parameter_type_modifier(kind: TokenKind) -> bool {
@@ -4800,8 +4834,7 @@ fn completion_item_for_override_candidate(
         .name
         .clone()
         .or_else(|| Some(candidate.display.label.clone()))?;
-    let signature = candidate.signature.as_deref()?;
-    let call = callable_signature_parts(&label, signature)?;
+    let call = candidate.callable_signature_parts.clone()?;
     let return_type = call
         .result
         .as_deref()
@@ -5108,7 +5141,8 @@ fn type_keyword_snippet(
     CollectionTypeSnippet::for_keyword(keyword, mode, declaration_context)
         .map(TypeKeywordSnippet::Collection)
         .or_else(|| {
-            ((mode == EditorTopLevelCompletionMode::Type || declaration_context) && keyword == "ref")
+            ((mode == EditorTopLevelCompletionMode::Type || declaration_context)
+                && keyword == "ref")
                 .then_some(TypeKeywordSnippet::Ref)
         })
 }
@@ -5645,7 +5679,7 @@ fn completion_item_for_candidate(
             detail: Some(render.call.parameters.clone()),
             description: render.call.result.clone(),
         })
-        .or_else(|| completion_label_details(&label, candidate));
+        .or_else(|| completion_label_details(candidate));
     let generic_type_snippet = (candidate.kind == SymbolKind::Class
         && insert_context == CompletionInsertContext::Type
         && candidate.generic_type_parameter_count > 0)
@@ -5655,9 +5689,7 @@ fn completion_item_for_candidate(
     let (new_text, insert_text_format) = callable
         .as_ref()
         .map(|render| (render.insert_text.clone(), Some(2)))
-        .or_else(|| {
-            generic_type_snippet.map(|snippet| (snippet.snippet(&label), Some(2)))
-        })
+        .or_else(|| generic_type_snippet.map(|snippet| (snippet.snippet(&label), Some(2))))
         .unwrap_or_else(|| (label.clone(), None));
     let command = callable
         .as_ref()
@@ -5698,11 +5730,9 @@ fn completion_item_for_candidate(
 }
 
 fn completion_label_details(
-    label: &str,
     candidate: &EditorCompletionCandidate,
 ) -> Option<LspCompletionItemLabelDetails> {
-    let signature = candidate.signature.as_deref()?;
-    let call = callable_signature_parts(label, signature)?;
+    let call = candidate.callable_signature_parts.clone()?;
     Some(LspCompletionItemLabelDetails {
         detail: Some(call.parameters),
         description: call.result,
@@ -5715,11 +5745,11 @@ fn callable_completion_render(
     insert_context: CompletionInsertContext,
     render_context: CompletionRenderContext<'_>,
 ) -> Option<CallableCompletionRender> {
-    let signature = match candidate.kind {
+    let call = match candidate.kind {
         SymbolKind::Function
         | SymbolKind::Method
         | SymbolKind::Constructor
-        | SymbolKind::Destructor => candidate.signature.as_deref()?,
+        | SymbolKind::Destructor => candidate.callable_signature_parts.clone()?,
         SymbolKind::Class
             if matches!(
                 insert_context,
@@ -5727,19 +5757,15 @@ fn callable_completion_render(
                     | CompletionInsertContext::ContextualConstructorCall
             ) =>
         {
-            let call = candidate
-                .constructor_signature
-                .as_deref()
-                .and_then(|signature| callable_signature_parts(label, signature))
-                .or_else(|| {
-                    (insert_context == CompletionInsertContext::ContextualConstructorCall).then(
-                        || CallableSignatureParts {
-                            parameters: "()".to_string(),
-                            parameters_info: Vec::new(),
-                            result: None,
-                        },
-                    )
-                })?;
+            let call = candidate.callable_signature_parts.clone().or_else(|| {
+                (insert_context == CompletionInsertContext::ContextualConstructorCall).then(|| {
+                    CallableSignatureParts {
+                        parameters: "()".to_string(),
+                        parameters_info: Vec::new(),
+                        result: None,
+                    }
+                })
+            })?;
             if let Some(insert_text) = rpl_rpc_attribute_template(label, &call, false) {
                 return Some(CallableCompletionRender::from_insert(
                     call,
@@ -5756,8 +5782,7 @@ fn callable_completion_render(
             if insert_context == CompletionInsertContext::Type
                 && is_attribute_like_completion_candidate(candidate) =>
         {
-            let signature = candidate.constructor_signature.as_deref()?;
-            let call = callable_signature_parts(label, signature)?;
+            let call = candidate.callable_signature_parts.clone()?;
             if let Some(insert_text) = rpl_rpc_attribute_template(label, &call, true) {
                 return Some(CallableCompletionRender::from_insert(
                     call,
@@ -5773,7 +5798,6 @@ fn callable_completion_render(
         }
         _ => return None,
     };
-    let call = callable_signature_parts(label, signature)?;
     let insert = callable_insert_text_with_context(label, &call, Some(render_context));
     Some(CallableCompletionRender::from_insert(call, insert))
 }
@@ -6228,23 +6252,16 @@ mod tests {
             report.list.items[0].filter_text.as_deref(),
             Some("new array<int>()")
         );
-        assert_eq!(
-            report.list.items[0].text_edit.new_text,
-            "new array<int>()"
-        );
+        assert_eq!(report.list.items[0].text_edit.new_text, "new array<int>()");
         assert_eq!(
             report.list.items[0].text_edit.range,
-            range_for_span(
-                source,
-                TextSpan::new(offset - "n".len(), offset),
-            )
+            range_for_span(source, TextSpan::new(offset - "n".len(), offset),)
         );
     }
 
     #[test]
     fn current_snapshot_partial_new_completion_uses_an_indexed_class_constructor() {
-        let source =
-            "class Example\n{\n\tvoid Run()\n\t{\n\t\tManaged value = n\n\t}\n}\n";
+        let source = "class Example\n{\n\tvoid Run()\n\t{\n\t\tManaged value = n\n\t}\n}\n";
         let offset = source.find("value = n").unwrap() + "value = n".len();
         let external =
             file_index_for_source("class Managed\n{\n\tvoid Managed(int id);\n}\n").index;
@@ -6354,10 +6371,8 @@ mod tests {
 	}
 }
 "#;
-        let external = file_index_for_source(
-            "class Base { void OnPostInit(IEntity owner); }",
-        )
-        .index;
+        let external =
+            file_index_for_source("class Base { void OnPostInit(IEntity owner); }").index;
         let offset = source.find("sup\n").unwrap() + 3;
 
         let report = completion_report_for_current_super_at_offset_with_external_indexes(
@@ -6619,6 +6634,24 @@ mod tests {
             .items
             .iter()
             .any(|item| item.label == "firstValue"));
+    }
+
+    #[test]
+    fn current_argument_query_uses_the_shared_builtin_attribute_fact() {
+        let source = "class Example { [Attribute(uiw)] int m_Value; }";
+        let offset = source.find("Attribute(uiw").unwrap() + "Attribute(uiw".len();
+
+        let report = completion_report_for_current_argument_labels_at_offset_with_external_indexes(
+            source, offset, None, None,
+        )
+        .expect("the built-in Attribute fact should be available before rich analysis");
+
+        assert_eq!(report.query_quality, QueryQuality::Exact);
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "uiwidget"));
     }
 
     #[test]

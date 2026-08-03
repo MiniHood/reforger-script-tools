@@ -257,11 +257,13 @@ fn hover_report_for_offset(
                     CandidateSource::FileLocal => {
                         let member_summary_query =
                             workspace_index.or(game_data_index).map(IndexQuery::new);
+                        let game_data_query = game_data_index.map(IndexQuery::new);
                         if let Some(mut report) = hover_report_for_symbol(
                             source,
                             &analysis.index,
                             &query,
                             member_summary_query.as_ref(),
+                            game_data_query.as_ref(),
                             current_uri,
                             selected.id,
                             Some(range_for_span(source, resolution.token_span)),
@@ -285,6 +287,7 @@ fn hover_report_for_offset(
                                 source,
                                 external_index,
                                 &external_query,
+                                None,
                                 None,
                                 current_uri,
                                 selected.id,
@@ -320,11 +323,13 @@ fn hover_report_for_offset(
                 return empty_hover_report(analysis.parse_diagnostics);
             };
             let member_summary_query = workspace_index.or(game_data_index).map(IndexQuery::new);
+            let game_data_query = game_data_index.map(IndexQuery::new);
             hover_report_for_symbol(
                 source,
                 &analysis.index,
                 &query,
                 member_summary_query.as_ref(),
+                game_data_query.as_ref(),
                 current_uri,
                 selected.id,
                 None,
@@ -346,6 +351,7 @@ fn hover_report_for_symbol(
     index: &SymbolIndex,
     query: &IndexQuery<'_>,
     member_summary_query: Option<&IndexQuery<'_>>,
+    game_data_query: Option<&IndexQuery<'_>>,
     current_uri: &str,
     id: GlobalSymbolId,
     range_override: Option<LspRange>,
@@ -373,6 +379,7 @@ fn hover_report_for_symbol(
                         links: Some(HoverLinkContext {
                             current_uri,
                             external_query: member_summary_query,
+                            game_data_query,
                         }),
                     }),
                 ),

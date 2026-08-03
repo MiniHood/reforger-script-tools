@@ -1,3 +1,4 @@
+use crate::callable::builtin_callable_fact;
 use crate::index_query::{EditorCompletionCandidate, EditorCompletionOrigin, IndexQuery};
 use crate::lexer::{lex, TokenKind};
 use crate::lsp::file_uri_for_path;
@@ -7,17 +8,9 @@ use crate::symbol_display::{documentation_display, DocumentationDisplay, SymbolD
 use serde_json::json;
 
 const OPEN_SYMBOL_LOCATION_COMMAND: &str = "reforger-sript-tools.openSymbolLocation";
-const ATTRIBUTE_CONSTRUCTOR_SIGNATURE: &str = r#"void Attribute(
-	string defvalue = "",
-	string uiwidget = "auto",
-	string desc = "",
-	string params = "",
-	ParamEnumArray enums = NULL,
-	string category = "",
-	int precision = 3,
-	typename enumType = void,
-	bool prefabbed = false
-)"#;
+// Keep rich member summaries below VS Code's undocumented hover-payload cutoff.
+// This budget applies only to repeated member entries; a normal hover is unchanged.
+const MAX_HOVER_MEMBER_SUMMARY_BYTES: usize = 48 * 1024;
 
 pub(crate) struct HoverRenderContext<'a, 'index> {
     pub query: &'a IndexQuery<'index>,
@@ -29,6 +22,7 @@ pub(crate) struct HoverRenderContext<'a, 'index> {
 pub(crate) struct HoverLinkContext<'a, 'index> {
     pub current_uri: &'a str,
     pub external_query: Option<&'a IndexQuery<'index>>,
+    pub game_data_query: Option<&'a IndexQuery<'index>>,
 }
 
 pub(crate) fn render_hover_markdown(
@@ -229,9 +223,16 @@ fn render_class_members(
         .collect::<Vec<_>>();
 
     let mut lines = Vec::new();
-    push_member_group(&mut lines, "Constructors", &constructors, context);
-    push_member_group(&mut lines, "Functions", &methods, context);
-    push_member_group(&mut lines, "Fields", &fields, context);
+    let mut budget = HoverMemberSummaryBudget::new();
+    push_member_group(
+        &mut lines,
+        "Constructors",
+        &constructors,
+        context,
+        &mut budget,
+    );
+    push_member_group(&mut lines, "Functions", &methods, context, &mut budget);
+    push_member_group(&mut lines, "Fields", &fields, context, &mut budget);
     if lines.is_empty() {
         None
     } else {
@@ -265,15 +266,21 @@ fn push_member_group(
     label: &str,
     members: &[&EditorCompletionCandidate],
     context: Option<&HoverRenderContext<'_, '_>>,
+    budget: &mut HoverMemberSummaryBudget,
 ) {
     if members.is_empty() {
         return;
     }
-    let rendered_members = members
-        .iter()
-        .map(|candidate| render_member_line(candidate, context))
-        .collect::<Vec<_>>()
-        .join("<br>");
+    let mut rendered_members = Vec::new();
+    for (index, candidate) in members.iter().enumerate() {
+        let member = render_member_line(candidate, context);
+        if !budget.try_add(&member, !rendered_members.is_empty()) {
+            rendered_members.push(format!("and {} more", members.len() - index));
+            break;
+        }
+        rendered_members.push(member);
+    }
+    let rendered_members = rendered_members.join("<br>");
     let block = format!("{}\n\n{rendered_members}", render_section_header(label));
     lines.push(block);
 }
@@ -291,9 +298,10 @@ fn render_enum_members(
     if members.is_empty() {
         return None;
     }
-    let sample = members
-        .iter()
-        .map(|candidate| {
+    let mut budget = HoverMemberSummaryBudget::new();
+    let mut sample = Vec::new();
+    for (index, candidate) in members.iter().enumerate() {
+        let member = {
             let mut rendered = linked_symbol_text(
                 &candidate.display.label,
                 hover_semantic_token_type(candidate.display.kind),
@@ -312,13 +320,38 @@ fn render_enum_members(
                 rendered.push_str(&render_lexical_text(value));
             }
             rendered
-        })
-        .collect::<Vec<_>>()
-        .join("<br>");
+        };
+        if !budget.try_add(&member, !sample.is_empty()) {
+            sample.push(format!("and {} more", members.len() - index));
+            break;
+        }
+        sample.push(member);
+    }
+    let sample = sample.join("<br>");
     Some(format!(
         "{}\n\n{sample}",
         render_section_header("Enum Values")
     ))
+}
+
+struct HoverMemberSummaryBudget {
+    bytes_used: usize,
+}
+
+impl HoverMemberSummaryBudget {
+    fn new() -> Self {
+        Self { bytes_used: 0 }
+    }
+
+    fn try_add(&mut self, entry: &str, has_separator: bool) -> bool {
+        let separator_bytes = usize::from(has_separator) * "<br>".len();
+        let entry_bytes = separator_bytes + entry.len();
+        if self.bytes_used + entry_bytes > MAX_HOVER_MEMBER_SUMMARY_BYTES {
+            return false;
+        }
+        self.bytes_used += entry_bytes;
+        true
+    }
 }
 
 fn render_metadata(display: &SymbolDisplayInfo) -> Option<String> {
@@ -609,12 +642,19 @@ fn find_type_display(
     context: &HoverRenderContext<'_, '_>,
     name: &str,
 ) -> Option<SymbolDisplayInfo> {
-    find_type_display_in_query(context.query, name).or_else(|| {
-        context
-            .links
-            .and_then(|links| links.external_query)
-            .and_then(|query| find_type_display_in_query(query, name))
-    })
+    find_type_display_in_query(context.query, name)
+        .or_else(|| {
+            context
+                .links
+                .and_then(|links| links.external_query)
+                .and_then(|query| find_type_display_in_query(query, name))
+        })
+        .or_else(|| {
+            context
+                .links
+                .and_then(|links| links.game_data_query)
+                .and_then(|query| find_type_display_in_query(query, name))
+        })
 }
 
 fn find_type_display_in_query(query: &IndexQuery<'_>, name: &str) -> Option<SymbolDisplayInfo> {
@@ -657,9 +697,10 @@ fn hover_command_uri_for_display(
         return None;
     }
     let target_uri = display
-        .absolute_path
-        .as_deref()
-        .and_then(file_uri_for_path)
+        .virtual_source
+        .as_ref()
+        .map(|source| source.uri.clone())
+        .or_else(|| display.absolute_path.as_deref().and_then(file_uri_for_path))
         .unwrap_or_else(|| links.current_uri.to_string());
     let args = json!([{
         "uri": target_uri,
@@ -968,7 +1009,7 @@ struct AttributeDisplay {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AttributeParamDisplay {
     name: String,
-    type_text: &'static str,
+    type_text: String,
     value: String,
 }
 
@@ -982,7 +1023,7 @@ fn attribute_display(display: &SymbolDisplayInfo) -> Option<AttributeDisplay> {
         return None;
     }
 
-    let specs = attribute_param_specs();
+    let specs = builtin_callable_fact("Attribute")?.parameters;
     let mut params = Vec::new();
     let mut description = None;
     for (index, argument) in args.into_iter().enumerate() {
@@ -991,13 +1032,13 @@ fn attribute_display(display: &SymbolDisplayInfo) -> Option<AttributeDisplay> {
                 (name.trim().to_string(), value.trim().to_string())
             }
             _ => {
-                let Some((name, _type_text)) = specs.get(index) else {
+                let Some(spec) = specs.get(index) else {
                     continue;
                 };
-                ((*name).to_string(), argument.trim().to_string())
+                (spec.name.to_string(), argument.trim().to_string())
             }
         };
-        let Some((_, type_text)) = specs.iter().find(|(spec_name, _)| *spec_name == name) else {
+        let Some(spec) = specs.iter().find(|spec| spec.name == name) else {
             continue;
         };
         if name == "desc" {
@@ -1006,7 +1047,7 @@ fn attribute_display(display: &SymbolDisplayInfo) -> Option<AttributeDisplay> {
         }
         params.push(AttributeParamDisplay {
             name,
-            type_text,
+            type_text: spec.type_and_modifiers.to_string(),
             value,
         });
     }
@@ -1047,16 +1088,19 @@ fn render_attribute_constructor(context: Option<&HoverRenderContext<'_, '_>>) ->
 }
 
 fn render_attribute_constructor_signature(context: Option<&HoverRenderContext<'_, '_>>) -> String {
-    let Some(open) = ATTRIBUTE_CONSTRUCTOR_SIGNATURE.find('(') else {
-        return escape_html_text(ATTRIBUTE_CONSTRUCTOR_SIGNATURE);
+    let signature = builtin_callable_fact("Attribute")
+        .expect("the compiler owns the Attribute callable fact")
+        .signature();
+    let Some(open) = signature.find('(') else {
+        return escape_html_text(&signature);
     };
-    let prefix = ATTRIBUTE_CONSTRUCTOR_SIGNATURE[..open].trim();
-    let params_and_suffix = &ATTRIBUTE_CONSTRUCTOR_SIGNATURE[open..];
+    let prefix = signature[..open].trim();
+    let params_and_suffix = &signature[open..];
     let mut tokens = prefix.split_whitespace();
     let return_type = tokens.next().unwrap_or_default();
     let name = tokens.next().unwrap_or_default();
     if return_type.is_empty() || name.is_empty() {
-        return escape_html_text(ATTRIBUTE_CONSTRUCTOR_SIGNATURE);
+        return escape_html_text(&signature);
     }
     format!(
         "{} {}{}",
@@ -1066,24 +1110,12 @@ fn render_attribute_constructor_signature(context: Option<&HoverRenderContext<'_
     )
 }
 
-fn attribute_param_specs() -> &'static [(&'static str, &'static str)] {
-    &[
-        ("defvalue", "string"),
-        ("uiwidget", "string"),
-        ("desc", "string"),
-        ("params", "string"),
-        ("enums", "ParamEnumArray"),
-        ("category", "string"),
-        ("precision", "int"),
-        ("enumType", "typename"),
-        ("prefabbed", "bool"),
-    ]
-}
-
 fn is_named_attribute_arg(value: &str) -> bool {
-    attribute_param_specs()
+    builtin_callable_fact("Attribute")
+        .expect("the compiler owns the Attribute callable fact")
+        .parameters
         .iter()
-        .any(|(name, _)| *name == value)
+        .any(|parameter| parameter.name == value)
 }
 
 fn attribute_argument_values(attribute_text: &str) -> Vec<String> {
@@ -1296,12 +1328,10 @@ fn percent_encode_command_arg(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
     use crate::index::SymbolIndex;
-    use crate::model::{
-        SourceCategory, SourceFileMetadata, SourceKind, SymbolCatalog, SOURCE_PRIORITY_WORKSPACE,
-    };
+    use crate::model::{SourceCategory, SourceFileMetadata, SourceKind, SOURCE_PRIORITY_WORKSPACE};
     use crate::parser::parse_source;
+    use crate::semantic_file::SemanticFile;
 
     #[test]
     fn renders_field_with_type_modifiers_and_attributes() {
@@ -1514,6 +1544,7 @@ class Example : Base
                 links: Some(HoverLinkContext {
                     current_uri: "file:///current.c",
                     external_query: None,
+                    game_data_query: None,
                 }),
             }),
         );
@@ -1674,6 +1705,49 @@ class Child : Base
     }
 
     #[test]
+    fn bounds_large_enum_member_summaries_at_complete_entries() {
+        let values = (0..300)
+            .map(|index| format!("\tValue{index:03} = {index},"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let source = format!("enum ExampleEnum\n{{\n{values}\n}}\n");
+        let index = index(&source);
+        let query = IndexQuery::new(&index);
+        let display = query
+            .symbol_display(find(&index, SymbolKind::Enum, "ExampleEnum"))
+            .unwrap();
+
+        let markdown = render_hover_markdown(
+            &display,
+            Some(HoverRenderContext {
+                query: &query,
+                member_summary_query: None,
+                links: Some(HoverLinkContext {
+                    current_uri: "file:///current.c",
+                    external_query: None,
+                    game_data_query: None,
+                }),
+            }),
+        );
+
+        let displayed = (0..300)
+            .filter(|index| markdown.contains(&format!(">Value{index:03}</span>")))
+            .count();
+        let omitted = 300 - displayed;
+        assert!(omitted > 0);
+        assert!(markdown.contains(&format!("and {omitted} more")));
+        assert!(markdown.len() <= MAX_HOVER_MEMBER_SUMMARY_BYTES + 1024);
+        assert_eq!(
+            markdown.matches("<a ").count(),
+            markdown.matches("</a>").count()
+        );
+        assert_eq!(
+            markdown.matches("<span").count(),
+            markdown.matches("</span>").count()
+        );
+    }
+
+    #[test]
     fn renders_source_backed_command_links_for_enum_values() {
         let index = index(
             r#"enum ExampleEnum
@@ -1696,6 +1770,7 @@ class Child : Base
                 links: Some(HoverLinkContext {
                     current_uri: "file:///current.c",
                     external_query: None,
+                    game_data_query: None,
                 }),
             }),
         );
@@ -1856,20 +1931,19 @@ class Example
     fn index(source: &str) -> SymbolIndex {
         let parse = parse_source(source);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
-        let ast = AstSourceFile::new(source, &parse);
-        let catalog = SymbolCatalog::from_ast_with_metadata(
-            source,
-            &ast,
+        let semantic = SemanticFile::build(source, &parse);
+        SymbolIndex::from_semantic_files([(
+            &semantic,
             SourceFileMetadata {
                 kind: SourceKind::Workspace,
                 category: SourceCategory::Workspace,
                 absolute_path: Some("C:/workspace/Example.c".into()),
+                virtual_source: None,
                 root_path: Some("C:/workspace".into()),
                 relative_path: Some("Example.c".into()),
                 priority: SOURCE_PRIORITY_WORKSPACE,
             },
-        );
-        SymbolIndex::from_catalogs([&catalog])
+        )])
     }
 
     fn find(index: &SymbolIndex, kind: SymbolKind, name: &str) -> crate::index::GlobalSymbolId {

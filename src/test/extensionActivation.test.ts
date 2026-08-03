@@ -6,6 +6,8 @@ import * as vscode from 'vscode';
 import { diagnosticsDefaults } from '../extensionConfig/diagnostics';
 import { gameDataCommands } from '../extensionConfig/gameData';
 import { languageClientCommands } from '../extensionConfig/languageClient';
+import { mcpCommands } from '../extensionConfig/mcp';
+import { searchCommands } from '../extensionConfig/search';
 import {
 	workbenchCommands,
 	workbenchConfig,
@@ -13,10 +15,18 @@ import {
 } from '../extensionConfig/workbench';
 import {
 	blockCommentPairPosition,
+	beginLanguageClientStartupTimingSession,
 	externalIndexProgressMessage,
+	externalIndexProgressIsTerminal,
+	gameDataProgressOptions,
+	monitorExternalIndexProgress,
 	ifSpaceCommitContractFromCommandArguments,
+	languageClientStartupElapsedMs,
+	runAfterWorkbenchStartupGate,
+	runWithGameDataProgress,
 } from '../languageClient/languageClient';
 import { positionFromByteOffset } from '../languageClient/symbolLocationBridge';
+import { dedupeWorkspaceScriptRoots, discoverWorkspaceProjectFile } from '../languageClient/workspaceWatchBridge';
 import { registerBlockCommentPair } from '../languageClient/typingAssistTransactionBridge';
 import { executeIndent, executeInsertNewline, executeInsertSpace } from '../languageClient/controlHeaderEnterBridge';
 import { VersionedEditorTransaction } from '../languageClient/versionedEditorTransaction';
@@ -46,11 +56,210 @@ import {
 } from '../languageClient/semanticTokenBoundaryGuardBridge';
 
 suite('extension activation', () => {
+	test('deduplicates case-insensitive workspace script roots', () => {
+		const roots = process.platform === 'win32'
+			? ['C:\\Workspace\\Scripts', 'c:\\workspace\\scripts']
+			: ['/workspace/Scripts', '/workspace/scripts'];
+		const expected = process.platform === 'win32' ? [roots[0]] : roots;
+		assert.deepStrictEqual(dedupeWorkspaceScriptRoots(roots), expected);
+	});
+	test('presents informational game-data refresh progress in the status area', () => {
+		assert.deepStrictEqual(gameDataProgressOptions(), {
+			location: vscode.ProgressLocation.Window,
+			title: 'Reforger game data',
+			cancellable: false,
+		});
+	});
+
+	test('keeps automatic Workbench graph reconciliation out of notification progress', async () => {
+		let progressPresented = false;
+		let refreshRan = false;
+		await runWithGameDataProgress(
+			{ showProgress: false },
+			async () => {
+				refreshRan = true;
+			},
+			async task => {
+				progressPresented = true;
+				await task({ report: () => undefined });
+			},
+		);
+
+		assert.strictEqual(refreshRan, true);
+		assert.strictEqual(progressPresented, false);
+
+		await runWithGameDataProgress(
+			undefined,
+			async () => undefined,
+			async task => {
+				progressPresented = true;
+				await task({ report: () => undefined });
+			},
+		);
+		assert.strictEqual(progressPresented, true);
+	});
+
+	test('does not start indexing before the Workbench approval gate settles', async () => {
+		let releaseApproval = (_approved: boolean): void => undefined;
+		const approval = new Promise<boolean>(resolve => {
+			releaseApproval = resolve;
+		});
+		let indexingStarted = false;
+		const startup = runAfterWorkbenchStartupGate(approval, () => {
+			indexingStarted = true;
+		});
+
+		await Promise.resolve();
+		assert.strictEqual(indexingStarted, false);
+		releaseApproval(false);
+		await startup;
+		assert.strictEqual(indexingStarted, true);
+	});
+
+	test('starts startup timing from each activation', () => {
+		beginLanguageClientStartupTimingSession(1_000);
+		assert.equal(languageClientStartupElapsedMs(1_250), 250);
+		beginLanguageClientStartupTimingSession(10_000);
+		assert.equal(languageClientStartupElapsedMs(10_040), 40);
+	});
+
+	test('keeps startup completion pending while the external index is updating', () => {
+		assert.equal(externalIndexProgressIsTerminal('updating'), false);
+		assert.equal(externalIndexProgressIsTerminal('ready'), true);
+		assert.equal(externalIndexProgressIsTerminal('failed'), true);
+		assert.equal(externalIndexProgressIsTerminal('missing'), true);
+	});
+
+	test('does not wait for a Workbench graph when external indexes are disabled', async () => {
+		let reportProgress: ((params: { phase: string; status?: string }) => void) | undefined;
+		const client = {
+			onNotification: (_type: unknown, handler: (params: { phase: string; status?: string }) => void) => {
+				reportProgress = handler;
+				return new vscode.Disposable(() => undefined);
+			},
+			onDidChangeState: () => new vscode.Disposable(() => undefined),
+		} as never;
+		const monitor = monitorExternalIndexProgress(
+			{} as vscode.ExtensionContext,
+			client,
+			undefined,
+		);
+		reportProgress?.({ phase: 'complete', status: 'ready' });
+
+		const completed = await Promise.race([
+			monitor.completion.then(() => true),
+			new Promise<boolean>(resolve => setTimeout(() => resolve(false), 50)),
+		]);
+		monitor.disposable.dispose();
+		assert.strictEqual(completed, true);
+	});
+
+	test('finishes offline indexing without waiting for a Workbench graph', async () => {
+		let reportProgress: ((params: { phase: string; status?: string }) => void) | undefined;
+		const messages: string[] = [];
+		const client = {
+			onNotification: (_type: unknown, handler: (params: { phase: string; status?: string }) => void) => {
+				reportProgress = handler;
+				return new vscode.Disposable(() => undefined);
+			},
+			onDidChangeState: () => new vscode.Disposable(() => undefined),
+		} as never;
+		const monitor = monitorExternalIndexProgress(
+			{} as vscode.ExtensionContext,
+			client,
+			{ report: ({ message }) => {
+				if (message) {
+					messages.push(message);
+				}
+			} },
+		);
+
+		reportProgress?.({ phase: 'complete', status: 'ready' });
+
+		const completed = await Promise.race([
+			monitor.completion.then(() => true),
+			new Promise<boolean>(resolve => setTimeout(() => resolve(false), 50)),
+		]);
+		monitor.disposable.dispose();
+		assert.strictEqual(completed, true);
+		assert.deepEqual(messages, []);
+	});
+
+	test('tracks a later Workbench reconciliation until its terminal event', async () => {
+		let reportProgress: ((params: { phase: string; status?: string }) => void) | undefined;
+		const startupMessages: string[] = [];
+		const messages: string[] = [];
+		const client = {
+			onNotification: (_type: unknown, handler: (params: { phase: string; status?: string }) => void) => {
+				reportProgress = handler;
+				return new vscode.Disposable(() => undefined);
+			},
+			onDidChangeState: () => new vscode.Disposable(() => undefined),
+		} as never;
+		const monitor = monitorExternalIndexProgress(
+			{} as vscode.ExtensionContext,
+			client,
+			{ report: ({ message }) => {
+				if (message) {
+					startupMessages.push(message);
+				}
+			} },
+		);
+
+		reportProgress?.({ phase: 'complete', status: 'ready' });
+		await monitor.completion;
+		const reconciliation = monitor.waitForNextCompletion({ report: ({ message }) => {
+			if (message) {
+				messages.push(message);
+			}
+		} }, 'workbench-reconciliation');
+
+		reportProgress?.({ phase: 'offline' });
+		reportProgress?.({ phase: 'complete', status: 'ready' });
+		const completedByUnrelatedTerminalEvent = await Promise.race([
+			reconciliation.then(() => true),
+			new Promise<boolean>(resolve => setTimeout(() => resolve(false), 50)),
+		]);
+		assert.strictEqual(completedByUnrelatedTerminalEvent, false);
+
+		reportProgress?.({ phase: 'workbench-reconciliation' });
+		const completedBeforeTerminalEvent = await Promise.race([
+			reconciliation.then(() => true),
+			new Promise<boolean>(resolve => setTimeout(() => resolve(false), 50)),
+		]);
+		assert.strictEqual(completedBeforeTerminalEvent, false);
+		assert.deepEqual(messages, [
+			'Loaded offline add-on indexes',
+			'Reconciled Workbench add-on indexes',
+		]);
+		assert.deepEqual(startupMessages, []);
+
+		reportProgress?.({ phase: 'complete', status: 'ready' });
+		await reconciliation;
+		monitor.disposable.dispose();
+	});
+
+	test('discovers only an unambiguous workspace project descriptor', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rst-project-discovery-'));
+		try {
+			const first = path.join(root, 'addon.gproj');
+			await fs.writeFile(first, 'GameProject {}');
+			assert.equal(await discoverWorkspaceProjectFile(root), first);
+			await fs.writeFile(path.join(root, 'other.gproj'), 'GameProject {}');
+			assert.equal(await discoverWorkspaceProjectFile(root), undefined);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test('presents external index phases as user-facing progress', () => {
-		assert.equal(externalIndexProgressMessage('fingerprint-start'), 'Checking for game-data changes');
-		assert.equal(externalIndexProgressMessage('cache-load-hit'), 'Loading saved script index');
-		assert.equal(externalIndexProgressMessage('source-rebuild-start'), 'Indexing game-data scripts');
-		assert.equal(externalIndexProgressMessage('cache-write-start'), 'Saving script index');
+		assert.equal(externalIndexProgressMessage('pac-inspect-start'), 'Inspecting installed add-on packs');
+		assert.equal(externalIndexProgressMessage('inventory-load-start'), 'Loading installed add-on inventory');
+		assert.equal(externalIndexProgressMessage('addon-manifest-validate-start'), 'Validating add-on identities');
+	assert.equal(externalIndexProgressMessage('addon-cache-loaded'), 'Loaded unchanged add-on index');
+	assert.equal(externalIndexProgressMessage('addon-rebuild-end'), 'Rebuilt changed add-on index');
+	assert.equal(externalIndexProgressMessage('offline'), 'Loaded offline add-on indexes');
+	assert.equal(externalIndexProgressMessage('workbench-reconciliation'), 'Reconciled Workbench add-on indexes');
 		assert.equal(externalIndexProgressMessage('workspace-rebuild-start'), 'Indexing workspace scripts');
 		assert.equal(externalIndexProgressMessage('complete', 'ready'), 'Script index ready');
 		assert.equal(externalIndexProgressMessage('complete', 'failed'), 'Script indexing failed');
@@ -181,6 +390,21 @@ suite('extension activation', () => {
 		]);
 	});
 
+	test('uses Workbench enabled as the single integration setting', () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		const properties = extension.packageJSON.contributes.configuration.properties as Record<string, {
+			default?: unknown;
+			title?: unknown;
+		}>;
+		const setting = properties['reforgerScriptTools.workbench.enabled'];
+		assert.strictEqual(setting.default, false);
+		assert.strictEqual(setting.title, 'Workbench: Enabled');
+		assert.strictEqual(properties['reforgerScriptTools.workbench.autoInstallIntegration'], undefined);
+	});
+
 	test('registers editor-facing commands', async () => {
 		const extension = vscode.extensions.all.find(
 			candidate => candidate.packageJSON.name === 'reforger-script-tools',
@@ -193,10 +417,14 @@ suite('extension activation', () => {
 		assert.ok(commands.includes(languageClientCommands.debugCompletionAtCursor));
 		assert.ok(commands.includes(languageClientCommands.triggerSuggestAtSnippetPlaceholder));
 		assert.ok(commands.includes(languageClientCommands.advanceSnippetPlaceholderAfterAccept));
-		assert.ok(commands.includes(gameDataCommands.selectManualFolder));
+		assert.ok(commands.includes(gameDataCommands.refreshSources));
+		assert.ok(commands.includes(gameDataCommands.openIndexReport));
+		assert.ok(commands.includes(mcpCommands.copyConfiguration));
 		const contributedCommands = extension.packageJSON.contributes.commands as Array<{ command: string }>;
 		assert.ok(contributedCommands.some(command =>
 			command.command === languageClientCommands.triggerSuggestAtSnippetPlaceholder));
+		assert.ok(contributedCommands.some(command =>
+			command.command === mcpCommands.copyConfiguration));
 		assert.ok(commands.includes(workbenchCommands.validateScripts));
 		assert.ok(contributedCommands.some(command =>
 			command.command === workbenchCommands.validateScripts));
@@ -235,12 +463,9 @@ suite('extension activation', () => {
 			properties[`${workbenchConfig.section}.compilerValidationProfile`],
 			undefined,
 		);
-		const manualFolderSetting = properties['reforgerScriptTools.gameData.manualFolder'] as {
-			markdownDescription?: string;
-		};
-		assert.ok(manualFolderSetting.markdownDescription?.includes(
-			`command:${gameDataCommands.selectManualFolder}`,
-		));
+		assert.strictEqual(properties['reforgerScriptTools.gameData.baseGameAddonsFolder'], undefined);
+		assert.strictEqual(properties['reforgerScriptTools.gameData.workbenchAddonsFolder'], undefined);
+		assert.strictEqual(properties['reforgerScriptTools.gameData.userAddonsFolder'], undefined);
 	});
 
 	test('retains map placeholder progression unless a nested snippet takes ownership', () => {
@@ -518,6 +743,58 @@ suite('extension activation', () => {
 				true,
 			);
 			await editorConfiguration().update(
+				'matchBrackets',
+				undefined,
+				vscode.ConfigurationTarget.Global,
+				true,
+			);
+		}
+	});
+
+	test('materializes semantic bracket presentation for a fresh VS Code profile', async () => {
+		const scope = { languageId: 'enforce' };
+		const configuration = vscode.workspace.getConfiguration('editor', scope);
+		try {
+			await configuration.update(
+				'bracketPairColorization.enabled',
+				undefined,
+				vscode.ConfigurationTarget.Global,
+				true,
+			);
+			await configuration.update(
+				'matchBrackets',
+				undefined,
+				vscode.ConfigurationTarget.Global,
+				true,
+			);
+
+			assert.strictEqual(
+				configuration.inspect<boolean>('bracketPairColorization.enabled')?.globalLanguageValue,
+				undefined,
+			);
+			assert.strictEqual(
+				configuration.inspect<string>('matchBrackets')?.globalLanguageValue,
+				undefined,
+			);
+
+			await applyBracketColoringEditorMode('semantic');
+
+			assert.strictEqual(
+				configuration.inspect<boolean>('bracketPairColorization.enabled')?.globalLanguageValue,
+				false,
+			);
+			assert.strictEqual(
+				configuration.inspect<string>('matchBrackets')?.globalLanguageValue,
+				'never',
+			);
+		} finally {
+			await configuration.update(
+				'bracketPairColorization.enabled',
+				undefined,
+				vscode.ConfigurationTarget.Global,
+				true,
+			);
+			await configuration.update(
 				'matchBrackets',
 				undefined,
 				vscode.ConfigurationTarget.Global,
@@ -1254,6 +1531,29 @@ suite('extension activation', () => {
 		assert.ok(extension, 'development extension is discoverable');
 		const defaults = extension.packageJSON.contributes.configurationDefaults as Record<string, Record<string, unknown>>;
 		assert.strictEqual(defaults['[enforce]']['editor.acceptSuggestionOnEnter'], 'off');
+	});
+
+	test('exposes Reforger Script Search through the Command Palette and Ctrl+Alt+F', () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		const commands = extension.packageJSON.contributes.commands as Array<{
+			command: string;
+			title: string;
+			category?: string;
+		}>;
+		const command = commands.find(candidate => candidate.command === searchCommands.open);
+		assert.deepStrictEqual(command, {
+			command: searchCommands.open,
+			title: 'Search',
+			category: 'Reforger Script Tools',
+		});
+		const keybindings = extension.packageJSON.contributes.keybindings as Array<{
+			command: string;
+			key?: string;
+		}>;
+		assert.ok(keybindings.some(binding => binding.command === searchCommands.open && binding.key === 'ctrl+alt+f'));
 	});
 
 	test('routes Enter only outside native editing modes', () => {

@@ -2,7 +2,7 @@ use crate::index::{
     GlobalSymbolId, IndexedAttribute, IndexedConditionalBranch, IndexedDocComment, SymbolIndex,
 };
 use crate::lexer::TextSpan;
-use crate::model::{CallableForm, SourceCategory, SourceKind, SymbolKind};
+use crate::model::{CallableForm, SourceCategory, SourceKind, SymbolKind, VirtualSourceIdentity};
 use std::path::PathBuf;
 
 const DOC_PREVIEW_LIMIT: usize = 120;
@@ -24,6 +24,7 @@ pub struct SymbolDisplayInfo {
     pub source_priority: u16,
     pub relative_path: Option<PathBuf>,
     pub absolute_path: Option<PathBuf>,
+    pub virtual_source: Option<VirtualSourceIdentity>,
     pub span: TextSpan,
     pub selection_span: TextSpan,
     pub conditional_context: Vec<IndexedConditionalBranch>,
@@ -78,6 +79,7 @@ impl SymbolDisplay {
             source_priority: file.metadata.priority,
             relative_path: file.metadata.relative_path.clone(),
             absolute_path: file.metadata.absolute_path.clone(),
+            virtual_source: file.metadata.virtual_source.clone(),
             span: symbol.span,
             selection_span: symbol.selection_span,
             conditional_context: symbol.conditional_context.clone(),
@@ -337,12 +339,10 @@ fn truncate_preview(value: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
     use crate::index::SymbolIndex;
-    use crate::model::{
-        SourceCategory, SourceFileMetadata, SymbolCatalog, SOURCE_PRIORITY_WORKSPACE,
-    };
+    use crate::model::{SourceCategory, SourceFileMetadata, SOURCE_PRIORITY_WORKSPACE};
     use crate::parser::parse_source;
+    use crate::semantic_file::SemanticFile;
 
     #[test]
     fn displays_class_with_base_attributes_modifiers_docs_and_source() {
@@ -588,20 +588,19 @@ class Example {}
     fn index(source: &str) -> SymbolIndex {
         let parse = parse_source(source);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
-        let ast = AstSourceFile::new(source, &parse);
-        let catalog = SymbolCatalog::from_ast_with_metadata(
-            source,
-            &ast,
+        let semantic = SemanticFile::build(source, &parse);
+        SymbolIndex::from_semantic_files([(
+            &semantic,
             SourceFileMetadata {
                 kind: SourceKind::Workspace,
                 category: SourceCategory::Workspace,
                 absolute_path: None,
+                virtual_source: None,
                 root_path: None,
                 relative_path: None,
                 priority: SOURCE_PRIORITY_WORKSPACE,
             },
-        );
-        SymbolIndex::from_catalogs([&catalog])
+        )])
     }
 
     fn find(index: &SymbolIndex, kind: SymbolKind, name: &str) -> GlobalSymbolId {

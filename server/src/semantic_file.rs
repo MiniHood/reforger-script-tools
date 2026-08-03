@@ -1,9 +1,7 @@
 //! Compiler-owned, immutable file semantic facts.
 //!
-//! This module is deliberately independent of the legacy `SymbolCatalog` and
-//! `SymbolIndex` pipeline.  It consumes the parser's typed declaration facade
-//! once and produces a compact public contribution suitable for later
-//! workspace snapshots.
+//! It consumes the parser's typed declaration facade once and produces a
+//! compact public contribution suitable for later workspace snapshots.
 
 use crate::ast::{
     ClassMember, Declaration, DocCommentKind, FieldDecl, MethodDecl, MethodKind, TextValue,
@@ -457,7 +455,7 @@ impl<'source> SemanticFileBuilder<'source> {
                         .attributes()
                         .into_iter()
                         .filter_map(|attribute| attribute.text())
-                        .map(|value| self.text(value))
+                        .map(|value| self.attribute_text(value))
                         .collect(),
                     doc_comments(class.doc_comments()),
                 );
@@ -508,7 +506,7 @@ impl<'source> SemanticFileBuilder<'source> {
                         .attributes()
                         .into_iter()
                         .filter_map(|attribute| attribute.text())
-                        .map(|value| self.text(value))
+                        .map(|value| self.attribute_text(value))
                         .collect(),
                     doc_comments(enumeration.doc_comments()),
                 );
@@ -563,7 +561,7 @@ impl<'source> SemanticFileBuilder<'source> {
             .attributes()
             .into_iter()
             .filter_map(|attribute| attribute.text())
-            .map(|value| self.text(value))
+            .map(|value| self.attribute_text(value))
             .collect::<Vec<_>>();
         let comments = doc_comments(field.doc_comments());
         for declarator in field.declarators() {
@@ -603,7 +601,7 @@ impl<'source> SemanticFileBuilder<'source> {
                 .attributes()
                 .into_iter()
                 .filter_map(|attribute| attribute.text())
-                .map(|value| self.text(value))
+                .map(|value| self.attribute_text(value))
                 .collect(),
             doc_comments(method.doc_comments()),
             Some(callable_form(method)),
@@ -710,6 +708,14 @@ impl<'source> SemanticFileBuilder<'source> {
         SemanticText {
             span: value.span,
             text: value.text().to_owned(),
+        }
+    }
+
+    fn attribute_text(&self, value: TextValue<'source>) -> SemanticText {
+        let value = self.text(value);
+        SemanticText {
+            text: format!("[{}]", value.text),
+            ..value
         }
     }
 }

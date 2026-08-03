@@ -1,8 +1,7 @@
 use crate::ast::DocCommentKind;
 use crate::lexer::TextSpan;
 use crate::model::{
-    CallableForm, ConditionalBranch, PreprocessorBranchKind, SourceFileMetadata, SourceKind,
-    SymbolCatalog, SymbolId, SymbolKind,
+    CallableForm, PreprocessorBranchKind, SourceFileMetadata, SourceKind, SymbolId, SymbolKind,
 };
 use crate::semantic_file::{
     FileContribution, FileContributionValidationError, PublicSymbol, PublicText,
@@ -11,6 +10,7 @@ use crate::semantic_file::{
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SourceFileId(pub usize);
@@ -96,6 +96,10 @@ pub struct MemberShadowGroup {
 pub struct SymbolIndex {
     files: Vec<IndexedFile>,
     symbols: Vec<IndexedSymbol>,
+    /// Immutable child indexes retained by a runtime-only layered projection.
+    /// The parent owns shared lookup maps but never duplicates child symbols.
+    layers: Vec<SymbolIndex>,
+    file_id_base: usize,
     by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
     top_level_by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
     top_level_by_folded_name: BTreeMap<String, Vec<GlobalSymbolId>>,
@@ -144,6 +148,12 @@ struct LookupMaps {
     general: GeneralLookupMaps,
     kind_and_owner: KindAndOwnerLookupMaps,
     owner_name: OwnerNameLookupMaps,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContributionProjection {
+    Full,
+    RuntimeCache,
 }
 
 impl LookupMaps {
@@ -322,6 +332,8 @@ impl From<SymbolIndexSnapshot> for SymbolIndex {
         Self {
             files: snapshot.files,
             symbols: snapshot.symbols,
+            layers: Vec::new(),
+            file_id_base: 0,
             by_name: snapshot.by_name.into_iter().collect(),
             top_level_by_name,
             top_level_by_folded_name,
@@ -358,12 +370,12 @@ impl<'de> Deserialize<'de> for SymbolIndex {
 }
 
 impl SymbolIndex {
-    pub fn from_catalogs<'source>(
-        catalogs: impl IntoIterator<Item = &'source SymbolCatalog<'source>>,
+    pub fn from_semantic_files<'a>(
+        files: impl IntoIterator<Item = (&'a SemanticFile, SourceFileMetadata)>,
     ) -> Self {
         let mut index = Self::default();
-        for catalog in catalogs {
-            index.append_catalog(catalog);
+        for (semantic_file, metadata) in files {
+            index.append_semantic_file(semantic_file, metadata);
         }
         if !index.files.is_empty() {
             index.rebuild_lookup_maps();
@@ -372,13 +384,21 @@ impl SymbolIndex {
     }
 
     pub fn from_indexed_parts(files: Vec<IndexedFile>, symbols: Vec<IndexedSymbol>) -> Self {
+        Self::from_indexed_parts_with_map_timing(files, symbols).0
+    }
+
+    pub(crate) fn from_indexed_parts_with_map_timing(
+        files: Vec<IndexedFile>,
+        symbols: Vec<IndexedSymbol>,
+    ) -> (Self, Duration) {
         let mut index = Self {
             files,
             symbols,
             ..Self::default()
         };
+        let map_start = Instant::now();
         index.rebuild_lookup_maps();
-        index
+        (index, map_start.elapsed())
     }
 
     pub fn merged<'a>(indexes: impl IntoIterator<Item = &'a SymbolIndex>) -> Self {
@@ -425,99 +445,237 @@ impl SymbolIndex {
         merged
     }
 
-    pub fn add_catalog<'source>(&mut self, catalog: &SymbolCatalog<'source>) -> SourceFileId {
-        let file_id = self.append_catalog(catalog);
+    /// Composes immutable indexes without flattening their symbol records. The
+    /// resulting index owns only combined lookup maps and shallow file metadata;
+    /// symbol identity remains routed to the originating layer.
+    pub fn layered(indexes: impl IntoIterator<Item = SymbolIndex>) -> Self {
+        Self::layered_with_timings(indexes).0
+    }
+
+    pub fn layered_with_timings(
+        indexes: impl IntoIterator<Item = SymbolIndex>,
+    ) -> (Self, LayeredIndexTimings) {
+        let total_start = Instant::now();
+        let mut layered = Self::default();
+        let mut next_file_id = 0;
+        let mut timings = LayeredIndexTimings::default();
+        for mut index in indexes {
+            debug_assert!(index.layers.is_empty(), "layers must be composed once");
+            let rebase_start = Instant::now();
+            index.rebase_file_ids(next_file_id);
+            timings.rebase += rebase_start.elapsed();
+            next_file_id += index.files.len();
+            let file_projection_start = Instant::now();
+            layered.files.extend(index.files.iter().cloned());
+            timings.file_projection += file_projection_start.elapsed();
+            layered.layers.push(index);
+        }
+        let lookup_projection_start = Instant::now();
+        layered.rebuild_layered_lookup_maps();
+        timings.lookup_projection = lookup_projection_start.elapsed();
+        timings.total = total_start.elapsed();
+        (layered, timings)
+    }
+
+    fn rebase_file_ids(&mut self, file_id_base: usize) {
+        if file_id_base == 0 {
+            self.file_id_base = 0;
+            return;
+        }
+        let rebase = |id: GlobalSymbolId| GlobalSymbolId {
+            file_id: SourceFileId(id.file_id.0 + file_id_base),
+            symbol_id: id.symbol_id,
+        };
+        for file in &mut self.files {
+            file.id = SourceFileId(file.id.0 + file_id_base);
+        }
+        for symbol in &mut self.symbols {
+            symbol.id = rebase(symbol.id);
+            symbol.parent = symbol.parent.map(rebase);
+        }
+        rebase_lookup_map_ids(&mut self.by_name, rebase);
+        rebase_lookup_map_ids(&mut self.top_level_by_name, rebase);
+        rebase_lookup_map_ids(&mut self.top_level_by_folded_name, rebase);
+        rebase_lookup_map_ids(&mut self.by_kind, rebase);
+        let children = std::mem::take(&mut self.children);
+        self.children = children
+            .into_iter()
+            .map(|(parent, mut children)| {
+                for child in &mut children {
+                    *child = rebase(*child);
+                }
+                (rebase(parent), children)
+            })
+            .collect();
+        rebase_lookup_map_ids(&mut self.classes_by_name, rebase);
+        rebase_lookup_map_ids(&mut self.typedefs_by_name, rebase);
+        rebase_lookup_map_ids(&mut self.functions_by_name, rebase);
+        rebase_lookup_map_ids(&mut self.methods_by_owner_name, rebase);
+        rebase_lookup_map_ids(&mut self.fields_by_owner_name, rebase);
+        rebase_lookup_map_ids(&mut self.members_by_owner, rebase);
+        self.file_id_base = file_id_base;
+    }
+
+    fn rebuild_layered_lookup_maps(&mut self) {
+        let layers = &self.layers;
+        // Match normal index construction: a small graph or a narrow machine
+        // is faster without fine-grained thread startup and contention.
+        const PARALLEL_REBUILD_MIN_SYMBOLS: usize = 10_000;
+        let symbol_count = layers
+            .iter()
+            .map(|layer| layer.symbols.len())
+            .sum::<usize>();
+        let parallelism = std::thread::available_parallelism()
+            .map(|parallelism| parallelism.get())
+            .unwrap_or(1);
+        if symbol_count < PARALLEL_REBUILD_MIN_SYMBOLS || parallelism < 3 {
+            self.rebuild_layered_lookup_maps_sequential();
+            return;
+        }
+        if parallelism < 7 {
+            self.rebuild_layered_lookup_maps_coarse_parallel();
+            return;
+        }
+        self.rebuild_layered_lookup_maps_wide_parallel();
+    }
+
+    fn rebuild_layered_lookup_maps_sequential(&mut self) {
+        let layers = &self.layers;
+        self.by_name = merge_layer_lookup_maps(layers, |index| &index.by_name);
+        self.top_level_by_name = merge_layer_lookup_maps(layers, |index| &index.top_level_by_name);
+        self.top_level_by_folded_name =
+            merge_layer_lookup_maps(layers, |index| &index.top_level_by_folded_name);
+        self.by_kind = merge_layer_lookup_maps(layers, |index| &index.by_kind);
+        self.children = merge_layer_lookup_maps(layers, |index| &index.children);
+        self.classes_by_name = merge_layer_lookup_maps(layers, |index| &index.classes_by_name);
+        self.typedefs_by_name = merge_layer_lookup_maps(layers, |index| &index.typedefs_by_name);
+        self.functions_by_name = merge_layer_lookup_maps(layers, |index| &index.functions_by_name);
+        self.members_by_owner = merge_layer_lookup_maps(layers, |index| &index.members_by_owner);
+        self.methods_by_owner_name =
+            merge_layer_lookup_maps(layers, |index| &index.methods_by_owner_name);
+        self.fields_by_owner_name =
+            merge_layer_lookup_maps(layers, |index| &index.fields_by_owner_name);
+    }
+
+    fn rebuild_layered_lookup_maps_coarse_parallel(&mut self) {
+        let layers = &self.layers;
+        let (general, kind_and_owner, owner_name) = std::thread::scope(|scope| {
+            let general = scope.spawn(|| build_layered_general_lookup_maps(layers));
+            let kind_and_owner = scope.spawn(|| build_layered_kind_and_owner_lookup_maps(layers));
+            let owner_name = scope.spawn(|| build_layered_owner_name_lookup_maps(layers));
+            (
+                general
+                    .join()
+                    .expect("layer general lookup projection should not panic"),
+                kind_and_owner
+                    .join()
+                    .expect("layer kind/owner lookup projection should not panic"),
+                owner_name
+                    .join()
+                    .expect("layer owner/name lookup projection should not panic"),
+            )
+        });
+        self.by_name = general.0;
+        self.top_level_by_name = general.1;
+        self.top_level_by_folded_name = general.2;
+        self.by_kind = general.3;
+        self.children = general.4;
+        self.classes_by_name = kind_and_owner.0;
+        self.typedefs_by_name = kind_and_owner.1;
+        self.functions_by_name = kind_and_owner.2;
+        self.members_by_owner = kind_and_owner.3;
+        self.methods_by_owner_name = owner_name.0;
+        self.fields_by_owner_name = owner_name.1;
+    }
+
+    fn rebuild_layered_lookup_maps_wide_parallel(&mut self) {
+        let layers = &self.layers;
+        let (
+            by_name,
+            top_level,
+            structure,
+            kind_names,
+            members_by_owner,
+            methods_by_owner_name,
+            fields_by_owner_name,
+        ) = std::thread::scope(|scope| {
+            let by_name = scope.spawn(|| merge_layer_lookup_maps(layers, |index| &index.by_name));
+            let top_level = scope.spawn(|| {
+                (
+                    merge_layer_lookup_maps(layers, |index| &index.top_level_by_name),
+                    merge_layer_lookup_maps(layers, |index| &index.top_level_by_folded_name),
+                )
+            });
+            let structure = scope.spawn(|| {
+                (
+                    merge_layer_lookup_maps(layers, |index| &index.by_kind),
+                    merge_layer_lookup_maps(layers, |index| &index.children),
+                )
+            });
+            let kind_names = scope.spawn(|| {
+                (
+                    merge_layer_lookup_maps(layers, |index| &index.classes_by_name),
+                    merge_layer_lookup_maps(layers, |index| &index.typedefs_by_name),
+                    merge_layer_lookup_maps(layers, |index| &index.functions_by_name),
+                )
+            });
+            let members_by_owner =
+                scope.spawn(|| merge_layer_lookup_maps(layers, |index| &index.members_by_owner));
+            let methods_by_owner_name = scope
+                .spawn(|| merge_layer_lookup_maps(layers, |index| &index.methods_by_owner_name));
+            let fields_by_owner_name = scope
+                .spawn(|| merge_layer_lookup_maps(layers, |index| &index.fields_by_owner_name));
+            (
+                by_name
+                    .join()
+                    .expect("layer name lookup projection should not panic"),
+                top_level
+                    .join()
+                    .expect("layer top-level lookup projection should not panic"),
+                structure
+                    .join()
+                    .expect("layer structure lookup projection should not panic"),
+                kind_names
+                    .join()
+                    .expect("layer kind/name lookup projection should not panic"),
+                members_by_owner
+                    .join()
+                    .expect("layer member lookup projection should not panic"),
+                methods_by_owner_name
+                    .join()
+                    .expect("layer method lookup projection should not panic"),
+                fields_by_owner_name
+                    .join()
+                    .expect("layer field lookup projection should not panic"),
+            )
+        });
+        self.by_name = by_name;
+        self.top_level_by_name = top_level.0;
+        self.top_level_by_folded_name = top_level.1;
+        self.by_kind = structure.0;
+        self.children = structure.1;
+        self.classes_by_name = kind_names.0;
+        self.typedefs_by_name = kind_names.1;
+        self.functions_by_name = kind_names.2;
+        self.members_by_owner = members_by_owner;
+        self.methods_by_owner_name = methods_by_owner_name;
+        self.fields_by_owner_name = fields_by_owner_name;
+    }
+
+    /// Adds compiler-owned declaration facts. This is intentionally an
+    /// ingestion seam only: callers continue to choose when a file is parsed
+    /// and when its immutable facts are published into an index.
+    pub fn add_semantic_file(
+        &mut self,
+        semantic_file: &SemanticFile,
+        metadata: SourceFileMetadata,
+    ) -> SourceFileId {
+        let file_id = self.append_semantic_file(semantic_file, metadata);
         self.rebuild_lookup_maps();
         file_id
     }
 
-    fn append_catalog<'source>(&mut self, catalog: &SymbolCatalog<'source>) -> SourceFileId {
-        let file_id = SourceFileId(self.files.len());
-        let symbol_start = self.symbols.len();
-
-        self.files.push(IndexedFile {
-            id: file_id,
-            metadata: catalog.metadata().clone(),
-            symbol_start,
-            symbol_count: catalog.records().len(),
-            non_declaration_callable_fragments: catalog.non_declaration_callable_fragments(),
-        });
-
-        for record in catalog.records() {
-            let id = GlobalSymbolId {
-                file_id,
-                symbol_id: record.id,
-            };
-            let parent = record
-                .parent
-                .map(|symbol_id| GlobalSymbolId { file_id, symbol_id });
-            let name = catalog.record_name(record).map(str::to_string);
-            let symbol = IndexedSymbol {
-                id,
-                parent,
-                kind: record.kind,
-                name,
-                span: record.span,
-                selection_span: record.selection_span,
-                detail: IndexedSymbolDetail {
-                    type_text: record
-                        .detail
-                        .type_text
-                        .map(|span| catalog.text(span).to_string()),
-                    type_text_span: record.detail.type_text,
-                    return_type_text: record
-                        .detail
-                        .return_type_text
-                        .map(|span| catalog.text(span).to_string()),
-                    return_type_text_span: record.detail.return_type_text,
-                    base_type: record
-                        .detail
-                        .base_type
-                        .map(|span| catalog.text(span).to_string()),
-                    base_type_span: record.detail.base_type,
-                    default_text: record
-                        .detail
-                        .default_text
-                        .map(|span| catalog.text(span).to_string()),
-                    default_text_span: record.detail.default_text,
-                    enum_value_text: record
-                        .detail
-                        .enum_value_text
-                        .map(|span| catalog.text(span).to_string()),
-                    enum_value_text_span: record.detail.enum_value_text,
-                },
-                attributes: indexed_attributes(catalog, &record.attributes),
-                modifiers: record
-                    .modifiers
-                    .iter()
-                    .map(|span| catalog.text(*span).to_string())
-                    .collect(),
-                doc_comments: record
-                    .doc_comments
-                    .iter()
-                    .map(|comment| IndexedDocComment {
-                        kind: comment.kind,
-                        text: catalog.text(comment.span).to_string(),
-                    })
-                    .collect(),
-                conditional_context: indexed_conditional_context(
-                    catalog,
-                    &record.conditional_context,
-                ),
-                callable_form: record.callable_form,
-            };
-
-            self.symbols.push(symbol);
-        }
-
-        file_id
-    }
-
-    /// Adds compiler-owned declaration facts without constructing the legacy
-    /// `SymbolCatalog`.  This is intentionally an ingestion seam only: callers
-    /// continue to choose when a file is parsed and when its immutable facts
-    /// are published into an index.
-    pub fn add_semantic_file(
+    fn append_semantic_file(
         &mut self,
         semantic_file: &SemanticFile,
         metadata: SourceFileMetadata,
@@ -640,7 +798,6 @@ impl SymbolIndex {
             });
         }
 
-        self.rebuild_lookup_maps();
         file_id
     }
 
@@ -667,6 +824,26 @@ impl SymbolIndex {
         &mut self,
         contributions: impl IntoIterator<Item = (&'contribution FileContribution, SourceFileMetadata)>,
     ) -> Result<Vec<SourceFileId>, FileContributionValidationError> {
+        self.add_file_contributions_with_projection(contributions, ContributionProjection::Full)
+    }
+
+    /// Builds the persisted external-index shape directly from compiler
+    /// contributions so cold indexing constructs lookup maps only once.
+    pub(crate) fn add_runtime_cache_file_contributions<'contribution>(
+        &mut self,
+        contributions: impl IntoIterator<Item = (&'contribution FileContribution, SourceFileMetadata)>,
+    ) -> Result<Vec<SourceFileId>, FileContributionValidationError> {
+        self.add_file_contributions_with_projection(
+            contributions,
+            ContributionProjection::RuntimeCache,
+        )
+    }
+
+    fn add_file_contributions_with_projection<'contribution>(
+        &mut self,
+        contributions: impl IntoIterator<Item = (&'contribution FileContribution, SourceFileMetadata)>,
+        projection: ContributionProjection,
+    ) -> Result<Vec<SourceFileId>, FileContributionValidationError> {
         let contributions = contributions.into_iter().collect::<Vec<_>>();
         for (contribution, _) in &contributions {
             contribution.validate()?;
@@ -682,7 +859,7 @@ impl SymbolIndex {
 
         let mut file_ids = Vec::with_capacity(contributions.len());
         for (contribution, metadata) in contributions {
-            file_ids.push(self.append_file_contribution(contribution, metadata));
+            file_ids.push(self.append_file_contribution(contribution, metadata, projection));
         }
         if !file_ids.is_empty() {
             self.rebuild_lookup_maps();
@@ -727,25 +904,43 @@ impl SymbolIndex {
         &mut self,
         contribution: &FileContribution,
         metadata: SourceFileMetadata,
+        projection: ContributionProjection,
     ) -> SourceFileId {
         let file_id = SourceFileId(self.files.len());
         let symbol_start = self.symbols.len();
+        let mut remapped_ids = vec![None; contribution.symbols.len()];
+        let mut symbol_count = 0_usize;
+        for declaration in &contribution.symbols {
+            if projection == ContributionProjection::RuntimeCache
+                && declaration.kind == SemanticDeclarationKind::LocalVariable
+            {
+                continue;
+            }
+            remapped_ids[declaration.id.0 as usize] = Some(SymbolId(symbol_count));
+            symbol_count += 1;
+        }
         self.files.push(IndexedFile {
             id: file_id,
             metadata,
             symbol_start,
-            symbol_count: contribution.symbols.len(),
+            symbol_count,
             non_declaration_callable_fragments: contribution.non_declaration_callable_fragments,
         });
 
         for declaration in &contribution.symbols {
+            if projection == ContributionProjection::RuntimeCache
+                && declaration.kind == SemanticDeclarationKind::LocalVariable
+            {
+                continue;
+            }
             let id = GlobalSymbolId {
                 file_id,
-                symbol_id: SymbolId(declaration.id.0 as usize),
+                symbol_id: remapped_ids[declaration.id.0 as usize]
+                    .expect("retained validated contribution id is remapped"),
             };
-            let parent = declaration.parent.map(|parent| GlobalSymbolId {
-                file_id,
-                symbol_id: SymbolId(parent.0 as usize),
+            let parent = declaration.parent.and_then(|parent| {
+                remapped_ids[parent.0 as usize]
+                    .map(|symbol_id| GlobalSymbolId { file_id, symbol_id })
             });
             self.symbols.push(IndexedSymbol {
                 id,
@@ -760,51 +955,57 @@ impl SymbolIndex {
                         .type_text
                         .as_ref()
                         .map(|value| value.text.clone()),
-                    type_text_span: declaration
-                        .detail
-                        .type_text
-                        .as_ref()
-                        .and_then(|value| value.span),
+                    type_text_span: declaration.detail.type_text.as_ref().and_then(|value| {
+                        (projection == ContributionProjection::Full)
+                            .then_some(value.span)
+                            .flatten()
+                    }),
                     return_type_text: declaration
                         .detail
                         .return_type
                         .as_ref()
                         .map(|value| value.text.clone()),
-                    return_type_text_span: declaration
-                        .detail
-                        .return_type
-                        .as_ref()
-                        .and_then(|value| value.span),
+                    return_type_text_span: declaration.detail.return_type.as_ref().and_then(
+                        |value| {
+                            (projection == ContributionProjection::Full)
+                                .then_some(value.span)
+                                .flatten()
+                        },
+                    ),
                     base_type: declaration
                         .detail
                         .base_type
                         .as_ref()
                         .map(|value| value.text.clone()),
-                    base_type_span: declaration
-                        .detail
-                        .base_type
-                        .as_ref()
-                        .and_then(|value| value.span),
+                    base_type_span: declaration.detail.base_type.as_ref().and_then(|value| {
+                        (projection == ContributionProjection::Full)
+                            .then_some(value.span)
+                            .flatten()
+                    }),
                     default_text: declaration
                         .detail
                         .default_value
                         .as_ref()
                         .map(|value| value.text.clone()),
-                    default_text_span: declaration
-                        .detail
-                        .default_value
-                        .as_ref()
-                        .and_then(|value| value.span),
+                    default_text_span: declaration.detail.default_value.as_ref().and_then(
+                        |value| {
+                            (projection == ContributionProjection::Full)
+                                .then_some(value.span)
+                                .flatten()
+                        },
+                    ),
                     enum_value_text: declaration
                         .detail
                         .enum_value
                         .as_ref()
                         .map(|value| value.text.clone()),
-                    enum_value_text_span: declaration
-                        .detail
-                        .enum_value
-                        .as_ref()
-                        .and_then(|value| value.span),
+                    enum_value_text_span: declaration.detail.enum_value.as_ref().and_then(
+                        |value| {
+                            (projection == ContributionProjection::Full)
+                                .then_some(value.span)
+                                .flatten()
+                        },
+                    ),
                 },
                 attributes: declaration
                     .attributes
@@ -888,6 +1089,16 @@ impl SymbolIndex {
         &self.symbols
     }
 
+    /// Iterates every symbol without requiring a layered runtime projection to
+    /// flatten its immutable child records into a second allocation.
+    pub fn symbol_iter(&self) -> Box<dyn Iterator<Item = &IndexedSymbol> + '_> {
+        if self.layers.is_empty() {
+            Box::new(self.symbols.iter())
+        } else {
+            Box::new(self.layers.iter().flat_map(|layer| layer.symbol_iter()))
+        }
+    }
+
     pub fn without_local_variables(&self) -> Self {
         self.without_symbol_kind(SymbolKind::LocalVariable)
     }
@@ -896,6 +1107,91 @@ impl SymbolIndex {
         let mut compact = self.without_local_variables();
         compact.strip_detail_spans();
         compact
+    }
+
+    /// Consumes a source-built index and projects it into the runtime cache
+    /// shape without cloning every retained symbol and file record.
+    pub(crate) fn into_runtime_cache(mut self) -> Result<Self, String> {
+        if !self.layers.is_empty() || self.file_id_base != 0 {
+            return Err(
+                "runtime cache compaction requires one non-layered source index".to_string(),
+            );
+        }
+
+        let files = std::mem::take(&mut self.files);
+        let symbols = std::mem::take(&mut self.symbols);
+        let mut remapped_ids = Vec::with_capacity(files.len());
+        let mut retained_counts = Vec::with_capacity(files.len());
+        for file in &files {
+            let end = file
+                .symbol_start
+                .checked_add(file.symbol_count)
+                .ok_or_else(|| "source index symbol range overflow".to_string())?;
+            let file_symbols = symbols
+                .get(file.symbol_start..end)
+                .ok_or_else(|| "source index symbol range is invalid".to_string())?;
+            let new_file_id = SourceFileId(remapped_ids.len());
+            let mut file_remap = vec![None; file.symbol_count];
+            let mut retained = 0_usize;
+            for symbol in file_symbols {
+                if symbol.kind == SymbolKind::LocalVariable {
+                    continue;
+                }
+                let slot = file_remap
+                    .get_mut(symbol.id.symbol_id.0)
+                    .ok_or_else(|| "source index symbol id is outside its file".to_string())?;
+                *slot = Some(GlobalSymbolId {
+                    file_id: new_file_id,
+                    symbol_id: SymbolId(retained),
+                });
+                retained += 1;
+            }
+            remapped_ids.push(file_remap);
+            retained_counts.push(retained);
+        }
+
+        let mut compact = Self::default();
+        compact.files.reserve(files.len());
+        compact
+            .symbols
+            .reserve(retained_counts.iter().copied().sum());
+        let mut next_symbol_start = 0_usize;
+        for (file_index, (file, symbol_count)) in files.into_iter().zip(retained_counts).enumerate()
+        {
+            compact.files.push(IndexedFile {
+                id: SourceFileId(file_index),
+                metadata: file.metadata,
+                symbol_start: next_symbol_start,
+                symbol_count,
+                non_declaration_callable_fragments: file.non_declaration_callable_fragments,
+            });
+            next_symbol_start += symbol_count;
+        }
+
+        let remapped_symbol_id = |id: GlobalSymbolId| {
+            remapped_ids
+                .get(id.file_id.0)
+                .and_then(|file| file.get(id.symbol_id.0))
+                .copied()
+                .flatten()
+        };
+        for mut symbol in symbols {
+            if symbol.kind == SymbolKind::LocalVariable {
+                continue;
+            }
+            symbol.id = remapped_symbol_id(symbol.id)
+                .ok_or_else(|| "source index retained symbol has no compact id".to_string())?;
+            symbol.parent = symbol.parent.and_then(remapped_symbol_id);
+            symbol.detail.type_text_span = None;
+            symbol.detail.return_type_text_span = None;
+            symbol.detail.base_type_span = None;
+            symbol.detail.default_text_span = None;
+            symbol.detail.enum_value_text_span = None;
+            compact.symbols.push(symbol);
+        }
+
+        compact.rebuild_lookup_maps();
+        Ok(compact)
     }
 
     fn strip_detail_spans(&mut self) {
@@ -964,10 +1260,17 @@ impl SymbolIndex {
     }
 
     pub fn file(&self, id: SourceFileId) -> Option<&IndexedFile> {
-        self.files.get(id.0)
+        if !self.layers.is_empty() {
+            return self.layers.iter().find_map(|layer| layer.file(id));
+        }
+        id.0.checked_sub(self.file_id_base)
+            .and_then(|local_id| self.files.get(local_id))
     }
 
     pub fn symbol(&self, id: GlobalSymbolId) -> Option<&IndexedSymbol> {
+        if !self.layers.is_empty() {
+            return self.layers.iter().find_map(|layer| layer.symbol(id));
+        }
         let file = self.file(id.file_id)?;
         let local_index = id.symbol_id.0;
         if local_index >= file.symbol_count {
@@ -1302,7 +1605,18 @@ impl SymbolIndex {
         counts
     }
 
-    fn symbols_for_file(&self, file: &IndexedFile) -> &[IndexedSymbol] {
+    pub(crate) fn symbols_for_file(&self, file: &IndexedFile) -> &[IndexedSymbol] {
+        if !self.layers.is_empty() {
+            return self
+                .layers
+                .iter()
+                .find_map(|layer| {
+                    layer
+                        .file(file.id)
+                        .map(|layer_file| layer.symbols_for_file(layer_file))
+                })
+                .unwrap_or(&[]);
+        }
         &self.symbols[file.symbol_start..file.symbol_start + file.symbol_count]
     }
 
@@ -1814,50 +2128,98 @@ fn folded_top_level_names(
     folded
 }
 
+/// Wall-clock phases of composing independently cached indexes into one
+/// external query surface. This contains no source or path information.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LayeredIndexTimings {
+    pub rebase: Duration,
+    pub file_projection: Duration,
+    pub lookup_projection: Duration,
+    pub total: Duration,
+}
+
+fn rebase_lookup_map_ids<K: Ord>(
+    map: &mut BTreeMap<K, Vec<GlobalSymbolId>>,
+    rebase: impl Fn(GlobalSymbolId) -> GlobalSymbolId + Copy,
+) {
+    for ids in map.values_mut() {
+        for id in ids {
+            *id = rebase(*id);
+        }
+    }
+}
+
+fn append_lookup_map<K: Ord + Clone>(
+    target: &mut BTreeMap<K, Vec<GlobalSymbolId>>,
+    source: &BTreeMap<K, Vec<GlobalSymbolId>>,
+) {
+    for (key, ids) in source {
+        target
+            .entry(key.clone())
+            .or_default()
+            .extend(ids.iter().copied());
+    }
+}
+
+fn merge_layer_lookup_maps<K: Ord + Clone>(
+    layers: &[SymbolIndex],
+    select: impl Fn(&SymbolIndex) -> &BTreeMap<K, Vec<GlobalSymbolId>>,
+) -> BTreeMap<K, Vec<GlobalSymbolId>> {
+    let mut merged = BTreeMap::new();
+    for layer in layers {
+        append_lookup_map(&mut merged, select(layer));
+    }
+    merged
+}
+
+fn build_layered_general_lookup_maps(
+    layers: &[SymbolIndex],
+) -> (
+    BTreeMap<String, Vec<GlobalSymbolId>>,
+    BTreeMap<String, Vec<GlobalSymbolId>>,
+    BTreeMap<String, Vec<GlobalSymbolId>>,
+    BTreeMap<SymbolKind, Vec<GlobalSymbolId>>,
+    BTreeMap<GlobalSymbolId, Vec<GlobalSymbolId>>,
+) {
+    (
+        merge_layer_lookup_maps(layers, |index| &index.by_name),
+        merge_layer_lookup_maps(layers, |index| &index.top_level_by_name),
+        merge_layer_lookup_maps(layers, |index| &index.top_level_by_folded_name),
+        merge_layer_lookup_maps(layers, |index| &index.by_kind),
+        merge_layer_lookup_maps(layers, |index| &index.children),
+    )
+}
+
+fn build_layered_kind_and_owner_lookup_maps(
+    layers: &[SymbolIndex],
+) -> (
+    BTreeMap<String, Vec<GlobalSymbolId>>,
+    BTreeMap<String, Vec<GlobalSymbolId>>,
+    BTreeMap<String, Vec<GlobalSymbolId>>,
+    BTreeMap<String, Vec<GlobalSymbolId>>,
+) {
+    (
+        merge_layer_lookup_maps(layers, |index| &index.classes_by_name),
+        merge_layer_lookup_maps(layers, |index| &index.typedefs_by_name),
+        merge_layer_lookup_maps(layers, |index| &index.functions_by_name),
+        merge_layer_lookup_maps(layers, |index| &index.members_by_owner),
+    )
+}
+
+fn build_layered_owner_name_lookup_maps(
+    layers: &[SymbolIndex],
+) -> (
+    BTreeMap<(String, String), Vec<GlobalSymbolId>>,
+    BTreeMap<(String, String), Vec<GlobalSymbolId>>,
+) {
+    (
+        merge_layer_lookup_maps(layers, |index| &index.methods_by_owner_name),
+        merge_layer_lookup_maps(layers, |index| &index.fields_by_owner_name),
+    )
+}
+
 fn map_entry_count<K>(map: &BTreeMap<K, Vec<GlobalSymbolId>>) -> usize {
     map.values().map(Vec::len).sum()
-}
-
-fn indexed_attributes<'source>(
-    catalog: &SymbolCatalog<'source>,
-    attributes: &[TextSpan],
-) -> Vec<IndexedAttribute> {
-    attributes
-        .iter()
-        .map(|span| IndexedAttribute {
-            name: catalog.attribute_name(*span).map(str::to_string),
-            text: indexed_attribute_text(catalog, *span),
-        })
-        .collect()
-}
-
-fn indexed_attribute_text<'source>(catalog: &SymbolCatalog<'source>, span: TextSpan) -> String {
-    let source = catalog.source();
-    let bytes = source.as_bytes();
-    let start = if span.start > 0 && bytes[span.start - 1] == b'[' {
-        span.start - 1
-    } else {
-        span.start
-    };
-    let end = if span.end < bytes.len() && bytes[span.end] == b']' {
-        span.end + 1
-    } else {
-        span.end
-    };
-    source[start..end].to_string()
-}
-
-fn indexed_conditional_context<'source>(
-    catalog: &SymbolCatalog<'source>,
-    context: &[ConditionalBranch],
-) -> Vec<IndexedConditionalBranch> {
-    context
-        .iter()
-        .map(|branch| IndexedConditionalBranch {
-            kind: branch.kind,
-            condition: branch.condition.map(|span| catalog.text(span).to_string()),
-        })
-        .collect()
 }
 
 pub(crate) fn indexed_symbol_kind(kind: SemanticDeclarationKind) -> SymbolKind {
@@ -1924,7 +2286,7 @@ fn is_class_member_kind(kind: SymbolKind) -> bool {
     )
 }
 
-fn parameter_signature_text(symbol: &IndexedSymbol) -> String {
+pub(crate) fn parameter_signature_text(symbol: &IndexedSymbol) -> String {
     let mut value = String::new();
     if !symbol.modifiers.is_empty() {
         value.push_str(&symbol.modifiers.join(" "));
@@ -1997,7 +2359,6 @@ pub struct IndexMapCounts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
     use crate::model::{
         source_category_for_path, SourceCategory, SourceFileMetadata, SOURCE_PRIORITY_GAME_DATA,
         SOURCE_PRIORITY_WORKSPACE,
@@ -2005,54 +2366,6 @@ mod tests {
     use crate::parser::parse_source;
     use crate::semantic_file::SemanticFile;
     use std::path::PathBuf;
-
-    #[test]
-    fn semantic_file_ingestion_matches_legacy_declaration_indexing() {
-        let source = r#"typedef int Count;
-class Example : Base
-{
-    int m_Value;
-    void Run(string label = "x");
-}
-void Start();
-"#;
-        let metadata = SourceFileMetadata::unknown();
-        let legacy_catalog = catalog(source, metadata.clone());
-        let legacy = SymbolIndex::from_catalogs([&legacy_catalog]);
-
-        let parse = parse_source(source);
-        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
-        let semantic_file = SemanticFile::build(source, &parse);
-        let mut semantic = SymbolIndex::default();
-        semantic.add_semantic_file(&semantic_file, metadata);
-
-        assert_eq!(semantic.files(), legacy.files());
-        assert_eq!(semantic.symbols().len(), legacy.symbols().len());
-        for (actual, expected) in semantic.symbols().iter().zip(legacy.symbols()) {
-            assert_eq!(actual.id, expected.id);
-            assert_eq!(actual.parent, expected.parent);
-            assert_eq!(actual.kind, expected.kind);
-            assert_eq!(actual.name, expected.name);
-            assert_eq!(actual.span, expected.span);
-            assert_eq!(actual.selection_span, expected.selection_span);
-            assert_eq!(actual.detail, expected.detail);
-            assert_eq!(actual.attributes, expected.attributes);
-            assert_eq!(actual.modifiers, expected.modifiers);
-            assert_eq!(actual.doc_comments, expected.doc_comments);
-        }
-        assert_eq!(
-            semantic.methods_by_owner_name("Example", "Run"),
-            legacy.methods_by_owner_name("Example", "Run")
-        );
-        assert_eq!(
-            semantic.fields_by_owner_name("Example", "m_Value"),
-            legacy.fields_by_owner_name("Example", "m_Value")
-        );
-        assert_eq!(
-            semantic.functions_by_name("Start"),
-            legacy.functions_by_name("Start")
-        );
-    }
 
     #[test]
     fn validated_contribution_ingestion_matches_semantic_file_indexing() {
@@ -2108,6 +2421,41 @@ void Start();
     }
 
     #[test]
+    fn runtime_cache_contribution_projection_matches_full_compaction() {
+        let source = r#"class Example : Base
+{
+	int Run(string name = "ok")
+	{
+		int localValue;
+		return 0;
+	}
+}
+"#;
+        let parse = parse_source(source);
+        let semantic_file = SemanticFile::build(source, &parse);
+        let contribution = semantic_file.contribution();
+        let metadata = SourceFileMetadata::unknown();
+
+        let mut full = SymbolIndex::default();
+        full.add_file_contributions([(&contribution, metadata.clone())])
+            .unwrap();
+        let expected = full.compact_for_runtime_cache();
+
+        let mut projected = SymbolIndex::default();
+        projected
+            .add_runtime_cache_file_contributions([(&contribution, metadata)])
+            .unwrap();
+
+        assert_eq!(projected.files(), expected.files());
+        assert_eq!(projected.symbols(), expected.symbols());
+        assert_eq!(
+            projected.callable_signature(projected.methods_by_owner_name("Example", "Run")[0]),
+            expected.callable_signature(expected.methods_by_owner_name("Example", "Run")[0])
+        );
+        assert_no_dangling_symbol_references(&projected);
+    }
+
+    #[test]
     fn indexes_names_kinds_children_classes_typedefs_and_methods() {
         let source = r#"typedef string FactionKey;
 
@@ -2123,12 +2471,13 @@ class Example : Base
                 kind: SourceKind::GameData,
                 category: SourceCategory::Unknown,
                 absolute_path: Some(PathBuf::from("C:/game/Example.c")),
+                virtual_source: None,
                 root_path: Some(PathBuf::from("C:/game")),
                 relative_path: Some(PathBuf::from("Example.c")),
                 priority: SOURCE_PRIORITY_GAME_DATA,
             },
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         assert_eq!(index.files().len(), 1);
         assert_eq!(index.symbols().len(), 5);
@@ -2163,7 +2512,7 @@ class Example : Base
 }
 "#;
         let catalog = catalog(source, SourceFileMetadata::unknown());
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let sequential = LookupMaps::build_sequential(index.files(), index.symbols());
 
         assert_eq!(
@@ -2183,7 +2532,7 @@ class scr_Beta {}
 class Other {}
 "#;
         let catalog = catalog(source, SourceFileMetadata::unknown());
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let names = index
             .top_level_symbols_with_ascii_case_insensitive_prefix("ScR_")
@@ -2205,6 +2554,7 @@ class Other {}
                 kind: SourceKind::GameData,
                 category: SourceCategory::Unknown,
                 absolute_path: Some(PathBuf::from("C:/game/Example.c")),
+                virtual_source: None,
                 root_path: Some(PathBuf::from("C:/game")),
                 relative_path: Some(PathBuf::from("Example.c")),
                 priority: SOURCE_PRIORITY_GAME_DATA,
@@ -2216,12 +2566,13 @@ class Other {}
                 kind: SourceKind::Workspace,
                 category: SourceCategory::Workspace,
                 absolute_path: Some(PathBuf::from("C:/workspace/Example.c")),
+                virtual_source: None,
                 root_path: Some(PathBuf::from("C:/workspace")),
                 relative_path: Some(PathBuf::from("Example.c")),
                 priority: SOURCE_PRIORITY_WORKSPACE,
             },
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
 
         let symbols = index.symbols_for_name("Example");
         assert_eq!(symbols.len(), 2);
@@ -2247,6 +2598,7 @@ class Other {}
                 kind: SourceKind::GameData,
                 category: SourceCategory::Unknown,
                 absolute_path: Some(PathBuf::from("C:/game/Example.c")),
+                virtual_source: None,
                 root_path: Some(PathBuf::from("C:/game")),
                 relative_path: Some(PathBuf::from("Example.c")),
                 priority: SOURCE_PRIORITY_GAME_DATA,
@@ -2262,12 +2614,13 @@ class Other {}
                 kind: SourceKind::Workspace,
                 category: SourceCategory::Workspace,
                 absolute_path: Some(PathBuf::from("C:/workspace/Example.c")),
+                virtual_source: None,
                 root_path: Some(PathBuf::from("C:/workspace")),
                 relative_path: Some(PathBuf::from("Example.c")),
                 priority: SOURCE_PRIORITY_WORKSPACE,
             },
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
 
         let all = index.symbols_for_name("Example");
         assert_eq!(all.len(), 3);
@@ -2316,7 +2669,7 @@ class Example : Base
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let class = index.symbol(index.classes_by_name("Example")[0]).unwrap();
         assert_eq!(class.detail.base_type.as_deref(), Some("Base"));
@@ -2353,7 +2706,7 @@ modded class Example
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let class = index.symbol(index.classes_by_name("Example")[0]).unwrap();
         assert_eq!(class.modifiers, vec!["modded"]);
@@ -2399,7 +2752,7 @@ modded class Example
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         assert_eq!(
             index
@@ -2433,7 +2786,7 @@ modded class Example
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let on_game_start = index.methods_by_owner_name("SCR_BaseGameMode", "OnGameStart")[0];
         let begin = index.methods_by_owner_name("SCR_BaseGameMode", "Begin")[0];
@@ -2475,7 +2828,7 @@ class Example
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let global_fn = index.symbols_for_name("GlobalFn")[0];
         let run = index.methods_by_owner_name("Example", "Run")[0];
@@ -2527,7 +2880,7 @@ class Example
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let fields = index.fields_by_owner_name("Example", "m_Value");
         assert_eq!(fields.len(), 1);
@@ -2574,7 +2927,7 @@ class GrandChild : Child
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let members = index.raw_members_for_class_including_bases("GrandChild");
         let member_names = member_names(&index, &members);
@@ -2598,7 +2951,7 @@ class GrandChild : Child
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let members = index.raw_members_for_class_including_bases("Child");
 
@@ -2620,7 +2973,7 @@ class B : A
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let members = index.raw_members_for_class_including_bases("A");
 
@@ -2648,7 +3001,7 @@ class Child : Base
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let raw = index.raw_members_for_class_including_bases("Child");
         assert_eq!(
@@ -2701,7 +3054,7 @@ class Child : Base
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         assert_eq!(index.fields_by_owner_name("Example", "COUNT").len(), 1);
         assert_eq!(index.fields_by_owner_name("Example", "TAGS").len(), 1);
@@ -2731,7 +3084,7 @@ class Child : Base
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         for name in [
             "m_ContentWidget",
@@ -2791,7 +3144,7 @@ class Child : Base
 "#,
             workspace_metadata("SCR_BaseGameMode.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
 
         let raw = index.raw_members_for_class_including_bases("SCR_BaseGameMode");
         assert_eq!(
@@ -2866,7 +3219,7 @@ class Child : Base
 "#,
             workspace_metadata("SCR_BaseGameMode.c"),
         );
-        let index = SymbolIndex::from_catalogs([&base, &game, &workspace]);
+        let index = index_from([&base, &game, &workspace]);
 
         let raw = index.raw_completion_members_for_owner_name("SCR_BaseGameMode");
         assert_eq!(
@@ -2951,7 +3304,7 @@ class Child : Base
 "#,
             workspace_metadata("SCR_BaseGameMode.c"),
         );
-        let index = SymbolIndex::from_catalogs([&base, &game, &workspace]);
+        let index = index_from([&base, &game, &workspace]);
 
         let full = index.completion_members_for_preferred_class("SCR_BaseGameMode");
         let named = index.preferred_members_named_for_class("SCR_BaseGameMode", "OnGameStart");
@@ -2983,7 +3336,7 @@ class Child : Base
 "#,
             game_metadata("Child.c"),
         );
-        let index = SymbolIndex::from_catalogs([&base, &child]);
+        let index = index_from([&base, &child]);
 
         let completion = index.completion_members_for_preferred_class("Child");
         let run = completion.members[0];
@@ -3016,7 +3369,7 @@ class Child : Base
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let completion = index.completion_members_for_preferred_class("Child");
 
@@ -3044,7 +3397,7 @@ class B : A
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let completion = index.completion_members_for_preferred_class("A");
 
@@ -3074,7 +3427,7 @@ class B : A
 "#,
             game_metadata("Child.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game_base, &game_child]);
+        let index = index_from([&game_base, &game_child]);
 
         let completion = index.raw_completion_members_for_owner_name("Child");
         let run = completion.members[0];
@@ -3107,7 +3460,7 @@ class B : A
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let completion = index.raw_completion_members_for_owner_name("Child");
 
@@ -3135,7 +3488,7 @@ class B : A
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let completion = index.raw_completion_members_for_owner_name("A");
 
@@ -3164,7 +3517,7 @@ class Child : Base
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let completion = index.raw_completion_members_for_owner_name("Child");
 
@@ -3183,6 +3536,7 @@ class Child : Base
                 kind: SourceKind::GameData,
                 category: SourceCategory::Unknown,
                 absolute_path: Some(PathBuf::from("C:/game/First.c")),
+                virtual_source: None,
                 root_path: Some(PathBuf::from("C:/game")),
                 relative_path: Some(PathBuf::from("First.c")),
                 priority: SOURCE_PRIORITY_GAME_DATA,
@@ -3194,6 +3548,7 @@ class Child : Base
                 kind: SourceKind::Workspace,
                 category: SourceCategory::Workspace,
                 absolute_path: Some(PathBuf::from("C:/workspace/Example.c")),
+                virtual_source: None,
                 root_path: Some(PathBuf::from("C:/workspace")),
                 relative_path: Some(PathBuf::from("Example.c")),
                 priority: SOURCE_PRIORITY_WORKSPACE,
@@ -3205,12 +3560,13 @@ class Child : Base
                 kind: SourceKind::GameData,
                 category: SourceCategory::Unknown,
                 absolute_path: Some(PathBuf::from("C:/game/Second.c")),
+                virtual_source: None,
                 root_path: Some(PathBuf::from("C:/game")),
                 relative_path: Some(PathBuf::from("Second.c")),
                 priority: SOURCE_PRIORITY_GAME_DATA,
             },
         );
-        let index = SymbolIndex::from_catalogs([&first_game, &workspace, &second_game]);
+        let index = index_from([&first_game, &workspace, &second_game]);
         let unsorted = [
             GlobalSymbolId {
                 file_id: SourceFileId(2),
@@ -3243,7 +3599,7 @@ class Child : Base
             "modded class SCR_BaseGameMode {}",
             workspace_metadata("SCR_BaseGameMode.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
 
         let classes = index.classes_by_name("SCR_BaseGameMode");
         assert_eq!(classes.len(), 2);
@@ -3269,7 +3625,7 @@ class Child : Base
 "#,
             workspace_metadata("SharedName.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let all = index.symbols_for_name("SharedName");
         assert_eq!(all.len(), 3);
@@ -3305,7 +3661,7 @@ class Child : Base
 "#,
             workspace_metadata("Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let all = index.symbols_for_name("value");
         assert_eq!(all.len(), 3);
@@ -3350,7 +3706,7 @@ class Child : Base
 "#,
             workspace_metadata("SCR_BaseGameMode.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
 
         let methods = index.methods_by_owner_name("SCR_BaseGameMode", "OnGameStart");
         assert_eq!(methods.len(), 2);
@@ -3373,7 +3729,7 @@ class FactionKey : string {}
 "#,
             game_metadata("GameCode/Faction/FactionKey.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let duplicates = index.duplicate_top_level_names();
         let faction_key = duplicates
@@ -3410,7 +3766,7 @@ void FactionKey(int value);
 "#,
             workspace_metadata("GameCode/Faction/FactionKey.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         let generic = index.preferred_top_level_symbols_for_name("FactionKey");
         assert_eq!(generic.len(), 3);
@@ -3461,7 +3817,7 @@ void ExampleFn(int value);
 "#,
             workspace_metadata("Workspace.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
 
         let preferred_class = index.preferred_classes_by_name("Example");
         let preferred_typedef = index.preferred_typedefs_by_name("ExampleAlias");
@@ -3500,7 +3856,7 @@ void Shared();
 "#,
             SourceFileMetadata::unknown(),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
 
         assert_eq!(index.top_level_symbols_for_name("Shared").len(), 3);
         assert_eq!(index.functions_by_name("Shared").len(), 1);
@@ -3537,7 +3893,7 @@ class FactionKey : string
 "#,
             workspace_metadata("Workspace.c"),
         );
-        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let index = index_from([&game, &workspace]);
 
         let source_counts = index.source_kind_counts();
         assert_eq!(source_counts.get(&SourceKind::GameData), Some(&1));
@@ -3586,11 +3942,11 @@ class FactionKey : string
 
     #[test]
     fn merged_indexes_preserve_file_symbol_ranges_and_parent_links() {
-        let first = SymbolIndex::from_catalogs([&catalog(
+        let first = index_from([&catalog(
             "class First { void FirstMethod(); }",
             game_metadata("Game/First.c"),
         )]);
-        let second = SymbolIndex::from_catalogs([&catalog(
+        let second = index_from([&catalog(
             "class Second { void SecondMethod(); }",
             workspace_metadata("Scripts/Second.c"),
         )]);
@@ -3619,6 +3975,71 @@ class FactionKey : string
     }
 
     #[test]
+    fn layered_indexes_route_global_ids_without_copying_symbols() {
+        let first = index_from([&catalog(
+            "class First { void FirstMethod(); }",
+            game_metadata("Game/First.c"),
+        )]);
+        let second = index_from([&catalog(
+            "class Second { void SecondMethod(); }",
+            game_metadata("Game/Second.c"),
+        )]);
+        let first_symbol_count = first.symbols.len();
+        let second_symbol_count = second.symbols.len();
+
+        let layered = SymbolIndex::layered([first, second]);
+
+        assert_eq!(layered.symbols.len(), 0, "layers retain symbol records");
+        assert_eq!(layered.files().len(), 2);
+        assert_eq!(layered.symbols_for_name("First").len(), 1);
+        assert_eq!(layered.symbols_for_name("Second").len(), 1);
+        assert_eq!(
+            layered
+                .completion_members_for_preferred_class("Second")
+                .members
+                .len(),
+            1
+        );
+        assert_eq!(
+            layered
+                .symbol(layered.symbols_for_name("Second")[0])
+                .and_then(|symbol| symbol.name.as_deref()),
+            Some("Second")
+        );
+        assert_eq!(
+            layered
+                .layers
+                .iter()
+                .map(|layer| layer.symbols.len())
+                .sum::<usize>(),
+            first_symbol_count + second_symbol_count
+        );
+    }
+
+    #[test]
+    fn parallel_layer_lookup_projection_matches_sequential_projection() {
+        let indexes = vec![
+            index_from([&catalog(
+                "class First { int m_Value; void FirstMethod(); }",
+                game_metadata("Game/First.c"),
+            )]),
+            index_from([&catalog(
+                "typedef int SecondType; class Second { void SecondMethod(); }",
+                game_metadata("Game/Second.c"),
+            )]),
+        ];
+        let sequential = SymbolIndex::layered(indexes.clone());
+
+        let mut coarse_parallel = SymbolIndex::layered(indexes.clone());
+        coarse_parallel.rebuild_layered_lookup_maps_coarse_parallel();
+        assert_layered_lookup_maps_match(&coarse_parallel, &sequential);
+
+        let mut wide_parallel = SymbolIndex::layered(indexes);
+        wide_parallel.rebuild_layered_lookup_maps_wide_parallel();
+        assert_layered_lookup_maps_match(&wide_parallel, &sequential);
+    }
+
+    #[test]
     fn pruned_index_removes_local_variables_and_preserves_parameters() {
         let catalog = catalog(
             r#"class Example
@@ -3633,7 +4054,7 @@ class FactionKey : string
 "#,
             game_metadata("Game/Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
+        let index = index_from([&catalog]);
         let pruned = index.without_local_variables();
 
         assert_eq!(index.symbols_for_kind(SymbolKind::LocalVariable).len(), 2);
@@ -3672,8 +4093,11 @@ class FactionKey : string
 "#,
             game_metadata("Game/Example.c"),
         );
-        let index = SymbolIndex::from_catalogs([&catalog]);
-        let compact = index.compact_for_runtime_cache();
+        let index = index_from([&catalog]);
+        let reference = index.compact_for_runtime_cache();
+        let compact = index.clone().into_runtime_cache().unwrap();
+        assert_eq!(compact.files(), reference.files());
+        assert_eq!(compact.symbols(), reference.symbols());
 
         assert_eq!(index.symbols_for_kind(SymbolKind::LocalVariable).len(), 1);
         assert!(compact
@@ -3735,7 +4159,11 @@ class Second : SecondBase
 "#,
             game_metadata("Game/Second.c"),
         );
-        let compact = SymbolIndex::from_catalogs([&first, &second]).compact_for_runtime_cache();
+        let index = index_from([&first, &second]);
+        let reference = index.compact_for_runtime_cache();
+        let compact = index.into_runtime_cache().unwrap();
+        assert_eq!(compact.files(), reference.files());
+        assert_eq!(compact.symbols(), reference.symbols());
 
         assert!(compact
             .symbols_for_kind(SymbolKind::LocalVariable)
@@ -3779,7 +4207,7 @@ class Second : SecondBase
 "#,
             game_metadata("Game/Example.c"),
         );
-        let pruned = SymbolIndex::from_catalogs([&catalog]).without_local_variables();
+        let pruned = index_from([&catalog]).without_local_variables();
 
         let first = pruned.methods_by_owner_name("Example", "First")[0];
         let second = pruned.methods_by_owner_name("Example", "Second")[0];
@@ -3800,11 +4228,26 @@ class Second : SecondBase
         assert_no_dangling_symbol_references(&pruned);
     }
 
-    fn catalog(source: &str, metadata: SourceFileMetadata) -> SymbolCatalog<'_> {
+    struct TestSemanticFile {
+        semantic: SemanticFile,
+        metadata: SourceFileMetadata,
+    }
+
+    fn catalog(source: &str, metadata: SourceFileMetadata) -> TestSemanticFile {
         let parse = parse_source(source);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
-        let ast = AstSourceFile::new(source, &parse);
-        SymbolCatalog::from_ast_with_metadata(source, &ast, metadata)
+        TestSemanticFile {
+            semantic: SemanticFile::build(source, &parse),
+            metadata,
+        }
+    }
+
+    fn index_from<'a>(files: impl IntoIterator<Item = &'a TestSemanticFile>) -> SymbolIndex {
+        SymbolIndex::from_semantic_files(
+            files
+                .into_iter()
+                .map(|file| (&file.semantic, file.metadata.clone())),
+        )
     }
 
     fn game_metadata(path: &str) -> SourceFileMetadata {
@@ -3817,6 +4260,7 @@ class Second : SecondBase
             kind: SourceKind::GameData,
             category,
             absolute_path: Some(PathBuf::from("C:/game").join(path)),
+            virtual_source: None,
             root_path: Some(PathBuf::from("C:/game")),
             relative_path: Some(relative_path),
             priority: SOURCE_PRIORITY_GAME_DATA,
@@ -3829,6 +4273,7 @@ class Second : SecondBase
             kind: SourceKind::Workspace,
             category: SourceCategory::Workspace,
             absolute_path: Some(PathBuf::from("C:/workspace").join(path)),
+            virtual_source: None,
             root_path: Some(PathBuf::from("C:/workspace")),
             relative_path: Some(relative_path),
             priority: SOURCE_PRIORITY_WORKSPACE,
@@ -3841,6 +4286,23 @@ class Second : SecondBase
             .filter_map(|id| index.symbol(*id))
             .filter_map(|symbol| symbol.name.clone())
             .collect()
+    }
+
+    fn assert_layered_lookup_maps_match(actual: &SymbolIndex, expected: &SymbolIndex) {
+        assert_eq!(actual.by_name, expected.by_name);
+        assert_eq!(actual.top_level_by_name, expected.top_level_by_name);
+        assert_eq!(
+            actual.top_level_by_folded_name,
+            expected.top_level_by_folded_name
+        );
+        assert_eq!(actual.by_kind, expected.by_kind);
+        assert_eq!(actual.children, expected.children);
+        assert_eq!(actual.classes_by_name, expected.classes_by_name);
+        assert_eq!(actual.typedefs_by_name, expected.typedefs_by_name);
+        assert_eq!(actual.functions_by_name, expected.functions_by_name);
+        assert_eq!(actual.members_by_owner, expected.members_by_owner);
+        assert_eq!(actual.methods_by_owner_name, expected.methods_by_owner_name);
+        assert_eq!(actual.fields_by_owner_name, expected.fields_by_owner_name);
     }
 
     fn assert_no_dangling_symbol_references(index: &SymbolIndex) {

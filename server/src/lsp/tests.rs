@@ -1,6 +1,6 @@
 use super::runtime_scheduler::{
-    next_runnable_work_key, next_runnable_work_key_for_lane, OpenDocumentAnalysisScheduler,
-    RuntimeWorkCapacity, RuntimeWorkJob, RuntimeWorkerLane,
+    next_runnable_work_key, next_runnable_work_key_for_lane, RuntimeWorkCapacity,
+    RuntimeWorkExecutor, RuntimeWorkJob, RuntimeWorkerLane,
 };
 use super::semantic_tokens::LspSemanticTokens;
 use super::*;
@@ -26,7 +26,6 @@ fn rich_semantic_tokens_job(
         TaskClass::Rich,
         runtime.latest(uri).expect("accepted snapshot"),
         1,
-        Instant::now(),
     ) {
         AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
         other => panic!("unexpected admission disposition: {other:?}"),
@@ -60,7 +59,6 @@ fn semantic_analysis_job(
         TaskClass::Semantic,
         runtime.latest(uri).expect("accepted snapshot"),
         1,
-        Instant::now(),
     ) {
         AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
         other => panic!("unexpected admission disposition: {other:?}"),
@@ -83,7 +81,6 @@ fn foreground_document_job(
         TaskClass::Foreground,
         runtime.latest(uri).expect("accepted snapshot"),
         1,
-        Instant::now(),
     ) {
         AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
         other => panic!("unexpected admission disposition: {other:?}"),
