@@ -33,6 +33,7 @@ import {
   languageClientLogs,
   languageClientNotifications,
   languageClientRequests,
+  languageClientSchemes,
 } from "../extensionConfig/languageClient";
 import { writeLoadedAddonSourceInventory } from "../gameData/localSourceInventory";
 import {
@@ -270,7 +271,7 @@ export function registerLanguageClientFeatures(
   );
   context.subscriptions.push(registerFirstDocumentOpenTiming(context));
   context.subscriptions.push(
-    vscode.workspace.registerTextDocumentContentProvider("reforger-pak", {
+    vscode.workspace.registerTextDocumentContentProvider(languageClientSchemes.packedSource, {
       provideTextDocumentContent: async (uri) => {
         if (!client) {
           throw new Error("Reforger language server is not ready.");

@@ -78,7 +78,14 @@ export const languageClientNotifications = {
 	workspaceFileDeleted: 'reforger/workspaceFileDeleted',
 } as const;
 
+export const languageClientSchemes = {
+	file: 'file',
+	packedSource: 'reforger-pak',
+	searchPreview: 'reforger-search',
+} as const;
+
 export const languageClientDocumentSelector = [
-	{ scheme: 'file', language: languageClientLanguage.id },
-	{ scheme: 'reforger-pak', language: languageClientLanguage.id },
+	{ scheme: languageClientSchemes.file, language: languageClientLanguage.id },
+	{ scheme: languageClientSchemes.packedSource, language: languageClientLanguage.id },
+	{ scheme: languageClientSchemes.searchPreview, language: languageClientLanguage.id },
 ] as const;

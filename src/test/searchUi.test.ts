@@ -3,10 +3,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vm from 'node:vm';
 import * as vscode from 'vscode';
+import { languageClientDocumentSelector, languageClientSchemes } from '../extensionConfig/languageClient';
 import { searchLimits } from '../extensionConfig/search';
-import { addonScopeLabel, asThumbnailColor, formatSearchKind, maxSearchPages, McpToolError, normalizeResourceSearchPage, normalizeSearchPage, normalizeSourceRelationshipPage, normalizeWorkbenchProjectContext, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceContextPreview, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments } from '../searchPrototype/mcpSearchClient';
+import { addonScopeLabel, asThumbnailColor, formatSearchKind, maxSearchPages, McpToolError, normalizeResourceSearchPage, normalizeSearchPage, normalizeSourceRelationshipPage, normalizeWorkbenchProjectContext, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceContextPreview, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments, type SearchHit } from '../searchPrototype/mcpSearchClient';
 import { semanticPreviewForLine, semanticPreviewForLines, semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
-import { localWorkbenchResourceLinkFor, renderSearchUiForTest, resourceAddonIsLoaded, resourcePathForClipboard, resourcePhysicalPathFor, workbenchResourceOpenState } from '../searchPrototype/searchUiPrototype';
+import { localWorkbenchResourceLinkFor, openSearchSourceDocument, renderSearchUiForTest, resourceAddonIsLoaded, resourcePathForClipboard, resourcePhysicalPathFor, searchDocumentContentProvider, workbenchResourceOpenState } from '../searchPrototype/searchUiPrototype';
 
 const searchUiSource = fs.readFileSync(
 	path.join(__dirname, '../../src/searchPrototype/searchUiPrototype.ts'),
@@ -627,6 +628,7 @@ suite('Reforger search UI MCP mapping', () => {
 				signature: 'class Car : Vehicle',
 				sourceCategory: 'game',
 				relativePath: 'Game/Vehicles/Car.c',
+				sourceUri: 'reforger-pak://58D0FB3206B6F859/current/Game/Vehicles/Car.c',
 				relationshipKind: 'derivedType',
 				distance: 2,
 				evidence: 'indexed class base type and exact script module',
@@ -640,7 +642,37 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.strictEqual(results[0].symbolKind, 'class');
 		assert.strictEqual(results[0].relationshipKind, 'derivedType');
 		assert.strictEqual(results[0].relationshipDistance, 2);
+		assert.strictEqual(results[0].sourceUri, 'reforger-pak://58D0FB3206B6F859/current/Game/Vehicles/Car.c');
 		assert.strictEqual(results[0].readInput.addonGuid, '58D0FB3206B6F859');
+	});
+
+	test('opens an unavailable relationship URI from the complete Enforce source handoff', async () => {
+		const provider = vscode.workspace.registerTextDocumentContentProvider(languageClientSchemes.searchPreview, searchDocumentContentProvider);
+		const hit: SearchHit = {
+			id: 'relationship', source: 'gameData', kind: 'symbol', title: 'Test', detail: 'class',
+			path: 'Game/Test.c:3', excerpt: 'class Test', sourceUri: 'missing-source:/Game/Test.c',
+			selectionStartLine: 3, selectionEndLine: 3,
+			readInput: { relativePath: 'Game/Test.c', startLine: 3 },
+		};
+		let completeReads = 0;
+		try {
+			const opened = await openSearchSourceDocument({
+				resolveSourcePath: async () => undefined,
+				read: async () => assert.fail('script fallback must not use a bounded read'),
+				readComplete: async () => {
+					completeReads += 1;
+					return { content: 'class Base {}\n\nclass Test : Base {}\n', startLine: 1, endLine: 3 };
+				},
+			}, hit);
+			assert.strictEqual(completeReads, 1);
+			assert.strictEqual(opened.document.languageId, 'enforce');
+			assert.strictEqual(opened.document.getText(), 'class Base {}\n\nclass Test : Base {}\n');
+			assert.ok(languageClientDocumentSelector.some(selector => selector.scheme === opened.document.uri.scheme));
+			assert.strictEqual(opened.sourceRead?.startLine, 1);
+			assert.strictEqual(opened.physicalDocument, false);
+		} finally {
+			provider.dispose();
+		}
 	});
 
 	test('preserves structured stale-anchor recovery and returns to broad discovery', () => {

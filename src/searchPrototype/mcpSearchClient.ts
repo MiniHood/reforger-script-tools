@@ -827,17 +827,18 @@ export class McpSearchClient {
 	}
 
 	public async readComplete(hit: SearchHit): Promise<SearchDocument> {
-		if (hit.source !== 'gameData' || typeof hit.readInput.relativePath !== 'string') {
+		if (hit.source === 'wiki' || typeof hit.readInput.relativePath !== 'string') {
 			return this.read(hit);
 		}
 		await this.start();
+		const tool = hit.source === 'gameData' ? 'read_game_data_source' : 'read_workspace_source';
 		let content = '';
 		let endLine = 0;
 		let nextStartLine = 1;
 		const visitedStarts = new Set<number>();
 		while (!visitedStarts.has(nextStartLine)) {
 			visitedStarts.add(nextStartLine);
-			const value = asRecord(await this.callTool('read_game_data_source', {
+			const value = asRecord(await this.callTool(tool, {
 				...hit.readInput,
 				startLine: nextStartLine,
 				lineCount: 500,

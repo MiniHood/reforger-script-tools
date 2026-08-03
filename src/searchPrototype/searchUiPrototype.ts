@@ -3,7 +3,7 @@ import { performance } from 'node:perf_hooks';
 import * as vscode from 'vscode';
 import { diagnostic, diagnosticsEnabled } from '../diagnostics/diagnostics';
 import { gameDataStorage } from '../extensionConfig/gameData';
-import { languageClientIndexCache } from '../extensionConfig/languageClient';
+import { languageClientIndexCache, languageClientSchemes } from '../extensionConfig/languageClient';
 import { searchCommands, searchContext, searchLimits } from '../extensionConfig/search';
 import {
 	workbenchConfig,
@@ -38,13 +38,20 @@ import {
 	type WorkbenchProjectContext,
 } from './mcpSearchClient';
 
-const searchScheme = 'reforger-search';
+const searchScheme = languageClientSchemes.searchPreview;
 const maxSearchDocuments = 32;
 const sourcePreviewWorkerCount = 8;
 const previewUpdateBatchSize = 4;
 let activePanel: vscode.WebviewPanel | undefined;
 let documentSequence = 0;
 const searchDocuments = new Map<string, string>();
+
+export const searchDocumentContentProvider: vscode.TextDocumentContentProvider = {
+	provideTextDocumentContent: uri => {
+		const key = uri.path.split('/')[1];
+		return searchDocuments.get(key) ?? '';
+	},
+};
 
 interface ActiveSearch {
 	panel: vscode.WebviewPanel;
@@ -126,12 +133,7 @@ export function registerSearchUi(context: vscode.ExtensionContext): void {
 	diagnostic('searchUi.registered');
 	void vscode.commands.executeCommand('setContext', searchContext.key, true);
 	context.subscriptions.push(
-		vscode.workspace.registerTextDocumentContentProvider(searchScheme, {
-			provideTextDocumentContent: uri => {
-				const key = uri.path.split('/')[1];
-				return searchDocuments.get(key) ?? '';
-			},
-		}),
+		vscode.workspace.registerTextDocumentContentProvider(searchScheme, searchDocumentContentProvider),
 		vscode.commands.registerCommand(searchCommands.open, () => openSearchPanel(context)),
 		new vscode.Disposable(() => {
 			for (const key of searchDocuments.keys()) {
@@ -1022,39 +1024,13 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 			return;
 		}
 		const client = await getClientFromActive(active);
-		const sourcePath = await client.resolveSourcePath(hit);
-		const sourceUri = hit.sourceUri ? vscode.Uri.parse(hit.sourceUri, true) : undefined;
-		let opened: vscode.TextDocument;
-		let boundedDocument: SearchDocument | undefined;
-		if (sourceUri) {
-			opened = await vscode.workspace.openTextDocument(sourceUri);
-		} else if (sourcePath) {
-			opened = await vscode.workspace.openTextDocument(vscode.Uri.file(sourcePath));
-		} else {
-			boundedDocument = hit.kind === 'resource'
-				? await client.readComplete(hit)
-				: await client.read(hit);
-			const key = `document-${++documentSequence}`;
-			while (searchDocuments.size >= maxSearchDocuments) {
-				const oldest = searchDocuments.keys().next().value;
-				if (oldest === undefined) {
-					break;
-				}
-				searchDocuments.delete(oldest);
-			}
-			searchDocuments.set(key, boundedDocument.content);
-			const uri = vscode.Uri.parse(
-				`${searchScheme}:/${key}/${encodeURIComponent(hit.path)}`,
-			);
-			opened = await vscode.workspace.openTextDocument(uri);
-		}
-		const language = hit.source === 'wiki' ? 'markdown' : 'enforce';
-		const documentWithLanguage = await vscode.languages.setTextDocumentLanguage(opened, language);
+		const openedSource = await openSearchSourceDocument(client, hit);
+		const documentWithLanguage = openedSource.document;
 		if (hit.source === 'wiki') {
 			await vscode.commands.executeCommand('markdown.showPreview', documentWithLanguage.uri);
 			diagnostic('searchUi.resultOpenCompleted', {
 				source: hit.source,
-				physicalDocument: Boolean(sourcePath) || sourceUri?.scheme === 'file',
+				physicalDocument: openedSource.physicalDocument,
 				markdownPreview: true,
 			});
 			return;
@@ -1062,12 +1038,12 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 		const editor = hit.kind === 'resource'
 			? await vscode.window.showTextDocument(documentWithLanguage, { preview: true })
 			: await vscode.window.showTextDocument(documentWithLanguage);
-		const range = selectionRange(documentWithLanguage, hit, boundedDocument?.startLine ?? 1);
+		const range = selectionRange(documentWithLanguage, hit, openedSource.sourceRead?.startLine ?? 1);
 		editor.selection = new vscode.Selection(range.start, range.end);
 		editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
 		diagnostic('searchUi.resultOpenCompleted', {
 			source: hit.source,
-			physicalDocument: Boolean(sourcePath) || sourceUri?.scheme === 'file',
+			physicalDocument: openedSource.physicalDocument,
 			markdownPreview: false,
 		});
 	} catch (error) {
@@ -1079,6 +1055,62 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 			`Could not open ${hit.title}: ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
+}
+
+type SearchSourceReader = Pick<McpSearchClient, 'read' | 'readComplete' | 'resolveSourcePath'>;
+
+export async function openSearchSourceDocument(
+	client: SearchSourceReader,
+	hit: SearchHit,
+): Promise<{ document: vscode.TextDocument; sourceRead?: SearchDocument; physicalDocument: boolean }> {
+	if (hit.sourceUri) {
+		try {
+			const uri = vscode.Uri.parse(hit.sourceUri, true);
+			const document = await vscode.workspace.openTextDocument(uri);
+			return {
+				document: await setSearchDocumentLanguage(document, hit),
+				physicalDocument: uri.scheme === 'file',
+			};
+		} catch {
+			// The revision-bound source read remains authoritative when its editor provider is unavailable.
+		}
+	}
+	const sourcePath = await client.resolveSourcePath(hit);
+	if (sourcePath) {
+		try {
+			const document = await vscode.workspace.openTextDocument(vscode.Uri.file(sourcePath));
+			return {
+				document: await setSearchDocumentLanguage(document, hit),
+				physicalDocument: true,
+			};
+		} catch {
+			// Continue to the same revision-bound source read used for packed sources.
+		}
+	}
+	const sourceRead = hit.source === 'wiki' ? await client.read(hit) : await client.readComplete(hit);
+	const key = `document-${++documentSequence}`;
+	while (searchDocuments.size >= maxSearchDocuments) {
+		const oldest = searchDocuments.keys().next().value;
+		if (oldest === undefined) {
+			break;
+		}
+		searchDocuments.delete(oldest);
+	}
+	searchDocuments.set(key, sourceRead.content);
+	const uri = vscode.Uri.parse(`${searchScheme}:/${key}/${encodeURIComponent(hit.path)}`);
+	const document = await vscode.workspace.openTextDocument(uri);
+	return {
+		document: await setSearchDocumentLanguage(document, hit),
+		sourceRead,
+		physicalDocument: false,
+	};
+}
+
+async function setSearchDocumentLanguage(document: vscode.TextDocument, hit: SearchHit): Promise<vscode.TextDocument> {
+	const language = hit.source === 'wiki' ? 'markdown' : 'enforce';
+	return document.languageId === language
+		? document
+		: vscode.languages.setTextDocumentLanguage(document, language);
 }
 
 async function getClientFromActive(active: ActiveSearch): Promise<McpSearchClient> {

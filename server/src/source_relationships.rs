@@ -4,8 +4,8 @@ use crate::game_data_research::{
     GameDataResearchError,
 };
 use crate::game_data_search::{
-    compact_signature, encode_symbol_ref, kind_name, logical_path, owner_name, qualify,
-    GameDataAddonMap, ReadSourceInput, SourceLineStarts, MAX_LIMIT,
+    compact_signature, editor_source_uri, encode_symbol_ref, kind_name, logical_path, owner_name,
+    qualify, GameDataAddonMap, ReadSourceInput, SourceLineStarts, MAX_LIMIT,
 };
 use crate::index::{GlobalSymbolId, SourceFileId, SymbolIndex};
 use crate::index_build::IndexBuildControl;
@@ -96,6 +96,8 @@ pub struct SourceRelationshipHit {
     pub signature: String,
     pub source_category: String,
     pub relative_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_uri: Option<String>,
     pub relationship_kind: String,
     pub distance: usize,
     pub evidence: String,
@@ -1413,6 +1415,7 @@ fn project_hit(
         .unwrap_or_default();
     let declaration_range = starts.range(symbol.span.start, symbol.span.end);
     let selection_range = starts.range(symbol.selection_span.start, symbol.selection_span.end);
+    let source_uri = editor_source_uri(&file.metadata);
     Ok(SourceRelationshipHit {
         source: node.key.source,
         addon_guid: addon.map(|addon| addon.guid.clone()),
@@ -1435,6 +1438,7 @@ fn project_hit(
             .unwrap_or_else(|| compact_signature(symbol, &qualified_name)),
         source_category: file.metadata.category.as_str().to_string(),
         relative_path: path.clone(),
+        source_uri,
         relationship_kind: relationship_kind.to_string(),
         distance,
         evidence: relationship_evidence(relationship_kind).to_string(),
@@ -1506,7 +1510,7 @@ mod tests {
     };
     use crate::model::{
         source_category_for_path, SourceCategory, SourceFileMetadata, SourceKind, SymbolKind,
-        SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE,
+        VirtualSourceIdentity, SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE,
     };
     use crate::parser::parse_source;
     use crate::semantic_file::SemanticFile;
@@ -1632,7 +1636,7 @@ mod tests {
                 "Game/Vehicles/Vehicle.c",
             )],
         );
-        let workspace = snapshot(SourceAuthority::Workspace, "ws-r1", &[
+        let mut workspace_files = [
             test_file(
                 "class Car : Vehicle { override void Move(int speed) {} override void Move(string mode) {} }",
                 SourceKind::Workspace,
@@ -1648,7 +1652,14 @@ mod tests {
                 SourceKind::Workspace,
                 "Workbench/Vehicles/IncompatibleVehicleMod.c",
             ),
-        ]);
+        ];
+        workspace_files[0].metadata.virtual_source = Some(VirtualSourceIdentity {
+            uri: "reforger-pak://test/current/Workbench/Vehicles/Car.c".to_string(),
+            addon_guid: "test".to_string(),
+            revision: "current".to_string(),
+            logical_path: "Workbench/Vehicles/Car.c".to_string(),
+        });
+        let workspace = snapshot(SourceAuthority::Workspace, "ws-r1", &workspace_files);
         let class_anchor = symbol_ref(&game, SymbolKind::Class, "Vehicle", None);
         let query = SourceRelationshipQuery::default();
         let page = query
@@ -1683,6 +1694,15 @@ mod tests {
             .results
             .iter()
             .all(|hit| hit.source == SourceAuthority::Workspace));
+        let car = page
+            .results
+            .iter()
+            .find(|hit| hit.qualified_name == "Car")
+            .expect("derived workspace class");
+        assert_eq!(
+            serde_json::to_value(car).unwrap()["sourceUri"],
+            "reforger-pak://test/current/Workbench/Vehicles/Car.c"
+        );
 
         let method_anchor = symbol_ref(&game, SymbolKind::Method, "Move", Some("Vehicle"));
         let page = query

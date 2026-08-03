@@ -198,7 +198,12 @@ transports scope, relationship kinds, depth, result kinds, page size, and cursor
 to the Rust `query_source_symbol_relationships` operation. Rust alone composes
 the captured Workspace and selected Game Data semantic facts. Returned
 declarations reuse the established add-on/source grouping, semantic type rails,
-Auto or manual preview context, paging, and exact opening handoffs. Search
+Auto or manual preview context, paging, and exact opening handoffs. Relationship
+results retain the same physical `file:` or packed `reforger-pak:` editor URI as
+broad discovery. If that provider is unavailable, the Search page reads the
+complete revision-bound source into an Enforce `reforger-search:` document; that
+scheme participates in the language-client selector so the fallback keeps full
+semantic behavior instead of degrading to a declaration excerpt. Search
 results default to one-column cards; the same local presentation control cycles
 through two-column masonry and compact aligned rows without rerunning the
 query. Changing mode or removing the anchor's source clears the editor's

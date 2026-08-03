@@ -203,6 +203,12 @@ Query exact inheritance, modded-class, and method-override relationships across 
         "sourceCategory": {
           "type": "string"
         },
+        "sourceUri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "symbolRef": {
           "type": "string"
         },

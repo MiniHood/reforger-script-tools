@@ -1260,6 +1260,10 @@ fn composed_relationship_tool_discovers_and_pages_cross_source_semantic_edges() 
         .pointer("/result/structuredContent/results/0/readSourceInput/relativePath")
         .and_then(Value::as_str)
         .is_some());
+    assert!(first
+        .pointer("/result/structuredContent/results/0/sourceUri")
+        .and_then(Value::as_str)
+        .is_some_and(|uri| uri.starts_with("file:")));
     let cursor = first
         .pointer("/result/structuredContent/nextCursor")
         .cloned()

@@ -1,6 +1,6 @@
 use crate::index::{GlobalSymbolId, IndexedSymbol, SourceFileId, SymbolIndex};
 use crate::index_build::IndexBuildControl;
-use crate::model::{SourceCategory, SymbolKind};
+use crate::model::{SourceCategory, SourceFileMetadata, SymbolKind};
 use crate::symbol_display::documentation_display;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -807,18 +807,7 @@ fn project_hit(
         .unwrap_or_else(|| compact_signature(symbol, &candidate.qualified_name));
     let source_path = candidate.path;
     let relative_path = bounded_search_text(source_path.clone());
-    let source_uri = file
-        .metadata
-        .virtual_source
-        .as_ref()
-        .map(|source| source.uri.clone())
-        .or_else(|| {
-            file.metadata
-                .absolute_path
-                .as_ref()
-                .and_then(|path| Url::from_file_path(path).ok())
-                .map(|uri| uri.to_string())
-        });
+    let source_uri = editor_source_uri(&file.metadata);
     GameDataSearchHit {
         inspect_input: InspectInput {
             symbol_ref: symbol_ref.clone(),
@@ -847,6 +836,21 @@ fn project_hit(
         match_kind: candidate.match_kind.to_string(),
     }
 }
+
+pub(crate) fn editor_source_uri(metadata: &SourceFileMetadata) -> Option<String> {
+    metadata
+        .virtual_source
+        .as_ref()
+        .map(|source| source.uri.clone())
+        .or_else(|| {
+            metadata
+                .absolute_path
+                .as_ref()
+                .and_then(|path| Url::from_file_path(path).ok())
+                .map(|uri| uri.to_string())
+        })
+}
+
 pub(crate) fn compact_signature(symbol: &IndexedSymbol, qualified_name: &str) -> String {
     match symbol.kind {
         SymbolKind::Class => symbol
