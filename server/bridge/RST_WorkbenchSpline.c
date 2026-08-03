@@ -170,7 +170,7 @@ class RST_WorkbenchSpline : NetApiHandler
 			if (!encoded.IsEmpty())
 				encoded += ";";
 			encoded += string.Format(
-				"%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11",
+				"%1,%2,%3,%4,%5,%6,%7,%8,%9",
 				i,
 				tangentMode,
 				PointToSpace(spline, localPosition, space)[0],
@@ -179,7 +179,9 @@ class RST_WorkbenchSpline : NetApiHandler
 				TangentToSpace(spline, localPosition, inTangent, space)[0],
 				TangentToSpace(spline, localPosition, inTangent, space)[1],
 				TangentToSpace(spline, localPosition, inTangent, space)[2],
-				TangentToSpace(spline, localPosition, outTangent, space)[0],
+				TangentToSpace(spline, localPosition, outTangent, space)[0]);
+			encoded += string.Format(
+				",%1,%2",
 				TangentToSpace(spline, localPosition, outTangent, space)[1],
 				TangentToSpace(spline, localPosition, outTangent, space)[2]);
 		}

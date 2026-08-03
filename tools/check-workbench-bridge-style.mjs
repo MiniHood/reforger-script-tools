@@ -15,6 +15,8 @@ for (const sourceFile of sourceFiles) {
     failures.push(`${sourceFile}: missing final newline`);
   }
 
+  assertStringFormatArity(sourceFile, source);
+
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     const lineNumber = index + 1;
@@ -29,6 +31,49 @@ for (const sourceFile of sourceFiles) {
     assertNoConditionalOperator(sourceFile, lineNumber, line);
     assertControlBody(sourceFile, lines, index);
   }
+}
+
+function assertStringFormatArity(sourceFile, source) {
+  const callPattern = /\bstring\.Format\s*\(/g;
+  for (const match of source.matchAll(callPattern)) {
+    const open = source.indexOf("(", match.index);
+    const argumentCount = callArgumentCount(source, open);
+    if (argumentCount <= 10) {
+      continue;
+    }
+    const lineNumber = source.slice(0, match.index).split(/\r?\n/).length;
+    failures.push(
+      `${sourceFile}:${lineNumber}: string.Format supports one format string and at most nine parameters`,
+    );
+  }
+}
+
+function callArgumentCount(source, open) {
+  let depth = 1;
+  let quoted = false;
+  let escaped = false;
+  let argumentCount = 1;
+  for (let index = open + 1; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '"' && !escaped) {
+      quoted = !quoted;
+    }
+    escaped = quoted && character === "\\" && !escaped;
+    if (quoted) {
+      continue;
+    }
+    if (character === "(") {
+      depth += 1;
+    } else if (character === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(open + 1, index).trim() ? argumentCount : 0;
+      }
+    } else if (character === "," && depth === 1) {
+      argumentCount += 1;
+    }
+  }
+  return 0;
 }
 
 if (failures.length > 0) {
