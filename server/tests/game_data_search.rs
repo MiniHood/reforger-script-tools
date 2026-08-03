@@ -482,6 +482,51 @@ fn search_applies_default_api_kinds_canonical_filters_and_cursor_revision_bindin
 }
 
 #[test]
+fn empty_query_returns_all_symbols_for_the_selected_kind() {
+    let fixture = TempFixture::new("search-empty-kind");
+    let scripts = fixture.path.join("Game");
+    fs::create_dir_all(&scripts).expect("create game scripts");
+    fs::write(
+        scripts.join("Kinds.c"),
+        "class EmptyQueryClass { void EmptyQueryMethod() {} }",
+    )
+    .expect("write source");
+    let index = build_index(&IndexBuildConfig {
+        roots: vec![IndexSourceRoot::new(
+            &fixture.path,
+            SourceKind::GameData,
+            SOURCE_PRIORITY_GAME_DATA,
+        )],
+    })
+    .expect("index")
+    .index;
+    let lines = line_starts(&index);
+    let mut request = GameDataSearchRequest::new("");
+    request.kinds = Some(vec!["method".to_string()]);
+
+    let page = search(
+        &index,
+        &lines,
+        &IndexBuildControl::default(),
+        "gd1:empty-kind",
+        request,
+    )
+    .expect("empty query kind search");
+
+    assert_eq!(page.query, "");
+    assert!(!page.results.is_empty());
+    assert!(page.results.iter().all(|result| result.kind == "method"));
+    assert!(page
+        .results
+        .iter()
+        .any(|result| result.name == "EmptyQueryMethod"));
+    assert!(page
+        .results
+        .iter()
+        .all(|result| result.match_kind == "kind"));
+}
+
+#[test]
 fn search_documentation_summaries_use_shared_comment_rendering() {
     let fixture = TempFixture::new("search-documentation");
     let scripts = fixture.path.join("Game");

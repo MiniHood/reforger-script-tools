@@ -202,8 +202,11 @@ exact loaded add-on scope. Packed PAC file tables and bounded loose-root
 enumeration contribute only logical paths, extensions, classification,
 provenance, and registration state; no payload is read or extracted. Results
 carry an opaque catalogue revision and complete Workbench link, so the UI does
-not reconstruct editor URLs. `workbench_search_resources` remains the separate
-live registered-resource route for native editor truth and inspection.
+not reconstruct editor URLs. Resource cards render the returned identity and
+path without source previews; selecting a resource category performs an
+empty-query kind search, while a semantic query further narrows that kind.
+`workbench_search_resources` remains the separate live registered-resource
+route for native editor truth and inspection.
 MCP accepts only the explicit layered inputs: add-on source inventory, add-on
 index storage, external-index mode, and any workspace dependency descriptors.
 Configuration export and the extension-hosted Search page derive their child

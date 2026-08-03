@@ -519,11 +519,6 @@ fn search_with_scope(
 
 fn normalize_query(query: &str) -> Result<String, GameDataSearchError> {
     let normalized = query.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() {
-        return Err(GameDataSearchError::InvalidRequest(
-            "query must be non-empty",
-        ));
-    }
     if normalized.chars().count() > MAX_QUERY_CHARS {
         return Err(GameDataSearchError::InvalidRequest(
             "query exceeds 256 characters",
@@ -717,6 +712,9 @@ fn match_rank(
 ) -> Option<(u8, &'static str)> {
     let name = symbol.name.as_deref()?;
     let name_folded = name.to_lowercase();
+    if query.is_empty() {
+        return Some((8, "kind"));
+    }
     // An identifier ending in `_` is the editor's common prefix-search shape
     // (`SCR_`, `GC_`, and similar). Do not turn that prefix into a broad
     // search over containing names, signatures, or types: those fields can

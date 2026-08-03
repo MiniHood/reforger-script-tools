@@ -215,8 +215,8 @@ Use this guide to choose a tool family and establish the minimum live context. F
 - When a valid call returns a structured failure, follow its `recovery` and `retryable` fields instead of guessing another tool or parameter.
 "#;
 const GAME_DATA_STATUS_DESCRIPTION: &str = "Load and report the parser-owned Reforger Game Data catalogue for the exact current add-on scope. Use this first when Game Data availability, coverage, or selectable add-on GUIDs are uncertain. The addons array is the bounded discovery surface for search_game_data_symbols and search_game_data_text; copy its addonGuid values into those searches. Returns immutable catalogue and scope revisions, scope authority, semantic coverage and counts, bounded timings, warnings, and recovery guidance without physical paths; it does not inspect source inputs, parse, rebuild, write cache storage, or search symbols.";
-const SEARCH_GAME_DATA_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the immutable Reforger Game Data Catalogue. Results are ranked deterministically and contain opaque revision-bound symbol references plus ready-to-copy inspection and source-read inputs; this is not a source-text search. The best 10,000 matches are reachable and `truncated` reports whether more matches existed. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry.";
-const SEARCH_WORKSPACE_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the configured user add-on workspace index. Results use the same language-owned symbol references, deterministic pagination, and inspection handoffs as Game Data search; the index is built once per MCP process from --workspace-scripts roots. The best 10,000 matches are reachable and `truncated` reports whether more matches existed. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry. Identifier-prefix queries ending in `_` (for example, `SCR_`) match declared symbol names only, not containing names, signatures, or types.";
+const SEARCH_GAME_DATA_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the immutable Reforger Game Data Catalogue. Results are ranked deterministically and contain opaque revision-bound symbol references plus ready-to-copy inspection and source-read inputs; this is not a source-text search. Use an empty query with `kinds` to enumerate those declarations, or with no kinds to enumerate the default symbol kinds. The best 10,000 matches are reachable and `truncated` reports whether more matches existed. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry.";
+const SEARCH_WORKSPACE_SYMBOLS_DESCRIPTION: &str = "Search semantic declarations in the configured user add-on workspace index. Results use the same language-owned symbol references, deterministic pagination, and inspection handoffs as Game Data search; the index is built once per MCP process from --workspace-scripts roots. Use an empty query with `kinds` to enumerate those declarations, or with no kinds to enumerate the default symbol kinds. The best 10,000 matches are reachable and `truncated` reports whether more matches existed. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry. Identifier-prefix queries ending in `_` (for example, `SCR_`) match declared symbol names only, not containing names, signatures, or types.";
 const SEARCH_GAME_DATA_TEXT_DESCRIPTION: &str = "Explicit bounded full-text search over readable Reforger Game Data source files. Matching is a case-insensitive literal substring by default; optional case-sensitive, whole-word, and regular-expression modes are explicit. Comments, strings, expressions, and local-variable uses are included; this is not fuzzy, semantic, or Wiki search. Results are deterministic, revision-bound, paged with an opaque cursor, and carry exact source ranges, a line excerpt, and a ready-to-copy readSourceInput. This scan is intentionally on demand and may take seconds across the corpus; use semantic search for declarations. Do not use this tool to infer live Workbench state.";
 const SEARCH_GAME_DATA_RESOURCES_DESCRIPTION: &str = "Search the offline metadata-only Game Data Resource Catalogue for packed and loose resources in the exact Workbench-loaded add-on scope. It never reads resource payloads, extracts archives, or requires live Workbench. Search terms match basename and logical path case-insensitively; results are deterministic, revision-bound, carry provenance, and include a complete Workbench resource link. Use workbench_search_resources separately when live registered-resource truth or editor inspection is required.";
 const SEARCH_WORKSPACE_TEXT_DESCRIPTION: &str = "Explicit bounded full-text search over readable user add-on workspace script files. Matching is a case-insensitive literal substring by default; optional case-sensitive, whole-word, and regular-expression modes are explicit. Comments, strings, expressions, and local-variable uses are included; this is not fuzzy, semantic, or Wiki search. Results are deterministic, revision-bound, paged with an opaque cursor, and carry exact source ranges, a line excerpt, and a ready-to-copy readSourceInput. This scan is intentionally on demand and may take seconds across the configured workspace; use semantic search for declarations.";
@@ -1028,7 +1028,7 @@ struct McpGameDataResourceSearchInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct McpGameDataSearchInput {
-    #[schemars(length(min = 1, max = 256))]
+    #[schemars(length(max = 256))]
     query: String,
     #[schemars(length(min = 1))]
     #[schemars(
@@ -1051,7 +1051,7 @@ struct McpGameDataSearchInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct McpWorkspaceSearchInput {
-    #[schemars(length(min = 1, max = 256))]
+    #[schemars(length(max = 256))]
     query: String,
     #[schemars(length(min = 1))]
     kinds: Option<Vec<String>>,
@@ -5290,12 +5290,12 @@ Never derive or retain a physical path from the status result.\n\
 ### Output schema\n\n\
 ```json\n{search_output_schema}\n```\n\n\
 ### Limits and matching\n\n\
-- `query` is required, normalized whitespace, and limited to 256 characters.\n\
+- `query` may be empty, is normalized whitespace, and is limited to 256 characters; use an empty query with `kinds` to enumerate those declarations, or with no kinds to enumerate the default symbol kinds.\n\
 - `limit` defaults to 20 and clamps to 1 through 100; cursors are opaque and limited to 2 KiB.\n\
 - Ready Game Data search, inspection, and source reads have a 5,000 ms ceiling; cold catalogue initialization is separately bounded.\n\
 - Default kinds exclude parameters, local variables, and type parameters.\n\
 - Identifier-prefix queries ending in `_` (for example, `SCR_`) match declared symbol names only; they do not return symbols that contain the prefix only in a containing name, signature, or type.\n\
-- Match kinds are `exactName`, `caseInsensitiveName`, `namePrefix`, `qualifiedName`, `nameSubstring`, `signature`, and `type`, in that fixed order.\n\
+- Match kinds are `exactName`, `caseInsensitiveName`, `namePrefix`, `qualifiedName`, `nameSubstring`, `signature`, `type`, and `kind` for category-only enumeration, in that fixed order.\n\
 - Results contain opaque revision-bound `symbolRef` values and copy-ready inspection and source-read inputs.\n\n\
 ### Stable failures\n\n\
 - `invalid_arguments`: correct the query or filters and retry.\n\

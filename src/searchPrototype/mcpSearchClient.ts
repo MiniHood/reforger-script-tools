@@ -1264,17 +1264,17 @@ export function normalizeResourceSearchPage(value: unknown): SearchHit[] {
 			return [];
 		}
 		const logicalPath = asString(hit.logicalPath, resourceName);
-		const name = asString(hit.name, logicalPath);
+		const basename = asString(hit.basename, logicalPath.split('/').pop() ?? logicalPath);
 		const extension = asString(hit.extension, 'resource');
 		const addonGuid = asOptionalString(hit.addonGuid);
 		return [{
 			id: `game-data-resource-${index}-${resourceName}`,
 			source: 'gameData' as const,
 			kind: 'resource' as const,
-			title: name,
+			title: basename,
 			detail: `${extension}${hit.stale === true ? ' · stale cache' : ''}`,
 			path: logicalPath,
-			excerpt: resourceName,
+			excerpt: '',
 			matchKind: 'resource',
 			readInput: {},
 			resourceName,

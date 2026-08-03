@@ -3,7 +3,7 @@
 
 [Back to the MCP API router](../../mcp-api.md)
 
-Search semantic declarations in the immutable Reforger Game Data Catalogue. Results are ranked deterministically and contain opaque revision-bound symbol references plus ready-to-copy inspection and source-read inputs; this is not a source-text search. The best 10,000 matches are reachable and `truncated` reports whether more matches existed. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry.
+Search semantic declarations in the immutable Reforger Game Data Catalogue. Results are ranked deterministically and contain opaque revision-bound symbol references plus ready-to-copy inspection and source-read inputs; this is not a source-text search. Use an empty query with `kinds` to enumerate those declarations, or with no kinds to enumerate the default symbol kinds. The best 10,000 matches are reachable and `truncated` reports whether more matches existed. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry.
 
 ### Annotations
 
@@ -75,7 +75,6 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
     },
     "query": {
       "maxLength": 256,
-      "minLength": 1,
       "type": "string"
     },
     "sourceCategories": {
@@ -339,12 +338,12 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
 
 ### Limits and matching
 
-- `query` is required, normalized whitespace, and limited to 256 characters.
+- `query` may be empty, is normalized whitespace, and is limited to 256 characters; use an empty query with `kinds` to enumerate those declarations, or with no kinds to enumerate the default symbol kinds.
 - `limit` defaults to 20 and clamps to 1 through 100; cursors are opaque and limited to 2 KiB.
 - Ready Game Data search, inspection, and source reads have a 5,000 ms ceiling; cold catalogue initialization is separately bounded.
 - Default kinds exclude parameters, local variables, and type parameters.
 - Identifier-prefix queries ending in `_` (for example, `SCR_`) match declared symbol names only; they do not return symbols that contain the prefix only in a containing name, signature, or type.
-- Match kinds are `exactName`, `caseInsensitiveName`, `namePrefix`, `qualifiedName`, `nameSubstring`, `signature`, and `type`, in that fixed order.
+- Match kinds are `exactName`, `caseInsensitiveName`, `namePrefix`, `qualifiedName`, `nameSubstring`, `signature`, `type`, and `kind` for category-only enumeration, in that fixed order.
 - Results contain opaque revision-bound `symbolRef` values and copy-ready inspection and source-read inputs.
 
 ### Stable failures

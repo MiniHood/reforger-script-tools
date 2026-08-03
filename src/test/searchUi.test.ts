@@ -28,6 +28,7 @@ suite('Reforger search UI MCP mapping', () => {
 				addonGuid: '58D0FB3206B6F859',
 				addonId: 'ArmaReforger',
 				logicalPath: 'Prefabs/Props/Radio.et',
+				basename: 'Radio.et',
 				name: 'Radio',
 				extension: 'et',
 				workbenchLink: 'enfusion://ResourceManager/~ArmaReforger:Prefabs/Props/Radio.et',
@@ -36,10 +37,10 @@ suite('Reforger search UI MCP mapping', () => {
 			id: 'game-data-resource-0-{58D0FB3206B6F859}Prefabs/Props/Radio.et',
 			source: 'gameData',
 			kind: 'resource',
-			title: 'Radio',
+			title: 'Radio.et',
 			detail: 'et',
 			path: 'Prefabs/Props/Radio.et',
-			excerpt: '{58D0FB3206B6F859}Prefabs/Props/Radio.et',
+			excerpt: '',
 			matchKind: 'resource',
 			readInput: {},
 			resourceName: '{58D0FB3206B6F859}Prefabs/Props/Radio.et',
@@ -56,6 +57,13 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /hit\.kind === 'resource'/);
 		assert.match(searchClientSource, /search_game_data_resources/);
 		assert.match(searchUiSource, /workbenchLink/);
+		assert.match(searchUiSource, /const resultPreview = result => result\.kind === 'resource' \? ''/);
+		assert.match(searchUiSource, /const hasActiveSearch = \(\) =>/);
+		assert.match(searchUiSource, /includeLayoutToggle && state\.mode !== 'resource'/);
+		assert.match(searchUiSource, /const navigationDisabled = !hasActiveSearch\(\)/);
+		assert.match(searchUiSource, /mode === 'semantic' && state\.type !== 'all'/);
+		assert.match(searchUiSource, /message\.refreshSearch === true && !state\.query\.trim\(\) && !state\.relationAnchor && hasActiveSearch\(\)/);
+		assert.match(searchClientSource, /const basename = asString\(hit\.basename/);
 	});
 
 	test('supersedes an in-flight search when a mode or type filter changes', () => {

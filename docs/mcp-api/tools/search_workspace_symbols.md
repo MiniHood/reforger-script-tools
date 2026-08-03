@@ -3,7 +3,7 @@
 
 [Back to the MCP API router](../../mcp-api.md)
 
-Search semantic declarations in the configured user add-on workspace index. Results use the same language-owned symbol references, deterministic pagination, and inspection handoffs as Game Data search; the index is built once per MCP process from --workspace-scripts roots. The best 10,000 matches are reachable and `truncated` reports whether more matches existed. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry. Identifier-prefix queries ending in `_` (for example, `SCR_`) match declared symbol names only, not containing names, signatures, or types.
+Search semantic declarations in the configured user add-on workspace index. Results use the same language-owned symbol references, deterministic pagination, and inspection handoffs as Game Data search; the index is built once per MCP process from --workspace-scripts roots. Use an empty query with `kinds` to enumerate those declarations, or with no kinds to enumerate the default symbol kinds. The best 10,000 matches are reachable and `truncated` reports whether more matches existed. Use the opaque cursor for normal continuation. The optional offset is a bounded random-access starting position from 0 through 10,000 for clients that need to jump directly to a known result range; do not combine offset with cursor. Invalid offset combinations or bounds return invalid_arguments; correct or omit offset and retry. Identifier-prefix queries ending in `_` (for example, `SCR_`) match declared symbol names only, not containing names, signatures, or types.
 
 ### Annotations
 
@@ -56,7 +56,6 @@ Search semantic declarations in the configured user add-on workspace index. Resu
     },
     "query": {
       "maxLength": 256,
-      "minLength": 1,
       "type": "string"
     }
   },
