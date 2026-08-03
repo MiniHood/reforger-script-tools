@@ -119,12 +119,7 @@ impl ResourceRecord {
             .map(|(_, value)| value.to_ascii_lowercase())
             .unwrap_or_default();
         let kind = ResourceKind::from_extension(&extension);
-        let editor = match kind {
-            ResourceKind::Script => "ScriptEditor",
-            ResourceKind::World => "WorldEditor",
-            _ => "ResourceManager",
-        };
-        let workbench_link = format!("enfusion://{editor}/~{}:{}", addon_id, normalized);
+        let workbench_link = workbench_link(addon_id, &normalized, kind, &extension);
         Self {
             addon_guid: addon_guid.to_ascii_uppercase(),
             addon_id: addon_id.to_string(),
@@ -138,6 +133,33 @@ impl ResourceRecord {
             source_identity: source_identity.to_string(),
             workbench_link,
         }
+    }
+
+    fn refresh_workbench_link(&mut self) {
+        self.workbench_link = workbench_link(
+            &self.addon_id,
+            &self.logical_path,
+            self.kind,
+            &self.extension,
+        );
+    }
+}
+
+fn workbench_link(
+    addon_id: &str,
+    logical_path: &str,
+    kind: ResourceKind,
+    extension: &str,
+) -> String {
+    match kind {
+        ResourceKind::Script => format!("enfusion://ScriptEditor/{logical_path}"),
+        ResourceKind::World if extension == "ent" => {
+            format!("enfusion://WorldEditor/{logical_path}")
+        }
+        ResourceKind::Ai if extension == "bt" => {
+            format!("enfusion://BehaviorEditor/~{addon_id}:{logical_path}")
+        }
+        _ => format!("enfusion://ResourceManager/~{addon_id}:{logical_path}"),
     }
 }
 
@@ -486,7 +508,10 @@ fn read_cached_addon_any(
     let mut decoded = Vec::new();
     decoder.read_to_end(&mut decoded).ok()?;
     let cached = serde_json::from_slice::<CachedAddonResources>(&decoded).ok()?;
-    (cached.schema == "reforger-resource-catalogue-addon-v2").then_some(cached)
+    if cached.schema != "reforger-resource-catalogue-addon-v2" {
+        return None;
+    }
+    Some(refresh_cached_workbench_links(cached))
 }
 
 fn read_cached_addon(
@@ -505,8 +530,19 @@ fn read_cached_addon(
     let mut decoded = Vec::new();
     decoder.read_to_end(&mut decoded).ok()?;
     let cached = serde_json::from_slice::<CachedAddonResources>(&decoded).ok()?;
-    (cached.schema == "reforger-resource-catalogue-addon-v2" && cached.fingerprint == fingerprint)
-        .then_some(cached)
+    if cached.schema != "reforger-resource-catalogue-addon-v2" || cached.fingerprint != fingerprint
+    {
+        return None;
+    }
+    Some(refresh_cached_workbench_links(cached))
+}
+
+fn refresh_cached_workbench_links(mut cached: CachedAddonResources) -> CachedAddonResources {
+    cached
+        .records
+        .iter_mut()
+        .for_each(ResourceRecord::refresh_workbench_link);
+    cached
 }
 
 fn write_cached_addon(
@@ -781,6 +817,43 @@ mod tests {
     }
 
     #[test]
+    fn workbench_links_route_resources_to_supported_editor_modules() {
+        assert_eq!(
+            record("Prefabs/Props/Radio.et").workbench_link,
+            "enfusion://ResourceManager/~Test:Prefabs/Props/Radio.et"
+        );
+        assert_eq!(
+            record("Configs/Factions/BLUFOR.conf").workbench_link,
+            "enfusion://ResourceManager/~Test:Configs/Factions/BLUFOR.conf"
+        );
+        assert_eq!(
+            record("Scripts/Game/Radio.c").workbench_link,
+            "enfusion://ScriptEditor/Scripts/Game/Radio.c"
+        );
+        assert_eq!(
+            record("Worlds/MP/RadioTest.ent").workbench_link,
+            "enfusion://WorldEditor/Worlds/MP/RadioTest.ent"
+        );
+        for path in [
+            "Terrains/Radio.terr",
+            "Worlds/Radio.topo",
+            "Worlds/Radio.layer",
+            "Terrains/Radio.bterr",
+            "Terrains/Radio.bttile",
+            "Terrains/Radio.ttile",
+        ] {
+            assert_eq!(
+                record(path).workbench_link,
+                format!("enfusion://ResourceManager/~Test:{path}")
+            );
+        }
+        assert_eq!(
+            record("AI/BehaviorTrees/Radio.bt").workbench_link,
+            "enfusion://BehaviorEditor/~Test:AI/BehaviorTrees/Radio.bt"
+        );
+    }
+
+    #[test]
     fn searches_case_insensitive_basename_terms_and_ranks_prefixes() {
         let catalogue = ResourceCatalogue::from_records(
             "r1",
@@ -917,6 +990,18 @@ mod tests {
             .iter()
             .any(|record| record.kind == ResourceKind::Script));
         assert!(fs::read_dir(&storage).unwrap().next().is_some());
+        let cached_root = read_loaded_addon_sources(&inventory).unwrap()[0]
+            .source_root
+            .clone();
+        let mut cached = read_cached_addon_any(&storage, "1111111111111111", &cached_root).unwrap();
+        cached
+            .records
+            .iter_mut()
+            .filter(|record| record.kind == ResourceKind::Script)
+            .for_each(|record| {
+                record.workbench_link = "enfusion://ScriptEditor/~Test:Scripts/Test.c".to_string();
+            });
+        write_cached_addon(&storage, "1111111111111111", &cached_root, &cached).unwrap();
         let (second, cached_stats) =
             ResourceCatalogue::from_config(&config, &IndexBuildControl::default()).unwrap();
         assert_eq!(second.records, first.records);

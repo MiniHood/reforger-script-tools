@@ -208,8 +208,15 @@ exact loaded add-on scope. Packed PAC file tables and bounded loose-root
 enumeration contribute only logical paths, extensions, classification,
 provenance, and registration state; no payload is read or extracted. Results
 carry an opaque catalogue revision and complete Workbench link, so the UI does
-not reconstruct editor URLs. Resource cards render the returned identity and
-path without source previews; selecting a resource category performs an
+not reconstruct editor URLs. Link construction follows Workbench's module
+contract: scripts use an unqualified `ScriptEditor` path, `.ent` world files
+use an unqualified `WorldEditor` path, behavior trees use an add-on-qualified
+`BehaviorEditor` path, and all other resource families—including prefabs,
+configs, and terrain-support files—use an add-on-qualified `ResourceManager`
+path. Cached catalogue
+records refresh this derived link when read so extension upgrades do not retain
+an older routing rule. Resource cards render the returned identity and path
+without source previews; selecting a resource category performs an
 empty-query kind search, while a semantic query further narrows that kind.
 `workbench_search_resources` remains the separate live registered-resource
 route for native editor truth and inspection.
