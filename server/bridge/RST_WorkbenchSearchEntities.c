@@ -183,7 +183,6 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 		RST_WorkbenchSearchEntitiesResponse response = new RST_WorkbenchSearchEntitiesResponse();
 		response.bridgeVersion = "1.52.12";
 		response.protocolVersion = 1;
-		PrintFormat("RST entity search: begin limit=%1 offset=%2 relation=%3", req.limit, req.offset, req.relationDirection);
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor || !editor.GetApi())
 		{
@@ -218,11 +217,8 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 		int returned = 0;
 		int relationCandidates = 0;
 		int entityCount = api.GetEditorEntityCount();
-		PrintFormat("RST entity search: world=%1 entities=%2 candidateComponents=%3 relationComponents=%4", response.worldPath, entityCount, required.Count(), relationRequired.Count());
 		for (int index; index < entityCount; index++)
 		{
-			if (index > 0 && index % 1000 == 0)
-				PrintFormat("RST entity search: scanned=%1 matched=%2 returned=%3", index, matched, returned);
 			IEntitySource entity = api.GetEditorEntity(index);
 			if (MatchesCandidate(entity, req, required))
 			{
@@ -240,7 +236,6 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 					response.relationTraversalTruncated = true;
 					response.totalMatches = matched;
 					response.namedMatches = named;
-					PrintFormat("RST entity search: relation candidate cap=%1", MAX_RELATION_CANDIDATES);
 					return response;
 				}
 				if (hasRelation)
@@ -249,7 +244,6 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 				if (relationTruncated)
 				{
 					response.relationTraversalTruncated = true;
-					PrintFormat("RST entity search: relation traversal capped entity=%1", entity.GetID().ToString());
 				}
 				if (relationMatches)
 				{
@@ -263,12 +257,10 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 							response.hasMore = true;
 							response.totalMatches = matched;
 							response.namedMatches = named;
-							PrintFormat("RST entity search: page boundary matched=%1 returned=%2", matched, returned);
 							return response;
 						}
 						string components;
 						int componentCount = ComponentCount(entity);
-						PrintFormat("RST entity search: record entity=%1 components=%2", entity.GetID().ToString(), componentCount);
 						for (int componentIndex; componentIndex < componentCount; componentIndex++)
 						{
 							IEntityComponentSource component = ComponentAt(entity, componentIndex);
@@ -374,7 +366,6 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 							response.hasMore = true;
 							response.totalMatches = matched;
 							response.namedMatches = named;
-							PrintFormat("RST entity search: response cap=%1 returned=%2", MAX_RESULT_CHARACTERS, returned);
 							return response;
 						}
 						if (!response.results.IsEmpty())
@@ -387,7 +378,6 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 		}
 		response.totalMatches = matched;
 		response.namedMatches = named;
-		PrintFormat("RST entity search: complete matched=%1 returned=%2 hasMore=%3 relationCapped=%4", matched, returned, response.hasMore, response.relationTraversalTruncated);
 		return response;
 	}
 }

@@ -60,7 +60,6 @@ class RST_WorkbenchOpenResource : NetApiHandler
 			response.status = "opened";
 		else
 			response.status = "open-failed";
-		PrintFormat("RST open resource: path=%1 opened=%2 status=%3", response.resourcePath, response.opened, response.status);
 		return response;
 	}
 }

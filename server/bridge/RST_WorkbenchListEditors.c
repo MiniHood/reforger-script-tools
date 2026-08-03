@@ -15,7 +15,6 @@ class RST_WorkbenchListEditors : NetApiHandler
 	{
 		RST_WorkbenchListEditorsResponse response = new RST_WorkbenchListEditorsResponse();
 		response.editors = "world|World Editor;animation|Animation Editor;audio|Audio Editor;behavior|Behavior Editor;localization|String Editor;particle|Particle Editor;procedural-animation|Procedural Animation Editor;script|Script Editor";
-		PrintFormat("RST editor list: %1", response.editors);
 		return response;
 	}
 }

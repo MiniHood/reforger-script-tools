@@ -57,14 +57,12 @@ class RST_WorkbenchOpenEditor : NetApiHandler
 			case "script":     response.opened = Workbench.OpenModule(ScriptEditor);
 			break;
 			default:     response.status = "unknown-editor";
-			PrintFormat("RST open editor rejected: %1", typedRequest.editorId);
 			return response;
 		}
 		if (response.opened)
 			response.status = "opened";
 		else
 			response.status = "open-failed";
-		PrintFormat("RST open editor: id=%1 opened=%2 status=%3", response.editorId, response.opened, response.status);
 		return response;
 	}
 }

@@ -211,41 +211,31 @@ class RST_WorkbenchInspectPrefab : NetApiHandler
 		// Keep the resource handle alive while any source/container derived from it is read.
 		ref Resource resource;
 		IEntitySource source;
-		Print(string.Format("RST prefab inspect: begin entity=%1 resource=%2", r.entityId, r.resourceName));
 		if (!r.entityId.IsEmpty())
 		{
 			source = Find(api, r.entityId);
-			Print("RST prefab inspect: resolved live entity source");
 		}
 		else if (!r.resourceName.IsEmpty())
 		{
 			ResourceName prefabName = r.resourceName;
-			Print("RST prefab inspect: loading resource");
 			resource = Resource.Load(prefabName);
-			Print(string.Format("RST prefab inspect: resource valid=%1", resource && resource.IsValid()));
 			if (resource && resource.IsValid())
-			{
 				source = resource.GetResource().ToEntitySource();
-				Print(string.Format("RST prefab inspect: source resolved=%1", source != null));
-			}
 		}
 		if (!source)
 		{
 			response.status = "prefab-not-found";
 			return response;
 		}
-		Print("RST prefab inspect: source available");
 		BaseContainer target = ResolveMember(source, r.memberId);
 		if (!target)
 		{
 			response.status = "member-not-found";
 			return response;
 		}
-		Print("RST prefab inspect: member resolved");
 		response.memberId = r.memberId;
 		if (!r.entityId.IsEmpty())
 			response.entity = string.Format("%1|%2|%3|%4", source.GetID().ToString(), source.GetClassName(), source.GetSubScene(), source.GetLayerID());
-		Print("RST prefab inspect: entity metadata complete");
 		ResourceName resourceName = source.GetResourceName();
 		response.resourceName = resourceName;
 		if (resourceName.IsExternal())
@@ -254,7 +244,6 @@ class RST_WorkbenchInspectPrefab : NetApiHandler
 			response.resourceReferenceKind = "internal";
 		else
 			response.resourceReferenceKind = "path";
-		Print("RST prefab inspect: resource metadata complete");
 		array<string> addons = {
 		};
 		source.GetSourceAddons(addons);
@@ -265,7 +254,6 @@ class RST_WorkbenchInspectPrefab : NetApiHandler
 				response.contributorAddons += ";";
 			response.contributorAddons += addon;
 		}
-		Print("RST prefab inspect: addon metadata complete");
 		BaseContainer ancestor = source.GetAncestor();
 		for (int depth = 0; ancestor && depth < 16; depth++)
 		{
@@ -279,7 +267,6 @@ class RST_WorkbenchInspectPrefab : NetApiHandler
 		}
 		if (ancestor)
 			response.ancestorResourcesTruncated = true;
-		Print("RST prefab inspect: ancestors complete");
 		response.prefabEditMode = api.IsPrefabEditMode();
 		response.childCount = target.GetNumChildren();
 		for (int i, count = ComponentCount(target); i < count && i < 64; i++)
