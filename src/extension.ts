@@ -23,7 +23,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	});
 	const integration = context.extensionMode === vscode.ExtensionMode.Test
 		? undefined
-		: createWorkbenchIntegration(context, resolveLanguageServerPath(context));
+		: createWorkbenchIntegration(resolveLanguageServerPath(context));
 	const workbenchReady = integration?.start() ?? Promise.resolve(true);
 	const workbenchStartupGate = integration?.whenConsentSettled() ?? Promise.resolve(true);
 	registerMcpConfigurationCommand(context);

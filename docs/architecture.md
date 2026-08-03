@@ -304,22 +304,22 @@ The optional managed handler package lives under the current Windows user's
 `Documents\My Games\ArmaReforgerWorkbench\profile\scripts\WorkbenchGame\reforger-script-tools`
 directory. The VS Code extension owns a one-time first-install prompt
 controlled by the unified `reforgerScriptTools.workbench.enabled` setting,
-which defaults to false. Approval enables that setting and stores the
-resulting approval as an internal durable extension state. On an installation
-that has not answered the current consent prompt, activation waits for that
-answer before registering Workbench compiler features, starting the language
-server, showing indexing progress, installing bridge scripts, or building any
-index. Declining records the setting as disabled and then permits the ordinary
-non-Workbench language-server startup. The managed manifest
-remains the file-ownership and version record. Public MCP cannot create that
-first manifest; its explicit installer may maintain an existing consented
-installation. A prior
+which defaults to false. That setting is the sole durable approval state:
+accepting the prompt enables it, and enabling it directly is equivalent to
+approval. On an installation without an explicit setting value, activation
+waits for the prompt answer before registering Workbench compiler features,
+starting the language server, showing indexing progress, installing bridge
+scripts, or building any index. Declining records the setting as disabled and
+then permits the ordinary non-Workbench language-server startup. The managed
+manifest remains the file-ownership and version record. Public MCP cannot
+create that first manifest; its explicit installer may maintain an existing
+managed installation. A prior
 manifest-owned flat-profile package is migrated to this `WorkbenchGame` module
 path without touching unknown files. `workbench_status` is read-only: it
 returns only the native NET API's Workbench Availability State and never
 inspects local installation files, enumerates processes, migrates, repairs, or
 validates the handler package. The explicit installer is the only MCP
-capability that maintains the consented package; state and compiler validation
+capability that maintains the managed package; state and compiler validation
 perform only their named NET operation.
 Writing that profile package and running native compiler validation does not
 register its `NetApiHandler`s in the already-running Workbench. Native
@@ -343,18 +343,18 @@ classes, field blocks from methods, sibling methods, and their attached member
 comments; consecutive blank lines are not permitted. This preserves compiler
 validation as the Workbench authority while making the reviewed source directly
 inspectable.
-The extension's consented bootstrap operation ensures Workbench's
+The extension's setting-authorized bootstrap operation ensures Workbench's
 `NetAPI_Enabled` value is `REG_SZ "1"` and registers the per-user
 `enfusion://` Windows URL protocol beneath
 `HKCU\Software\Classes\enfusion`, including the quoted Workbench launch command
 resolved from the authoritative Steam installations; repeated writes are
-idempotent. A later approved activation verifies that complete registration and
+idempotent. A later enabled activation verifies that complete registration and
 reruns bootstrap only when it is missing or stale. Bootstrap then installs or
 updates the managed bridge without requiring an existing NET API connection. If Workbench
 is already running, the extension asks the user to restart it. If it is closed,
 the extension completes setup without launching it; offline indexing remains
-available until the user opens Workbench. Stored approval never enables an
-unset or disabled Workbench setting.
+available until the user opens Workbench. A disabled setting authorizes no
+installation or maintenance.
 Unknown profile files are preserved, newer package versions are never
 downgraded, and failed activation is left installed for diagnosis rather than
 rolled back. Version precedence follows semantic-version ordering; an
@@ -470,7 +470,7 @@ raw NET API payloads, property values, confirmation tokens, or source text.
 | `src/mcp/` | MCP client configuration from the packaged runtime and stable source/cache inputs | Protocol serving, indexing, or semantic queries |
 | `src/workbenchNetApi/gateway/` | Thin TypeScript process bridge from editor compiler features to the bundled Rust Workbench Gateway | NET API framing, VS Code UI, raw endpoint dispatch, or Enfusion language decisions |
 | `src/workbenchNetApi/compiler/` | VS Code scheduling, compiler diagnostic rendering, and Workbench status UI | NET API framing, endpoint discovery, or language-engine diagnostics |
-| `src/workbenchNetApi/integration/` | One-time approval, bootstrap/maintenance orchestration, and progress/notification presentation | Registry/profile/process implementation, NET API framing, or language/index decisions |
+| `src/workbenchNetApi/integration/` | Setting-owned approval, bootstrap/maintenance orchestration, and progress/notification presentation | Registry/profile/process implementation, NET API framing, or language/index decisions |
 | `server/src/bin/reforger_language_server.rs` | Process-mode parsing and dispatch to one protocol adapter | Protocol behaviour, language analysis, or tool definitions |
 | `server/src/lsp/` | LSP transport, document lifecycle, and language-feature projection | MCP serving or a second Enfusion analysis implementation |
 | `server/src/mcp/` | MCP schemas, protocol serving, and bounded result mapping | LSP lifecycle or a second Game Data/Official Wiki authority |

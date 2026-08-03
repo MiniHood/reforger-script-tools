@@ -382,9 +382,11 @@ them, so verify the active development session after a server rebuild rather
 than assuming a previous process reflects the change.
 
 The unified `reforgerScriptTools.workbench.enabled` setting defaults to
-`false`. When there is no prior approval, the extension asks whether it may
-enable Workbench integration and install the managed bridge. Approval updates
-the setting to `true`, writes `NetAPI_Enabled` as `REG_SZ "1"`, and registers
+`false`. When there is no explicit value, the extension asks whether it may
+enable Workbench integration and install the managed bridge. The setting is
+the sole durable approval state: accepting the prompt updates it to `true`,
+and enabling it directly is equivalent to approval. Setup writes
+`NetAPI_Enabled` as `REG_SZ "1"` and registers
 the per-user `enfusion://` URL handler at
 `HKCU\Software\Classes\enfusion`. The handler command uses the resolved
 Workbench executable, base-game add-ons directory, and `ArmaReforger.gproj`,
@@ -394,13 +396,12 @@ Workbench. Until that first prompt is answered, activation does not
 register the Workbench compiler features, start the language server, show the
 indexing progress indicator, install bridge scripts, or build indexes. A
 decline stores the Workbench setting as `false`, after which the normal
-non-Workbench language-server and indexing startup may proceed. Approval is
-retained as internal extension state. Later enabled activations maintain or
-upgrade the bridge without prompting, leave already-correct registry values
-untouched, and repair a missing or stale `enfusion://` registration through the
-same consented bootstrap. An explicitly disabled setting remains off.
-An approved installation without an explicit enablement value remains off; the
-stored approval never rewrites the setting.
+non-Workbench language-server and indexing startup may proceed. Later enabled
+activations maintain or upgrade the bridge without prompting, leave
+already-correct registry values untouched, and repair a missing or stale
+`enfusion://` registration through the same authorized bootstrap. An
+explicitly disabled setting remains off and authorizes no installation or
+maintenance.
 
 The `reforgerScriptTools.workbench.externalIndexMode` setting controls external
 index scope independently of NET API availability. Its default `loaded` mode
@@ -410,7 +411,7 @@ available. It does not use a previous Workbench graph as a startup source.
 `all` uses compatible cached indexes without a graph; `none`
 disables external add-on indexes. Changing this setting immediately restarts
 the language server and republishes the selected external-index layer; `none`
-and `all` do not wait for a Workbench graph. On a warm approved startup, a
+and `all` do not wait for a Workbench graph. On a warm enabled startup, a
 current managed manifest avoids repeating bridge maintenance and Workbench
 process probing.
 

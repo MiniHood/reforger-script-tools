@@ -54,10 +54,12 @@ Enfusion Script.
 Workbench integration is disabled by default. On first activation, the
 extension asks whether it may enable the integration and install its managed
 bridge. Approval enables Workbench's local NET API, registers the per-user
-`enfusion://` handler, installs the bridge, and remembers the approval for
-future bridge updates. If Workbench is open, restart it when prompted. If it is
-closed, setup completes without launching it. Declining keeps the integration
-disabled while the other language and indexing features continue normally.
+`enfusion://` handler, installs the bridge, and changes
+`reforgerScriptTools.workbench.enabled` to `true`. That setting is also the
+durable approval for future bridge updates; no separate approval state is
+stored. If Workbench is open, restart it when prompted. If it is closed, setup
+completes without launching it. Declining records the setting as `false` while
+the other language and indexing features continue normally.
 
 The extension reconnects automatically. The Workbench status item shows
 availability, and **Reforger Script Tools: Validate Scripts in Workbench** runs
@@ -85,7 +87,7 @@ Tools`, or add the keys to `settings.json`.
 | `reforgerScriptTools.diagnostics.enabled` | `false` | Write detailed local support logs after the VS Code window is reloaded. Enable only while investigating a problem. |
 | `reforgerScriptTools.experimentalAutoFormatting` | `true` | Apply experimental automatic source edits, including typing assists and preprocessor directive separators. |
 | `reforgerScriptTools.bracketColoring` | `"semantic"` | Use `"semantic"` owner colors, `"punctuation"` palette color, or native `"vscode"` bracket coloring and matching. This setting applies across VS Code windows. |
-| `reforgerScriptTools.workbench.enabled` | `false` | Enable Workbench NET API status checks, compiler validation, and the consent-gated managed bridge. |
+| `reforgerScriptTools.workbench.enabled` | `false` | Enable and approve Workbench NET API status checks, compiler validation, and managed bridge installation. |
 | `reforgerScriptTools.workbench.host` | `"127.0.0.1"` | Workbench NET API loopback host. IPv4 loopback addresses and `::1` are accepted. |
 | `reforgerScriptTools.workbench.port` | `5775` | Workbench NET API port, from `1` through `65535`. The extension does not scan other ports. |
 | `reforgerScriptTools.workbench.saveOnIdle` | `true` | After three seconds without typing, save the active Enforce Script and validate in Workbench. Disable to validate only on explicit save or command. |

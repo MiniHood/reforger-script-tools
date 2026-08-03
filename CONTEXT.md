@@ -100,9 +100,11 @@ discovers, scans, or changes it.
 _Avoid_: endpoint discovery, port scan, self-healing connection
 
 **Workbench NET API Enablement**:
-The extension-owned master control for all Gateway status and capability calls.
-When disabled, it performs no NET API traffic and any retained Workbench
-Compiler Diagnostics are stale evidence.
+The extension-owned master control and sole durable approval for Workbench
+integration. When enabled, it authorizes managed bridge installation and all
+Gateway status and capability calls. When disabled, it authorizes no bridge
+write, performs no NET API traffic, and any retained Workbench Compiler
+Diagnostics are stale evidence.
 _Avoid_: compiler-delay opt-out, Workbench option, connection preference
 
 **Workbench Status Item**:

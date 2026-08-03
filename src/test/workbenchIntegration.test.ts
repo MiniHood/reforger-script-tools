@@ -3,7 +3,6 @@ import {
 	WorkbenchIntegrationCoordinator,
 	WorkbenchIntegrationRuntime,
 	WorkbenchIntegrationStatus,
-	WorkbenchIntegrationState,
 	WorkbenchIntegrationUi,
 	workbenchStartupPolicy,
 } from '../workbenchNetApi/integration/workbenchIntegration';
@@ -24,7 +23,6 @@ suite('Workbench Integration', () => {
 		let prompted = false;
 		let bootstraps = 0;
 		const coordinator = new WorkbenchIntegrationCoordinator(
-			stateWith(false),
 			runtimeWith({
 				bootstrap: async () => {
 					bootstraps += 1;
@@ -59,10 +57,10 @@ suite('Workbench Integration', () => {
 		let enabled = false;
 		let bootstraps = 0;
 		const coordinator = new WorkbenchIntegrationCoordinator(
-			stateWith(false),
 			runtimeWith({
 				status: async () => statusResult({ installed: false, installationAvailable: true }),
 				bootstrap: async () => {
+					assert.strictEqual(enabled, true);
 					bootstraps += 1;
 					return bootstrapResult();
 				},
@@ -86,7 +84,6 @@ suite('Workbench Integration', () => {
 		let prompts = 0;
 		let bootstraps = 0;
 		const coordinator = new WorkbenchIntegrationCoordinator(
-			stateWith(false),
 			runtimeWith({
 				bootstrap: async () => {
 					bootstraps += 1;
@@ -108,10 +105,9 @@ suite('Workbench Integration', () => {
 		assert.strictEqual(bootstraps, 0);
 	});
 
-	test('approved disabled Workbench stays dormant until the setting is enabled', async () => {
+	test('disabled Workbench stays dormant when the first-install prompt is not eligible', async () => {
 		let statuses = 0;
 		const coordinator = new WorkbenchIntegrationCoordinator(
-			stateWith(true),
 			runtimeWith({
 				status: async () => {
 					statuses += 1;
@@ -120,27 +116,28 @@ suite('Workbench Integration', () => {
 			}),
 			uiWith({}),
 			false,
+			undefined,
+			false,
 		);
 
 		await coordinator.start();
 		assert.strictEqual(statuses, 0);
 	});
 
-	test('enabling the setting later retries a declined installation', async () => {
+	test('enabling the setting later retries a declined installation without another prompt', async () => {
 		let prompts = 0;
-		let bootstraps = 0;
+		let maintenance = 0;
 		const coordinator = new WorkbenchIntegrationCoordinator(
-			stateWith(false),
 			runtimeWith({
-				bootstrap: async () => {
-					bootstraps += 1;
+				maintain: async () => {
+					maintenance += 1;
 					return bootstrapResult();
 				},
 			}),
 			uiWith({
 				confirmInstall: async () => {
 					prompts += 1;
-					return prompts === 2;
+					return false;
 				},
 			}),
 			false,
@@ -148,9 +145,9 @@ suite('Workbench Integration', () => {
 
 		await coordinator.start();
 		coordinator.onWorkbenchConfigurationChanged(true);
-		await waitUntil(() => bootstraps === 1);
+		await waitUntil(() => maintenance === 1);
 
-		assert.strictEqual(prompts, 2);
+		assert.strictEqual(prompts, 1);
 	});
 
 	test('declining approval disables Workbench integration without installing it', async () => {
@@ -158,7 +155,6 @@ suite('Workbench Integration', () => {
 		let bootstraps = 0;
 		let disabled = 0;
 		const coordinator = new WorkbenchIntegrationCoordinator(
-			stateWith(false),
 			runtimeWith({
 				status: async () => statusResult({ installed: false, installationAvailable: true }),
 				bootstrap: async () => {
@@ -172,7 +168,7 @@ suite('Workbench Integration', () => {
 					return false;
 				},
 			}),
-			true,
+			false,
 			undefined,
 			true,
 			async () => {
@@ -191,9 +187,8 @@ suite('Workbench Integration', () => {
 	test('approval enables the integration and prompts to restart an open Workbench', async () => {
 		let bootstraps = 0;
 		let restartPrompts = 0;
-		const state = stateWith(false);
+		let enabled = false;
 		const coordinator = new WorkbenchIntegrationCoordinator(
-			state,
 			runtimeWith({
 				status: async () => statusResult({ installed: false, installationAvailable: true }),
 				bootstrap: async () => {
@@ -210,7 +205,10 @@ suite('Workbench Integration', () => {
 					}
 				},
 			}),
-			true,
+			false,
+			async () => {
+				enabled = true;
+			},
 		);
 
 		const ready = coordinator.start();
@@ -218,7 +216,7 @@ suite('Workbench Integration', () => {
 		coordinator.onWorkbenchConnected(endpoint);
 		await waitUntil(() => restartPrompts === 1);
 
-		assert.strictEqual(state.isApproved(), true);
+		assert.strictEqual(enabled, true);
 		assert.strictEqual(bootstraps, 1);
 		assert.strictEqual(restartPrompts, 1);
 
@@ -227,13 +225,15 @@ suite('Workbench Integration', () => {
 		await ready;
 	});
 
-	test('approved integration maintains the bridge without prompting', async () => {
+	test('enabled integration maintains the bridge without prompting', async () => {
 		let prompts = 0;
 		let maintenance = 0;
 		const coordinator = new WorkbenchIntegrationCoordinator(
-			stateWith(true),
 			runtimeWith({
-				status: async () => statusResult({ maintenanceRequired: true }),
+				status: async () => statusResult({
+					maintenanceRequired: true,
+					workbenchRunning: false,
+				}),
 				maintain: async () => {
 					maintenance += 1;
 					return bootstrapResult({ bridgeChanged: false });
@@ -256,15 +256,17 @@ suite('Workbench Integration', () => {
 		assert.strictEqual(maintenance, 1);
 	});
 
-	test('an installed bridge still requires the new one-time approval', async () => {
+	test('the enabled setting approves maintenance of an installed bridge', async () => {
 		let prompts = 0;
-		let bootstraps = 0;
+		let maintenance = 0;
 		const coordinator = new WorkbenchIntegrationCoordinator(
-			stateWith(false),
 			runtimeWith({
-				status: async () => statusResult({ maintenanceRequired: true }),
-				bootstrap: async () => {
-					bootstraps += 1;
+				status: async () => statusResult({
+					maintenanceRequired: true,
+					workbenchRunning: false,
+				}),
+				maintain: async () => {
+					maintenance += 1;
 					return bootstrapResult();
 				},
 			}),
@@ -279,13 +281,12 @@ suite('Workbench Integration', () => {
 
 		await coordinator.start();
 
-		assert.strictEqual(prompts, 1);
-		assert.strictEqual(bootstraps, 0);
+		assert.strictEqual(prompts, 0);
+		assert.strictEqual(maintenance, 1);
 	});
 
-	test('approved integration stays ready without launching a closed Workbench', async () => {
+	test('enabled integration stays ready without launching a closed Workbench', async () => {
 		const coordinator = new WorkbenchIntegrationCoordinator(
-			stateWith(true),
 			runtimeWith({
 				status: async () => statusResult({ maintenanceRequired: true, workbenchRunning: false }),
 				maintain: async () => bootstrapResult({ bridgeChanged: false }),
@@ -300,9 +301,7 @@ suite('Workbench Integration', () => {
 
 	test('first approval installs without launching a closed Workbench', async () => {
 		let enabled = false;
-		const state = stateWith(false);
 		const coordinator = new WorkbenchIntegrationCoordinator(
-			state,
 			runtimeWith({
 				status: async () => statusResult({
 					installed: false,
@@ -321,14 +320,12 @@ suite('Workbench Integration', () => {
 
 		assert.strictEqual(await coordinator.start(), true);
 		assert.strictEqual(enabled, true);
-		assert.strictEqual(state.isApproved(), true);
 	});
 
-	test('approved current integration skips warm maintenance and process probing', async () => {
+	test('enabled current integration skips warm maintenance and process probing', async () => {
 		let maintenance = 0;
 		let processStatus = 0;
 		const coordinator = new WorkbenchIntegrationCoordinator(
-			stateWith(true),
 			runtimeWith({
 				status: async () => statusResult(),
 				maintain: async () => {
@@ -352,11 +349,10 @@ suite('Workbench Integration', () => {
 		assert.strictEqual(processStatus, 0);
 	});
 
-	test('approved integration repairs a missing enfusion protocol registration', async () => {
+	test('enabled integration repairs a missing enfusion protocol registration', async () => {
 		let bootstraps = 0;
 		let maintenance = 0;
 		const coordinator = new WorkbenchIntegrationCoordinator(
-			stateWith(true),
 			runtimeWith({
 				status: async () => statusResult({ enfusionProtocolRegistered: false }),
 				bootstrap: async () => {
@@ -423,16 +419,6 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
 		await new Promise(resolve => setTimeout(resolve, 0));
 	}
 	assert.strictEqual(predicate(), true);
-}
-
-function stateWith(approved: boolean): WorkbenchIntegrationState {
-	let value = approved;
-	return {
-		isApproved: () => value,
-		approve: async () => {
-			value = true;
-		},
-	};
 }
 
 function runtimeWith(

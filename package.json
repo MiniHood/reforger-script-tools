@@ -180,7 +180,7 @@
           "type": "boolean",
           "default": false,
           "title": "Workbench: Enabled",
-          "description": "Enable Workbench integration, including NET API status checks, compiler validation, and the consent-gated managed bridge installer. On first activation, the extension asks whether to enable it."
+          "description": "Enable and approve Workbench integration, including NET API status checks, compiler validation, and managed bridge installation. On first activation, the extension asks whether to enable it."
         },
         "reforgerScriptTools.workbench.host": {
           "type": "string",

@@ -9,9 +9,6 @@ import {
 	WorkbenchProcessStatus,
 } from '../gateway/workbenchGateway';
 
-// V3 gates all feature and index startup on an explicit response to the
-// current consent prompt instead of inheriting the earlier late-startup gate.
-const approvalStateKey = 'workbenchIntegrationApprovedV3';
 const installChoice = 'Enable Workbench Integration';
 const installFailureMessage = 'Reforger Workbench integration could not be installed.';
 const restartMessage = 'Reforger Workbench integration was updated. Restart Workbench to activate it.';
@@ -57,11 +54,6 @@ export interface WorkbenchIntegrationUi {
 	showStartOrRestart?(running: boolean): void;
 }
 
-export interface WorkbenchIntegrationState {
-	isApproved(): boolean;
-	approve(): Promise<void>;
-}
-
 export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 	private readonly ready: Promise<boolean>;
 	private resolveReady: ((ready: boolean) => void) | undefined;
@@ -70,7 +62,6 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 	private startup: Promise<boolean> | undefined;
 	private startupResult: boolean | undefined;
 	private startupInProgress = false;
-	private disableRequestedDuringStartup = false;
 	private enabled: boolean;
 	private connected = false;
 	private disconnectedAfterRequiredRestart = false;
@@ -82,7 +73,6 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 	private disposed = false;
 
 	public constructor(
-		private readonly state: WorkbenchIntegrationState,
 		private readonly runtime: WorkbenchIntegrationRuntime,
 		private readonly ui: WorkbenchIntegrationUi,
 		enabled: boolean,
@@ -100,7 +90,7 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 	}
 
 	public start(): Promise<boolean> {
-		if (this.state.isApproved()) {
+		if (this.enabled) {
 			this.resolveConsentSettled?.(true);
 		}
 		if (this.startup && (this.startupInProgress
@@ -111,8 +101,8 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 		if (this.startupResult === false && !this.enabled) {
 			return this.ready;
 		}
-		if (!this.enabled && (!this.promptWhenDisabled || this.state.isApproved())) {
-			this.resolveConsentSettled?.(this.state.isApproved());
+		if (!this.enabled && !this.promptWhenDisabled) {
+			this.resolveConsentSettled?.(false);
 			this.resolveReady?.(true);
 			return this.ready;
 		}
@@ -137,16 +127,12 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 		return this.ready;
 	}
 
-	public onWorkbenchConfigurationChanged(
-		enabled: boolean,
-		explicitlyDisabled = false,
-	): void {
+	public onWorkbenchConfigurationChanged(enabled: boolean): void {
 		if (this.disposed) {
 			return;
 		}
 		this.enabled = enabled;
 		if (enabled) {
-			this.disableRequestedDuringStartup = false;
 			const currentStartup = this.startup;
 			if (this.startupInProgress && currentStartup) {
 				void currentStartup.then(() => {
@@ -160,9 +146,6 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 				void this.start();
 			}
 		} else {
-			if (explicitlyDisabled && !this.state.isApproved()) {
-				this.disableRequestedDuringStartup = true;
-			}
 			this.onWorkbenchDisconnected();
 		}
 	}
@@ -211,7 +194,7 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 				category: status.failure.category,
 			});
 		}
-		const approved = this.state.isApproved();
+		const approved = this.enabled;
 
 		let result: WorkbenchGatewayResult<WorkbenchIntegrationBootstrap>;
 		if (!approved) {
@@ -222,6 +205,10 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 				this.resolveReady?.(false);
 				return false;
 			}
+			if (this.enableWorkbench) {
+				await this.enableWorkbench();
+			}
+			this.enabled = true;
 			this.resolveConsentSettled?.(true);
 			result = await this.ui.runInstall(() => this.runtime.bootstrap(endpoint));
 		} else if (status.ok
@@ -243,7 +230,7 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 		} else {
 			result = await this.ui.runInstall(() => this.runtime.maintain(endpoint));
 		}
-		if (this.disposed || (approved && !this.enabled)) {
+		if (this.disposed || !this.enabled) {
 			return false;
 		}
 		if (!result.ok) {
@@ -252,19 +239,6 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 			this.resolveReady?.(false);
 			return false;
 		}
-		if (!approved) {
-			if (this.disableRequestedDuringStartup) {
-				this.bootstrapFinished = true;
-				this.resolveReady?.(false);
-				return false;
-			}
-			if (this.enableWorkbench) {
-				await this.enableWorkbench();
-			}
-			this.enabled = true;
-			await this.state.approve();
-		}
-
 		this.bootstrapFinished = true;
 		this.profileWasMissing = !result.value.profileAvailable;
 		if (result.value.bridgeChanged) {
@@ -340,7 +314,6 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 }
 
 export function createWorkbenchIntegration(
-	context: vscode.ExtensionContext,
 	serverPath: Promise<string | undefined>,
 ): WorkbenchIntegrationCoordinator {
 	const configuration = vscode.workspace.getConfiguration('reforgerScriptTools.workbench');
@@ -385,10 +358,6 @@ export function createWorkbenchIntegration(
 		enablementScope.hasExplicitValue,
 	);
 	return new WorkbenchIntegrationCoordinator(
-		{
-			isApproved: () => context.globalState.get<boolean>(approvalStateKey, false),
-			approve: () => Promise.resolve(context.globalState.update(approvalStateKey, true)),
-		},
 		runtime,
 		ui,
 		startup.enabled,
