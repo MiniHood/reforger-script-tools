@@ -7,7 +7,7 @@ import { languageClientDocumentSelector, languageClientSchemes } from '../extens
 import { searchLimits } from '../extensionConfig/search';
 import { addonScopeLabel, asThumbnailColor, formatSearchKind, maxSearchPages, McpToolError, normalizeResourceSearchPage, normalizeSearchPage, normalizeSourceRelationshipPage, normalizeWorkbenchProjectContext, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceContextPreview, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments, type SearchHit } from '../searchPrototype/mcpSearchClient';
 import { semanticPreviewForLine, semanticPreviewForLines, semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
-import { localWorkbenchResourceLinkFor, openSearchSourceDocument, renderSearchUiForTest, resourceAddonIsLoaded, resourcePathForClipboard, resourcePhysicalPathFor, searchDocumentContentProvider, workbenchResourceOpenState } from '../searchPrototype/searchUiPrototype';
+import { localWorkbenchResourceLinkFor, openSearchSourceDocument, queueSearchScopeRefresh, renderSearchUiForTest, resourceAddonIsLoaded, resourcePathForClipboard, resourcePhysicalPathFor, searchDocumentContentProvider, workbenchResourceOpenState } from '../searchPrototype/searchUiPrototype';
 
 const searchUiSource = fs.readFileSync(
 	path.join(__dirname, '../../src/searchPrototype/searchUiPrototype.ts'),
@@ -439,6 +439,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /async function refreshSearchScope/);
 		assert.doesNotMatch(searchUiSource, /type: 'refreshScope'/);
 		assert.match(searchUiSource, /scopeRefresh: Promise<void> \| undefined/);
+		assert.match(searchUiSource, /scopeRefreshPending: boolean/);
 		assert.match(searchUiSource, /<div class="scope-actions"><input class="addon-filter"[\s\S]*?<button type="button" data-scope-all>/);
 		assert.match(searchUiSource, /Select all/);
 		assert.match(searchUiSource, /Unselect all/);
@@ -473,6 +474,41 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchClientSource, /workspaceScopeId[\s\S]*?wikiScopeId[\s\S]*?\.\.\.addonSources/);
 		assert.match(searchClientSource, /wikiScopeId[^\n]+pinned: true/);
 		assert.match(searchUiSource, /class="control-block search-scope-control"><div class="group-label">SEARCH SCOPE<\/div>' \+ searchScope\(\)/);
+	});
+
+	test('runs one trailing scope refresh when loaded add-ons change during a refresh', async () => {
+		let releaseFirstRefresh: (() => void) | undefined;
+		const firstRefreshBlocked = new Promise<void>(resolve => {
+			releaseFirstRefresh = resolve;
+		});
+		let firstRefreshStarted: (() => void) | undefined;
+		const firstRefreshRunning = new Promise<void>(resolve => {
+			firstRefreshStarted = resolve;
+		});
+		const state = {
+			scopeRefresh: undefined as Promise<void> | undefined,
+			scopeRefreshPending: false,
+			disposed: false,
+		};
+		let refreshCount = 0;
+		const refresh = async () => {
+			refreshCount += 1;
+			if (refreshCount === 1) {
+				firstRefreshStarted?.();
+				await firstRefreshBlocked;
+			}
+		};
+
+		const initialRefresh = queueSearchScopeRefresh(state, refresh);
+		await firstRefreshRunning;
+		const deltaRefresh = queueSearchScopeRefresh(state, refresh);
+		const coalescedDeltaRefresh = queueSearchScopeRefresh(state, refresh);
+		releaseFirstRefresh?.();
+		await Promise.all([initialRefresh, deltaRefresh, coalescedDeltaRefresh]);
+
+		assert.strictEqual(refreshCount, 2);
+		assert.strictEqual(state.scopeRefresh, undefined);
+		assert.strictEqual(state.scopeRefreshPending, false);
 	});
 
 	test('uses one concise Source Search heading over the shared grouped match surface', () => {
@@ -713,7 +749,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /onDidConfirmLoadedAddonSourceInventory[\s\S]*?refreshSearchScope\(context, activeSearch\)/);
 		assert.doesNotMatch(searchClientSource, /dependencyProjectFiles\.flatMap/);
 		assert.match(searchUiSource, /affectsConfiguration\(`\$\{workbenchConfig\.section\}\.\$\{workbenchConfig\.settings\.externalIndexMode\}`\)/);
-		assert.match(searchUiSource, /restartSearchScopeForIndexMode\(context, active\)/);
+		assert.match(searchUiSource, /queueSearchScopeRefresh\(active, \(\) => restartSearchScope\(context, active\)\)/);
 		assert.match(searchUiSource, /\(await previousClient\)\.dispose\(\)/);
 	});
 

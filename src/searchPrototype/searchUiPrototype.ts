@@ -69,6 +69,13 @@ interface ActiveSearch {
 	previewContextLines: number;
 	latestQuery: string;
 	scopeRefresh: Promise<void> | undefined;
+	scopeRefreshPending: boolean;
+	disposed: boolean;
+}
+
+interface SearchScopeRefreshState {
+	scopeRefresh: Promise<void> | undefined;
+	scopeRefreshPending: boolean;
 	disposed: boolean;
 }
 
@@ -182,6 +189,7 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 		previewContextLines: 0,
 		latestQuery: '',
 		scopeRefresh: undefined,
+		scopeRefreshPending: false,
 		disposed: false,
 	};
 	activeSearch = active;
@@ -212,7 +220,7 @@ function openSearchPanel(context: vscode.ExtensionContext): void {
 	}, undefined, context.subscriptions);
 }
 
-async function restartSearchScopeForIndexMode(
+async function restartSearchScope(
 	context: vscode.ExtensionContext,
 	active: ActiveSearch,
 ): Promise<void> {
@@ -235,23 +243,40 @@ async function restartSearchScopeForIndexMode(
 	await publishSearchScope(context, active, true);
 }
 
+export async function queueSearchScopeRefresh(
+	state: SearchScopeRefreshState,
+	refresh: () => Promise<void>,
+): Promise<void> {
+	state.scopeRefreshPending = true;
+	if (state.scopeRefresh) {
+		await state.scopeRefresh;
+		return;
+	}
+
+	const queuedRefresh = Promise.resolve().then(async () => {
+		do {
+			state.scopeRefreshPending = false;
+			await refresh();
+		} while (state.scopeRefreshPending && !state.disposed);
+	});
+	state.scopeRefresh = queuedRefresh;
+	try {
+		await queuedRefresh;
+	} finally {
+		if (state.scopeRefresh === queuedRefresh) {
+			state.scopeRefresh = undefined;
+		}
+	}
+}
+
 async function refreshSearchScope(
 	context: vscode.ExtensionContext,
 	active: ActiveSearch,
 ): Promise<void> {
 	if (active.scopeRefresh) {
-		await active.scopeRefresh;
-		return;
+		diagnostic('searchUi.scopeRefreshQueued');
 	}
-	const refresh = restartSearchScopeForIndexMode(context, active);
-	active.scopeRefresh = refresh;
-	try {
-		await refresh;
-	} finally {
-		if (active.scopeRefresh === refresh) {
-			active.scopeRefresh = undefined;
-		}
-	}
+	await queueSearchScopeRefresh(active, () => restartSearchScope(context, active));
 }
 
 async function handleMessage(
