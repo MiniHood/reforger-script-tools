@@ -30,6 +30,7 @@ export const workbenchTestCommands = {
 	disposeCompiler: 'reforger-sript-tools.test.disposeWorkbenchCompiler',
 	restartCompiler: 'reforger-sript-tools.test.restartWorkbenchCompiler',
 	armStartupValidation: 'reforger-sript-tools.test.armWorkbenchStartupValidation',
+	resetFailureNotification: 'reforger-sript-tools.test.resetWorkbenchFailureNotification',
 } as const;
 
 export const workbenchDiagnostics = {

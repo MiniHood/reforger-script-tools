@@ -788,7 +788,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /\.atlas-card-head \{ display: flex;[^}]*justify-content: space-between;/);
 		assert.match(searchUiSource, /\.result-path \{[^}]*overflow-wrap: anywhere;/);
 		assert.match(searchUiSource, /\.atlas-card \.result-path \{[^}]*max-width: none;[^}]*text-align: left;/);
-		assert.match(searchUiSource, /<div class="atlas-card-head"><strong>[\s\S]*?<div class="result-path">[\s\S]*?resultPreview\(result\)/);
+		assert.match(searchUiSource, /<div class="atlas-card-head"><strong>[\s\S]*?resultPath\(result\)[\s\S]*?resultPreview\(result\)/);
 		assert.match(searchUiSource, /const highlightText = \(value, query\) =>/);
 		assert.match(searchUiSource, /<mark>/);
 		assert.match(searchUiSource, /highlightRange\(sourceText, matchRange\)/);

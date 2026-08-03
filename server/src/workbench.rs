@@ -9606,7 +9606,7 @@ mod tests {
             assert_eq!(request["offset"], 0);
             assert_eq!(request["limit"], 3);
             json!({
-                "bridgeVersion": "1.51.0",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion": 1,
                 "loadedAddons": "ArmaReforger;TestBullshit",
                 "resources": "{00B6CAF6E4A5BAB4}Prefabs/Props/Test.et",
@@ -9697,7 +9697,7 @@ mod tests {
             assert_eq!(request["subScene"], 2);
             assert_eq!(request["layerId"], 7);
             json!({
-                "bridgeVersion": "1.51.0",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion": 1,
                 "worldPath": "$TestBullshit:worlds/test/arland_test.ent",
                 "entities": "0x0000000000000001 {}|GenericWorldEntity|0|0",
@@ -9733,7 +9733,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request["APIFunc"], "RST_WorkbenchListEntities");
             json!({
-                "bridgeVersion": "1.51.0",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion": 1,
                 "worldPath": "$Test:worlds/test.ent",
                 "entities": "0x0000000000000001 {}|TestEntity|2|7",
@@ -9773,7 +9773,7 @@ mod tests {
             assert_eq!(request["subScene"], -1);
             assert_eq!(request["layerId"], -1);
             json!({
-                "bridgeVersion": "1.51.0",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion": 1,
                 "worldPath": "$Test:worlds/test.ent",
                 "entities": "",
@@ -9803,7 +9803,7 @@ mod tests {
             assert_eq!(request["APIFunc"], "RST_WorkbenchSearchEntities");
             assert_eq!(request["componentClasses"], "SCR_TriggerEntity");
             assert_eq!(request["resourceQuery"], "Checkpoints");
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7|{GUID}Prefabs/Checkpoints/West.et|West checkpoint|SCR_TriggerEntity,SCR_BaseGameModeComponent|name,resource,components|SCR_TriggerEntity|GenericEntity|3|||||||","totalMatches":2,"namedMatches":1,"hasMore":false})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7|{GUID}Prefabs/Checkpoints/West.et|West checkpoint|SCR_TriggerEntity,SCR_BaseGameModeComponent|name,resource,components|SCR_TriggerEntity|GenericEntity|3|||||||","totalMatches":2,"namedMatches":1,"hasMore":false})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -9859,7 +9859,7 @@ mod tests {
                 "SCR_BaseGameModeComponent"
             );
             assert_eq!(request["relationMaxDepth"], 3);
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7|{GUID}Prefabs/Checkpoints/West.et|West checkpoint|SCR_TriggerEntity|relation||GenericEntity|3|descendant|2|0x02|SCR_TriggerEntity|0|7|SCR_BaseGameModeComponent","totalMatches":1,"namedMatches":1,"hasMore":false,"relationTraversalTruncated":true})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7|{GUID}Prefabs/Checkpoints/West.et|West checkpoint|SCR_TriggerEntity|relation||GenericEntity|3|descendant|2|0x02|SCR_TriggerEntity|0|7|SCR_BaseGameModeComponent","totalMatches":1,"namedMatches":1,"hasMore":false,"relationTraversalTruncated":true})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -9975,7 +9975,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request["relationDirection"], "descendant");
             assert_eq!(request["relationClassName"], "SCR_TriggerEntity");
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7||||||GenericEntity|1|descendant|1|0x02|SCR_TriggerEntity|0|7|","totalMatches":2,"namedMatches":0,"hasMore":true})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7||||||GenericEntity|1|descendant|1|0x02|SCR_TriggerEntity|0|7|","totalMatches":2,"namedMatches":0,"hasMore":true})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -10032,7 +10032,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request["APIFunc"], "RST_WorkbenchSearchEntities");
             json!({
-                "bridgeVersion": "1.51.0",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion": 1,
                 "status": "world-editor-unavailable",
                 "worldPath": "",
@@ -10084,7 +10084,7 @@ mod tests {
                 json!({"APIFunc":"RST_WorkbenchLayerState","subScene":2,"layerId":7})
             );
             json!({
-                "bridgeVersion":"1.51.0",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion":1,
                 "status":"available",
                 "subScene":2,
@@ -10121,7 +10121,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectPrefab","entityId":"0x01","resourceName":"","memberId":""})
             );
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"available","entity":"0x01|TestEntity|0|1","resourceName":"{GUID}Prefabs/Test.et","resourceReferenceKind":"external","contributorAddons":"BaseGame;MyAddon","ancestorResources":"{BASE_GUID}Prefabs/Base.et","prefabEditMode":true,"components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default;0|VisibleDistance|integer|250|1|direct;0|Offset|vector|1 2 3|1|direct;0|Scale|float|1.5|0|inherited;0|Label|string|Test|0|default","children":"0|Wheel|front-left","properties":"Mass|float|2000|1|direct;userScript|string||0|default;constructor|string||0|default;destructor|string||0|default;Name|string|Jeep|0|inherited","childCount":2})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"available","entity":"0x01|TestEntity|0|1","resourceName":"{GUID}Prefabs/Test.et","resourceReferenceKind":"external","contributorAddons":"BaseGame;MyAddon","ancestorResources":"{BASE_GUID}Prefabs/Base.et","prefabEditMode":true,"components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default;0|VisibleDistance|integer|250|1|direct;0|Offset|vector|1 2 3|1|direct;0|Scale|float|1.5|0|inherited;0|Label|string|Test|0|default","children":"0|Wheel|front-left","properties":"Mass|float|2000|1|direct;userScript|string||0|default;constructor|string||0|default;destructor|string||0|default;Name|string|Jeep|0|inherited","childCount":2})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -10178,7 +10178,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectPrefab","entityId":"","resourceName":"{GUID}Prefabs/Test.et","memberId":""})
             );
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject;1|Light","componentProperties":"0|Enabled|bool|1|0;0|Offset|vector|1 2 3|1;1|Intensity|float|500.25|0"})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject;1|Light","componentProperties":"0|Enabled|bool|1|0;0|Offset|vector|1 2 3|1;1|Intensity|float|500.25|0"})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -10216,7 +10216,7 @@ mod tests {
     #[test]
     fn prefab_component_inspection_reports_a_missing_component_without_losing_context() {
         let (port, peer) = start_peer(
-            |_| json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject"}),
+            |_| json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject"}),
         );
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -10243,7 +10243,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectPrefab","entityId":"0x01 {}","resourceName":"","memberId":""})
             );
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default"})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default"})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -10273,7 +10273,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectPrefab","entityId":"","resourceName":"{GUID}Prefabs/Test.et","memberId":"member:0"})
             );
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","memberId":"member:0","components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default","children":"0|Wheel|","properties":"coords|vector|1 2 3|1|direct","childCount":1})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","memberId":"member:0","components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default","children":"0|Wheel|","properties":"coords|vector|1 2 3|1|direct","childCount":1})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -10304,7 +10304,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchCreatePrefab","entityId":"0x01","name":"Prefabs/New.et","confirm":false})
             );
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"confirmation-required","entity":"0x01|TestEntity|0|1","destination":"Prefabs/New.et","destinationExists":false})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"confirmation-required","entity":"0x01|TestEntity|0|1","destination":"Prefabs/New.et","destinationExists":false})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -10336,7 +10336,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.51.0",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion":1,
                 "status":"confirmation-required",
                 "destination":"Prefabs/Generated/RST_Test.et",
@@ -10379,7 +10379,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.51.0",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion":1,
                 "status":"confirmation-required",
                 "destinationExists":0
@@ -10418,7 +10418,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.51.0",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion":1,
                 "status":"confirmation-required",
                 "resourceName":resource_name,
@@ -10461,7 +10461,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.51.0",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion":1,
                 "status":"confirmation-required",
                 "resourceName":resource_name,
@@ -10510,7 +10510,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.51.0",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion":1,
                 "status":"confirmation-required",
                 "resourceName":resource_name,
@@ -10555,7 +10555,7 @@ mod tests {
     fn viewport_context_keeps_compact_cursor_result_separate_from_optional_ray_diagnostics() {
         let response = || {
             json!({
-                "bridgeVersion":"1.51.0", "protocolVersion":1, "status":"available",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION, "protocolVersion":1, "status":"available",
                 "width":1920, "height":1080, "mouseX":960, "mouseY":540, "mouseInside":true,
                 "cameraX":10.0, "cameraY":20.0, "cameraZ":30.0,
                 "cameraDirectionX":0.0, "cameraDirectionY":0.0, "cameraDirectionZ":1.0,
@@ -10615,7 +10615,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.51.0", "protocolVersion":1, "status":"available", "hit":true,
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION, "protocolVersion":1, "status":"available", "hit":true,
                 "fraction":0.5, "distance":10.0, "hitX":0.0, "hitY":0.0, "hitZ":0.0,
                 "normalX":0.0, "normalY":1.0, "normalZ":0.0, "kind":"ocean"
             })
@@ -10727,7 +10727,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion": "1.51.0",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion": 1,
                 "status": "available",
                 "centerX": 100.0,
@@ -11037,7 +11037,7 @@ mod tests {
             assert_eq!(request["entityId"], "0x01 {}");
             assert_eq!(request["scale"], 2.0);
             json!({
-                "bridgeVersion":"1.51.0",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion":1,
                 "status":"transformed",
                 "entity":"0x01 {}|TestEntity|0|7|10|20|30",
@@ -11086,11 +11086,11 @@ mod tests {
         let (port, peer) = start_peer_sequence(vec![
             (
                 json!({"APIFunc":"RST_WorkbenchUndo"}),
-                json!({"bridgeVersion":"1.51.0","protocolVersion":1,"operation":"undo","status":"invoked","historyAvailable":true,"changed":true}),
+                json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"operation":"undo","status":"invoked","historyAvailable":true,"changed":true}),
             ),
             (
                 json!({"APIFunc":"RST_WorkbenchRedo"}),
-                json!({"bridgeVersion":"1.51.0","protocolVersion":1,"operation":"redo","status":"invoked","historyAvailable":true,"changed":true}),
+                json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"operation":"redo","status":"invoked","historyAvailable":true,"changed":true}),
             ),
         ]);
         let root = test_root("history-operations");
@@ -11130,7 +11130,7 @@ mod tests {
     fn history_results_report_rejected_actions_without_claiming_a_change() {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request, json!({"APIFunc":"RST_WorkbenchUndo"}));
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"operation":"undo","status":"history-unavailable","historyAvailable":false,"changed":false})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"operation":"undo","status":"history-unavailable","historyAvailable":false,"changed":false})
         });
         let root = test_root("history-unavailable");
         fs::create_dir_all(&root).unwrap();
@@ -11158,7 +11158,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchMoveEntity","entityId":"0x01 {}","x":10.0,"y":20.0,"z":30.0})
             );
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"moved","entity":"0x01 {}|TestEntity|0|7|10|20|30"})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"moved","entity":"0x01 {}|TestEntity|0|7|10|20|30"})
         });
         let root = test_root("move-entity");
         fs::create_dir_all(&root).unwrap();
@@ -11194,7 +11194,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchDuplicateEntity","entityId":"0x01 {}","x":11.0,"y":22.0,"z":33.0,"name":"Copy"})
             );
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"duplicated","entity":"0x02 {}|TestEntity|0|7|11|22|33"})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"duplicated","entity":"0x02 {}|TestEntity|0|7|11|22|33"})
         });
         let root = test_root("duplicate-entity");
         fs::create_dir_all(&root).unwrap();
@@ -11429,7 +11429,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request, json!({"APIFunc": "RST_WorkbenchState"}));
             json!({
-                "bridgeVersion": "1.51.0",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion": 1,
                 "mode": "workbench",
                 "playSession": "unavailable",
@@ -11544,7 +11544,7 @@ mod tests {
                 json!({"APIFunc": "RST_WorkbenchState", "executeSaveAllAction": true})
             );
             json!({
-                "bridgeVersion": "1.51.0",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion": 1,
                 "saveAllActionAccepted": true,
                 "saveAllActionPath": "File/Save All",
@@ -12883,7 +12883,7 @@ mod tests {
                     "points": "1,2,3;4,5,6",
                 })
             );
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"points-updated","entity":"0x01 {}|PolylineShapeEntity|0|1|10|20|30||||","shapeClass":"PolylineShapeEntity","closed":false,"points":"1|2|3;4|5|6"})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"points-updated","entity":"0x01 {}|PolylineShapeEntity|0|1|10|20|30||||","shapeClass":"PolylineShapeEntity","closed":false,"points":"1|2|3;4|5|6"})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -12929,7 +12929,7 @@ mod tests {
                     "fromSpace":"local", "toSpace":"world", "points":"1,2,3"
                 })
             );
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"converted","entity":"0x01 {}|PolylineShapeEntity|0|1|10|20|30||||","shapeClass":"PolylineShapeEntity","fromSpace":"local","toSpace":"world","points":"11|22|33"})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"converted","entity":"0x01 {}|PolylineShapeEntity|0|1|10|20|30||||","shapeClass":"PolylineShapeEntity","fromSpace":"local","toSpace":"world","points":"11|22|33"})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -12969,7 +12969,7 @@ mod tests {
                     "scaleX":1.0, "scaleY":1.0, "scaleZ":1.0, "mirrorAxis":""
                 })
             );
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"points-transformed","entity":"0x01 {}|SplineShapeEntity|0|1|10|20|30||||","shapeClass":"SplineShapeEntity","closed":false,"points":"10|0|21"})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"points-transformed","entity":"0x01 {}|SplineShapeEntity|0|1|10|20|30||||","shapeClass":"SplineShapeEntity","closed":false,"points":"10|0|21"})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -13025,7 +13025,7 @@ mod tests {
                     "APIFunc":"RST_WorkbenchShapeGeometry", "entityId":"0x01 {}", "operation":"resample", "space":"local", "spacingMeters":2.5
                 })
             );
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"polyline-resampled","entity":"0x01 {}|PolylineShapeEntity|0|1|10|20|30||||","shapeClass":"PolylineShapeEntity","closed":false,"points":"0|0|0;2.5|0|0;5|0|0","spacingMeters":2.5,"originalPointCount":2,"resultPointCount":3,"pathLength":5.0,"skippedZeroLengthSegments":0})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"polyline-resampled","entity":"0x01 {}|PolylineShapeEntity|0|1|10|20|30||||","shapeClass":"PolylineShapeEntity","closed":false,"points":"0|0|0;2.5|0|0;5|0|0","spacingMeters":2.5,"originalPointCount":2,"resultPointCount":3,"pathLength":5.0,"skippedZeroLengthSegments":0})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -13296,7 +13296,7 @@ mod tests {
                     "value": "3.75",
                 })
             );
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"property-set","activeLayerId":7,"entity":""})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"property-set","activeLayerId":7,"entity":""})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -13335,7 +13335,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectComponent","entityId":"0x01 {}","componentId":"cmp1:0:TestComponent"})
             );
-            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"available","entity":"","components":"0|TestComponent","properties":"m_fRadius|float|2.5|1"})
+            json!({"bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,"protocolVersion":1,"status":"available","entity":"","components":"0|TestComponent","properties":"m_fRadius|float|2.5|1"})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {

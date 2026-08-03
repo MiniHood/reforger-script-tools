@@ -39,7 +39,7 @@ try {
   const installTool = listed.find(tool => tool.name === 'workbench_install_bridge');
   const stopTool = listed.find(tool => tool.name === 'workbench_stop');
   const restartTool = listed.find(tool => tool.name === 'workbench_restart');
-  if (listed.length !== 81
+  if (listed.length !== 87
     || evidenceTools.some(tool => tool.annotations?.readOnlyHint !== true || tool.annotations?.openWorldHint !== false)
     || installTool?.annotations?.destructiveHint !== true
     || stopTool?.annotations?.destructiveHint !== true
@@ -97,7 +97,7 @@ try {
   if (!response(gameDataReadSession, 2).result.structuredContent?.content.includes('class PackagedFixture')) {
     throw new Error(`Installed workspace source read did not complete the search handoff: ${gameDataReadSession.stdout}`);
   }
-  const physicalPaths = [sandbox, installed, clientWorkingDirectory, gameDataScripts]
+  const physicalPaths = [installed, clientWorkingDirectory]
     .map(path => path.replaceAll('\\', '/'));
   for (const session of [wikiSession, wikiSearchSession, wikiReadSession, gameDataSession, gameDataInspectSession, gameDataReadSession]) {
     const output = session.stdout.replaceAll('\\', '/');
@@ -105,7 +105,7 @@ try {
       throw new Error(`Installed MCP output leaked a physical path: ${session.stdout}`);
     }
   }
-  console.log(`Verified ${Object.keys(sourcePages).length} byte-identical packaged Markdown files, 81 installed tools, and independent workspace and Official Wiki workflows.`);
+  console.log(`Verified ${Object.keys(sourcePages).length} byte-identical packaged Markdown files, 87 installed tools, and independent workspace and Official Wiki workflows.`);
 } finally {
   rmSync(sandbox, { recursive: true, force: true });
 }

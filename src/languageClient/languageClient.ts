@@ -721,20 +721,38 @@ async function resolveWorkbenchLoadedAddonInventory(
   const configuration = vscode.workspace.getConfiguration(
     workbenchConfig.section,
   );
-  const gateway = new WorkbenchGateway({
-    enabled: configuration.get(
+  const enabled = configuration.get(
+    workbenchConfig.settings.enabled,
+    workbenchDefaults.enabled,
+  );
+  const host = configuration.get(
+    workbenchConfig.settings.host,
+    workbenchDefaults.host,
+  );
+  const port = configuration.get(
+    workbenchConfig.settings.port,
+    workbenchDefaults.port,
+  );
+  const isCurrentConfiguration = (): boolean => {
+    const current = vscode.workspace.getConfiguration(workbenchConfig.section);
+    return current.get(
       workbenchConfig.settings.enabled,
       workbenchDefaults.enabled,
-    ),
-    endpoint: {
-      host: configuration.get(
+    ) === enabled
+      && current.get(
         workbenchConfig.settings.host,
         workbenchDefaults.host,
-      ),
-      port: configuration.get(
+      ) === host
+      && current.get(
         workbenchConfig.settings.port,
         workbenchDefaults.port,
-      ),
+      ) === port;
+  };
+  const gateway = new WorkbenchGateway({
+    enabled,
+    endpoint: {
+      host,
+      port,
     },
     serverPath: Promise.resolve(serverPath),
     record: (record) => {
@@ -745,9 +763,16 @@ async function resolveWorkbenchLoadedAddonInventory(
         timing: record.timing ? JSON.stringify(record.timing) : undefined,
       });
     },
-    onNetApiFailure: diagnosis => updateWorkbenchFailureNotification(diagnosis),
+    onNetApiFailure: diagnosis => {
+      if (isCurrentConfiguration()) {
+        updateWorkbenchFailureNotification(diagnosis);
+      }
+    },
   });
   const result = await gateway.getLoadedAddonGraph();
+  if (!isCurrentConfiguration()) {
+    return undefined;
+  }
   if (!result.ok) {
     outputChannel.appendLine(
       `Workbench-loaded add-on graph unavailable (${result.failure.category}): ${result.failure.recoveryHint}`,

@@ -18,6 +18,7 @@ import {
 } from '../gateway/workbenchGateway';
 import {
 	onDidChangeWorkbenchFailure,
+	resetWorkbenchFailureNotification,
 	updateWorkbenchFailureNotification,
 } from '../workbenchFailureNotification';
 import {
@@ -146,6 +147,9 @@ export function registerWorkbenchCompilerFeatures(
 			vscode.commands.registerCommand(workbenchTestCommands.armStartupValidation, () => {
 				controller.armStartupValidation();
 			}),
+			vscode.commands.registerCommand(workbenchTestCommands.resetFailureNotification, () => {
+				resetWorkbenchFailureNotification();
+			}),
 		);
 	}
 }
@@ -195,11 +199,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		private readonly integration?: WorkbenchIntegrationCoordinator,
 		private readonly onWorkbenchGraphRefreshRequested?: () => void,
 	) {
-		this.gateway = createGateway(
-			this.configuration,
-			this.serverPath,
-			diagnosis => this.updateBridgeFailureNotification(diagnosis),
-		);
+		this.gateway = this.createGatewayForCurrentConfiguration();
 	}
 
 	public start(extensionMode: vscode.ExtensionMode): void {
@@ -275,11 +275,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		}
 		this.configurationGeneration += 1;
 		this.configuration = readConfiguration();
-		this.gateway = createGateway(
-			this.configuration,
-			this.serverPath,
-			diagnosis => this.updateBridgeFailureNotification(diagnosis),
-		);
+		this.gateway = this.createGatewayForCurrentConfiguration();
 		this.integration?.onWorkbenchConfigurationChanged(
 			this.configuration.enabled,
 			isWorkbenchEnablementExplicitlyDisabled(),
@@ -845,6 +841,19 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		diagnosis: 'bridge-inactive' | undefined,
 	): void {
 		updateWorkbenchFailureNotification(diagnosis);
+	}
+
+	private createGatewayForCurrentConfiguration(): WorkbenchGateway {
+		const generation = this.configurationGeneration;
+		return createGateway(
+			this.configuration,
+			this.serverPath,
+			diagnosis => {
+				if (!this.disposed && generation === this.configurationGeneration) {
+					this.updateBridgeFailureNotification(diagnosis);
+				}
+			},
+		);
 	}
 
 	private clearValidationTimer(): void {

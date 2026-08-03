@@ -28,6 +28,10 @@ const result = spawnSync(
 	{
 		cwd: repositoryRoot,
 		encoding: 'utf8',
+		env: {
+			...process.env,
+			CARGO_TARGET_DIR: resolve(repositoryRoot, '.cache', 'cargo', 'mcp-api'),
+		},
 	},
 );
 

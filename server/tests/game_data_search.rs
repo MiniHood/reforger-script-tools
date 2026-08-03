@@ -371,7 +371,7 @@ fn search_pages_a_canonical_filtered_result_set_with_a_bound_cursor() {
 #[test]
 fn catalogue_search_keeps_source_lines_from_its_initialized_snapshot() {
     let fixture = TempFixture::new("search-snapshot");
-    let scripts = fixture.path.join("Game");
+    let scripts = fixture.path.join("scripts/Game");
     fs::create_dir_all(&scripts).expect("create scripts");
     let source = scripts.join("Snapshot.c");
     fs::write(&source, "\nclass SnapshotTarget {}\n").expect("write source");
@@ -394,7 +394,7 @@ fn catalogue_search_keeps_source_lines_from_its_initialized_snapshot() {
 #[test]
 fn catalogue_source_read_returns_the_authoritative_source_line() {
     let fixture = TempFixture::new("source-read");
-    let scripts = fixture.path.join("Game");
+    let scripts = fixture.path.join("scripts/Game");
     fs::create_dir_all(&scripts).expect("create scripts");
     fs::write(scripts.join("Source.c"), "// docs\nclass SourceTarget {}\n").expect("write source");
     let catalogue = layered_catalogue(&fixture.path);

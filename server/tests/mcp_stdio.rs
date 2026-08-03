@@ -166,7 +166,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
             .find(|tool| tool.get("name") == Some(&json!(name)))
             .unwrap_or_else(|| panic!("missing tool {name}"))
     };
-    assert_eq!(listed.len(), 86);
+    assert_eq!(listed.len(), 87);
     assert!(listed
         .iter()
         .all(|tool| tool.get("name") != Some(&json!("workbench_list_resources"))));
@@ -755,7 +755,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
             .find(|tool| tool.get("name") == Some(&json!(name)))
             .unwrap_or_else(|| panic!("missing tool {name}"))
     };
-    assert_eq!(listed.len(), 86);
+    assert_eq!(listed.len(), 87);
     let examples = tool("search_game_data_examples");
     tool("list_game_data_symbol_members");
     tool("query_game_data_symbol_relationships");

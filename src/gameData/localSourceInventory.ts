@@ -5,6 +5,8 @@ import * as vscode from "vscode";
 import type { WorkbenchLoadedAddonGraph } from "../workbenchNetApi/gateway/workbenchGateway";
 import { gameDataStorage } from "../extensionConfig/gameData";
 
+const atomicPublishQueues = new Map<string, Promise<void>>();
+
 export interface LoadedAddonSourceInventory {
   schema: "reforger-workbench-loaded-addon-graph-v1";
   bridgeVersion: string;
@@ -60,6 +62,32 @@ export async function writeLoadedAddonSourceInventory(
 }
 
 export async function publishAtomicFile(
+  targetPath: string,
+  contents: string,
+): Promise<void> {
+  const resolvedTarget = path.resolve(targetPath);
+  const normalizedTarget = process.platform === "win32"
+    ? resolvedTarget.toLowerCase()
+    : resolvedTarget;
+  const previous = atomicPublishQueues.get(normalizedTarget) ?? Promise.resolve();
+  let release = (): void => undefined;
+  const turn = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = previous.catch(() => undefined).then(() => turn);
+  atomicPublishQueues.set(normalizedTarget, queued);
+  await previous.catch(() => undefined);
+  try {
+    await publishAtomicFileUnlocked(targetPath, contents);
+  } finally {
+    release();
+    if (atomicPublishQueues.get(normalizedTarget) === queued) {
+      atomicPublishQueues.delete(normalizedTarget);
+    }
+  }
+}
+
+async function publishAtomicFileUnlocked(
   targetPath: string,
   contents: string,
 ): Promise<void> {

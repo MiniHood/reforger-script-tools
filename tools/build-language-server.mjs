@@ -26,7 +26,9 @@ const cargoArgs = [
   "reforger_language_server",
 ];
 
-stopRepoLanguageServers("before build");
+if (!release) {
+  stopRepoLanguageServers("before build");
+}
 
 const result = spawnSync(cargo, cargoArgs, {
   cwd: repoRoot,
@@ -46,19 +48,27 @@ if ((result.status ?? 1) !== 0) {
   process.exit(result.status ?? 1);
 }
 
-mkdirSync(dirname(devBinary), { recursive: true });
-copyBinaryWithStoppedServer(sourceBinary, devBinary, "development binary");
-if (process.platform !== "win32") {
-  chmodSync(devBinary, 0o755);
+if (!release) {
+  mkdirSync(dirname(devBinary), { recursive: true });
+  copyBinaryWithStoppedServer(sourceBinary, devBinary, "development binary");
+  if (process.platform !== "win32") {
+    chmodSync(devBinary, 0o755);
+  }
 }
 
 mkdirSync(targetFolder, { recursive: true });
-copyBinaryWithStoppedServer(sourceBinary, targetBinary, "packaged binary");
+if (release) {
+  copyFileSync(sourceBinary, targetBinary);
+} else {
+  copyBinaryWithStoppedServer(sourceBinary, targetBinary, "packaged binary");
+}
 if (process.platform !== "win32") {
   chmodSync(targetBinary, 0o755);
 }
 
-console.log(`Copied language server binary: ${devBinary}`);
+if (!release) {
+  console.log(`Copied language server binary: ${devBinary}`);
+}
 console.log(`Copied language server binary: ${targetBinary}`);
 
 function resolveCargoCommand() {
