@@ -502,7 +502,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.doesNotMatch(searchUiSource, /\.atlas-group \{[^}]*--addon-header-color/);
 		assert.doesNotMatch(searchUiSource, /\.atlas-card \{[^}]*--addon-header-color/);
 		assert.match(searchUiSource, /results\.map\(resultCard\)\.join\(''\)/);
-		assert.match(searchUiSource, /\.atlas-results\.two-column \{ display: block; column-count: 2;/);
+		assert.match(searchUiSource, /\.atlas-results\.masonry \{ display: block; column-count: 2;/);
 		assert.match(searchUiSource, /const sharedMatchArea = \(\) => warnings \+ resultBody\(resultGroups\(\)\) \+ bottomPager/);
 		assert.doesNotMatch(searchUiSource, /atlas-lanes|atlas-lane/);
 	});
@@ -607,7 +607,7 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(grouped, /<h2>Workspace<\/h2>/);
 		assert.match(grouped, /Child/);
 		harness.evaluate('toggleResultLayout()');
-		assert.match(harness.evaluate<string>('resultGroups()'), /atlas-results two-column/);
+		assert.match(harness.evaluate<string>('resultGroups()'), /atlas-results masonry/);
 		harness.evaluate('setPreviewContext(3); setPreviewContext(0)');
 		assert.strictEqual(lastPosted(harness.posted, 'previewContext').contextLines, 0);
 		harness.evaluate("openResult({ dataset: { open: 'child' } })");
@@ -806,24 +806,56 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /previewDiagnostics/);
 	});
 
-	test('toggles a top-only two-column result grid without rerunning the search', () => {
-		assert.match(searchUiSource, /resultColumns: 1/);
-		assert.match(searchUiSource, /\.atlas-results\.two-column \{ display: block; column-count: 2;/);
+	test('cycles through one-column, masonry, and aligned-row layouts without rerunning the search', () => {
+		const harness = createSearchWebviewHarness();
+		harness.evaluate(`state.results = [
+			{ id: 'one', source: 'workspace', kind: 'symbol', symbolKind: 'class', title: 'One', detail: 'class', path: 'Scripts/One.c', excerpt: 'class One' },
+			{ id: 'two', source: 'workspace', kind: 'symbol', symbolKind: 'method', title: 'Two', detail: 'method', path: 'Scripts/Two.c', excerpt: 'void Two()' }
+		]; state.status = 'ready'`);
+		const searchCount = harness.posted.filter(message => message.type === 'search').length;
+
+		assert.strictEqual(harness.evaluate('state.resultLayout'), 'single');
+		assert.doesNotMatch(harness.evaluate<string>('resultGroups()'), /atlas-results (?:masonry|rows)/);
+		assert.match(harness.evaluate<string>('pageControls(true)'), /Result layout: One column\. Activate for two-column masonry\./);
+
+		harness.evaluate('toggleResultLayout()');
+		assert.strictEqual(harness.evaluate('state.resultLayout'), 'masonry');
+		assert.match(harness.evaluate<string>('resultGroups()'), /atlas-results masonry/);
+		assert.match(harness.evaluate<string>('pageControls(true)'), /Result layout: Two-column masonry\. Activate for aligned rows\./);
+
+		harness.evaluate('toggleResultLayout()');
+		assert.strictEqual(harness.evaluate('state.resultLayout'), 'rows');
+		assert.match(harness.evaluate<string>('resultGroups()'), /atlas-results rows/);
+		assert.match(harness.evaluate<string>('pageControls(true)'), /Result layout: Aligned rows\. Activate for one column\./);
+
+		harness.evaluate('toggleResultLayout()');
+		assert.strictEqual(harness.evaluate('state.resultLayout'), 'single');
+		assert.doesNotMatch(harness.evaluate<string>('resultGroups()'), /atlas-results (?:masonry|rows)/);
+		assert.strictEqual(
+			harness.posted.filter(message => message.type === 'search').length,
+			searchCount,
+		);
+
+		assert.match(searchUiSource, /resultLayout: 'single'/);
+		assert.match(searchUiSource, /\.atlas-results\.masonry \{ display: block; column-count: 2;/);
+		assert.match(searchUiSource, /\.atlas-results\.rows \{[^}]*--result-row-columns: minmax\(150px, 28%\) minmax\(240px, 1fr\) 180px 110px;/);
+		assert.match(searchUiSource, /\.atlas-results\.rows \.atlas-card \{[^}]*display: grid;[^}]*grid-template-columns: var\(--result-row-columns\);/);
+		assert.match(searchUiSource, /\.atlas-results\.rows \.snippet, \.atlas-results\.rows \.md-preview \{ display: none; \}/);
 		assert.match(searchUiSource, /\.page-controls \[data-result-layout\] \{ display: inline-flex; align-items: center; justify-content: center; padding: 0; line-height: 0; \}/);
 		assert.match(searchUiSource, /const pageControls = \(includeLayoutToggle = false\) =>/);
 		assert.match(searchUiSource, /return '<div class="page-controls" aria-label="Search result pages">' \+ previewControl \+ layoutToggle \+ '<select data-page-size/);
 		assert.match(searchUiSource, /pageControls\(true\)/);
 		assert.match(searchUiSource, /data-result-layout/);
-		assert.match(searchUiSource, /aria-pressed="' \+ \(state\.resultColumns === 2\) \+ '"/);
-		assert.match(searchUiSource, /state\.resultColumns = state\.resultColumns === 2 \? 1 : 2; render\(false\);/);
+		assert.match(searchUiSource, /const resultLayouts = \[[\s\S]*?id: 'single'[\s\S]*?id: 'masonry'[\s\S]*?id: 'rows'/);
+		assert.match(searchUiSource, /state\.resultLayout = resultLayouts\[\(current \+ 1\) % resultLayouts\.length\]\.id; render\(false\);/);
 		assert.doesNotMatch(searchUiSource, /data-result-layout[^\n]*search\(/);
-		assert.match(searchUiSource, /resultColumns: state\.resultColumns/);
+		assert.match(searchUiSource, /resultLayout: state\.resultLayout/);
 	});
 
 	test('packs unequal cards into masonry columns within each source group', () => {
-		assert.match(searchUiSource, /\.atlas-results\.two-column \{ display: block; column-count: 2; column-gap: 10px; \}/);
-		assert.match(searchUiSource, /\.atlas-results\.two-column \.atlas-card \{ display: inline-block; width: 100%; margin: 0 0 10px; break-inside: avoid; \}/);
-		assert.match(searchUiSource, /@media \(max-width: 980px\) \{ \.atlas-results\.two-column \{ column-count: 1; \} \}/);
+		assert.match(searchUiSource, /\.atlas-results\.masonry \{ display: block; column-count: 2; column-gap: 10px; \}/);
+		assert.match(searchUiSource, /\.atlas-results\.masonry \.atlas-card \{ display: inline-block; width: 100%; margin: 0 0 10px; break-inside: avoid; \}/);
+		assert.match(searchUiSource, /@media \(max-width: 980px\) \{ \.atlas-results\.masonry \{ column-count: 1; \}/);
 	});
 
 	test('separates matches with compact type-tinted card surfaces', () => {

@@ -197,9 +197,11 @@ pipeline. TypeScript preserves the exact discovery result as an anchor and
 transports scope, relationship kinds, depth, result kinds, page size, and cursor
 to the Rust `query_source_symbol_relationships` operation. Rust alone composes
 the captured Workspace and selected Game Data semantic facts. Returned
-declarations reuse the established add-on/source grouping, packed grid,
-semantic type rails, Auto or manual preview context, paging, and exact opening
-handoffs. Changing mode or removing the anchor's source clears the editor's
+declarations reuse the established add-on/source grouping, semantic type rails,
+Auto or manual preview context, paging, and exact opening handoffs. Search
+results default to one-column cards; the same local presentation control cycles
+through two-column masonry and compact aligned rows without rerunning the
+query. Changing mode or removing the anchor's source clears the editor's
 relationship state; changed catalogue scope clears cached pages so a stale
 anchor is rejected rather than mixed with a newer generation.
 The Search page's resource mode is separate from those indexed-source modes:

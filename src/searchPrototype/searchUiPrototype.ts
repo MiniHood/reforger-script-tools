@@ -385,6 +385,7 @@ function logSearchSnapshot(value: unknown): void {
 		matchWholeWord: snapshot.matchWholeWord === true,
 		useRegex: snapshot.useRegex === true,
 		resultType: textField(snapshot.resultType),
+		resultLayout: textField(snapshot.resultLayout),
 		status: textField(snapshot.status),
 		requestId: numberField(snapshot.requestId),
 		page: numberField(snapshot.page),
@@ -1199,8 +1200,14 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .scope-actions [data-scope-all] { flex: 0 0 76px; width: 76px; box-sizing: border-box; }
 .page-controls { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 14px; }
 .page-controls [data-result-layout] { display: inline-flex; align-items: center; justify-content: center; padding: 0; line-height: 0; }
-.layout-toggle { display: inline-grid; grid-template-columns: repeat(2, 5px); grid-template-rows: repeat(2, 5px); gap: 2px; }
+.layout-toggle { display: inline-grid; width: 14px; height: 14px; grid-template-columns: repeat(2, 5px); grid-template-rows: repeat(2, 5px); place-content: center; gap: 2px; }
 .layout-toggle span { display: block; border: 1px solid currentColor; }
+.layout-toggle.layout-single { display: block; }
+.layout-toggle.layout-single span:first-child { width: 12px; height: 12px; }
+.layout-toggle.layout-single span:not(:first-child) { display: none; }
+.layout-toggle.layout-rows { grid-template-columns: 14px; grid-template-rows: repeat(3, 2px); gap: 2px; }
+.layout-toggle.layout-rows span { border: 0; background: currentColor; }
+.layout-toggle.layout-rows span:last-child { display: none; }
 .page-controls button.active { border-color: var(--accent); color: var(--accent); background: var(--selected); }
 .page-status { display: inline-flex; flex: 0 0 150px; align-items: center; justify-content: flex-end; gap: 6px; white-space: nowrap; }
 .page-arrows { display: inline-flex; gap: 2px; }
@@ -1244,8 +1251,17 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .atlas-group-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 3px solid var(--addon-header-color, var(--border)); background: var(--alt); }
 .atlas-group-head h2 { margin: 0; font-size: 13px; }
 .atlas-results { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 12px; align-items: start; }
-.atlas-results.two-column { display: block; column-count: 2; column-gap: 10px; }
-.atlas-results.two-column .atlas-card { display: inline-block; width: 100%; margin: 0 0 10px; break-inside: avoid; }
+.atlas-results.masonry { display: block; column-count: 2; column-gap: 10px; }
+.atlas-results.masonry .atlas-card { display: inline-block; width: 100%; margin: 0 0 10px; break-inside: avoid; }
+.atlas-results.rows { --result-row-columns: minmax(150px, 28%) minmax(240px, 1fr) 180px 110px; display: grid; grid-template-columns: minmax(640px, 1fr); gap: 1px; overflow-x: auto; }
+.atlas-results.rows .atlas-card { display: grid; min-width: 640px; grid-template-columns: var(--result-row-columns); align-items: center; gap: 12px; padding: 6px 10px; box-shadow: none; }
+.atlas-results.rows .atlas-card-head { display: contents; }
+.atlas-results.rows .atlas-card-head > strong { grid-column: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.atlas-results.rows .atlas-card.result-resource .atlas-card-head > strong { grid-column: 1 / 3; }
+.atlas-results.rows .atlas-card-tools { grid-column: 3; grid-row: 1; flex-wrap: nowrap; }
+.atlas-results.rows .atlas-card .result-path { grid-column: 2; grid-row: 1; margin: 0; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; white-space: nowrap; }
+.atlas-results.rows .snippet, .atlas-results.rows .md-preview { display: none; }
+.atlas-results.rows .result-actions { grid-column: 4; grid-row: 1; flex-wrap: nowrap; margin: 0; }
 .atlas-group .atlas-results { margin: 0; padding: 10px; background: var(--bg); }
 .atlas-card { --result-accent: var(--accent); min-width: 0; padding: 12px 12px 8px; border: 1px solid var(--vscode-widget-border, var(--border)); border-left: 3px solid var(--result-accent); background: var(--panel); background: color-mix(in srgb, var(--result-accent) 7%, var(--panel)); box-shadow: 0 2px 8px rgba(0, 0, 0, .16); cursor: pointer; user-select: text; }
 .atlas-card.result-class { --result-accent: #40b5ac; }
@@ -1336,7 +1352,7 @@ h3 { font-size: 13px; margin: 0 0 4px; }
 .context-auto-icon i:nth-child(1) { width: 8px; }
 .context-auto-icon i:nth-child(2) { width: 13px; }
 .context-auto-icon i:nth-child(3) { width: 6px; }
-@media (max-width: 980px) { .atlas-results.two-column { column-count: 1; } }
+@media (max-width: 980px) { .atlas-results.masonry { column-count: 1; } .atlas-results.rows { grid-template-columns: minmax(640px, 1fr); } }
 @media (max-width: 1100px) { .search-primary { grid-template-columns: minmax(0, 1fr); } .search-count { display: none; } .search-secondary { flex-wrap: wrap; } .search-secondary .page-controls { flex-basis: 100%; margin-left: 0; } }
 @media (max-width: 720px) { .shell { padding: 18px 14px 60px; } .search-primary { grid-template-columns: 1fr; } .search-secondary { flex-direction: column; } .search-query { flex-wrap: wrap; } .text-option-buttons { margin: -1px 0 0; } .atlas-card-head { align-items: flex-start; flex-wrap: wrap; } .result-path { max-width: 100%; margin-left: 0; text-align: left; } }
 </style>
@@ -1352,7 +1368,12 @@ window.__reforgerSearchVscode.postMessage({ type: 'webviewReady', width: window.
 </script>
 <script nonce="${nonce}">
 const vscode = window.__reforgerSearchVscode;
-const state = { query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, type: 'all', relationOpen: false, relationAnchor: null, relationIncludes: ['direct'], relationDepth: 'direct', resultColumns: 1, results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, truncated: false, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, scopeOpen: false, scopeFilter: '', scopeRevision: '', scopeAuthority: '', scopeDiscoveryMs: 0, unavailableScopeIds: [], scopeSources: [{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true }, { id: 'wiki', label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true }], selectedScopeIds: ['workspace', 'wiki'], selectionTouched: false, removedScopeIds: [], uiPerformance: { renderCount: 0, lastRenderMs: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
+const resultLayouts = [
+  { id: 'single', label: 'One column' },
+  { id: 'masonry', label: 'Two-column masonry' },
+  { id: 'rows', label: 'Aligned rows' },
+];
+const state = { query: '', mode: 'semantic', matchCase: false, matchWholeWord: false, useRegex: false, type: 'all', relationOpen: false, relationAnchor: null, relationIncludes: ['direct'], relationDepth: 'direct', resultLayout: 'single', results: [], sourcePreviews: {}, matchRanges: {}, semanticPreviews: {}, warnings: [], status: 'idle', error: '', requestId: 0, selected: '', page: 1, pageSize: 25, total: 0, truncated: false, totalBySource: {}, lastSearchKey: '', searchPerformance: {}, previewPerformance: {}, scopeOpen: false, scopeFilter: '', scopeRevision: '', scopeAuthority: '', scopeDiscoveryMs: 0, unavailableScopeIds: [], scopeSources: [{ id: 'workspace', label: 'Workspace', detail: 'Live', kind: 'workspace', pinned: true, defaultSelected: true }, { id: 'wiki', label: 'Official Wiki', detail: 'Text search', kind: 'wiki', pinned: true, defaultSelected: true }], selectedScopeIds: ['workspace', 'wiki'], selectionTouched: false, removedScopeIds: [], uiPerformance: { renderCount: 0, lastRenderMs: 0, lastSearchResponseMs: 0, lastPreviewMessageMs: 0, lastSemanticMessageMs: 0 } };
 let pendingQuerySelection;
 let previewContextLines = 0;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -1439,7 +1460,11 @@ const pageControls = (includeLayoutToggle = false) => {
   const navigationDisabled = !hasActiveSearch() || state.status === 'loading';
   const pageTotal = totalPages();
   const sizes = pageSizeOptions.map(size => '<option value="' + size + '"' + (state.pageSize === size ? ' selected' : '') + '>' + size + ' results</option>').join('');
-  const layoutToggle = includeLayoutToggle ? '<button type="button" data-result-layout class="' + (state.resultColumns === 2 ? 'active' : '') + '" aria-label="Toggle packed result columns" aria-pressed="' + (state.resultColumns === 2) + '" title="Toggle packed result columns"><span class="layout-toggle" aria-hidden="true"><span></span><span></span><span></span><span></span></span></button>' : '';
+  const layoutIndex = Math.max(0, resultLayouts.findIndex(layout => layout.id === state.resultLayout));
+  const layout = resultLayouts[layoutIndex];
+  const nextLayout = resultLayouts[(layoutIndex + 1) % resultLayouts.length];
+  const layoutLabel = 'Result layout: ' + layout.label + '. Activate for ' + nextLayout.label.toLowerCase() + '.';
+  const layoutToggle = includeLayoutToggle ? '<button type="button" data-result-layout="' + esc(state.resultLayout) + '" aria-label="' + esc(layoutLabel) + '" title="' + esc(layoutLabel) + '"><span class="layout-toggle layout-' + esc(state.resultLayout) + '" aria-hidden="true"><span></span><span></span><span></span><span></span></span></button>' : '';
   const previewContextValue = previewContextLines === 0 ? 'Auto' : previewContextLines;
   const previewContextIcon = previewContextLines === 0 ? '<span class="context-auto-icon" aria-hidden="true"><i></i><i></i><i></i></span>' : '';
   const previewControl = includeLayoutToggle && state.mode !== 'resource' ? '<div class="context-stepper" aria-label="Result preview context"><button type="button" data-preview-context-down aria-label="Decrease preview context" title="Decrease preview context"' + (previewContextLines === 0 ? ' disabled' : '') + '>&minus;</button><button type="button" data-preview-context-auto class="' + (previewContextLines === 0 ? 'active' : '') + '" aria-pressed="' + (previewContextLines === 0) + '" aria-label="' + (previewContextLines === 0 ? 'Automatic enclosing scope' : 'Reset preview context to automatic') + '" title="' + (previewContextLines === 0 ? 'Automatic enclosing scope' : 'Reset to automatic enclosing scope') + '">' + previewContextIcon + '<span aria-live="polite">' + previewContextValue + '</span></button><button type="button" data-preview-context-up aria-label="Increase preview context" title="Increase preview context">+</button></div>' : '';
@@ -1568,7 +1593,7 @@ const resultGroups = () => {
     group.results.push(result);
     groups.set(key, group);
   });
-  return '<div class="atlas-groups">' + [...groups.values()].map(({ label, results }) => { const color = addonHeaderColor(results[0]); return '<section class="atlas-group"><div class="atlas-group-head"' + (color ? ' style="--addon-header-color:' + esc(color) + ';"' : '') + '><h2>' + esc(label) + '</h2><span class="tag">' + results.length + '</span></div><div class="atlas-results' + (state.resultColumns === 2 ? ' two-column' : '') + '">' + results.map(resultCard).join('') + '</div></section>'; }).join('') + '</div>';
+  return '<div class="atlas-groups">' + [...groups.values()].map(({ label, results }) => { const color = addonHeaderColor(results[0]); const layoutClass = state.resultLayout === 'single' ? '' : ' ' + state.resultLayout; return '<section class="atlas-group"><div class="atlas-group-head"' + (color ? ' style="--addon-header-color:' + esc(color) + ';"' : '') + '><h2>' + esc(label) + '</h2><span class="tag">' + results.length + '</span></div><div class="atlas-results' + layoutClass + '">' + results.map(resultCard).join('') + '</div></section>'; }).join('') + '</div>';
 };
 const updateResultPreviews = ids => {
   if (!ids.length) return;
@@ -1602,7 +1627,7 @@ const captureSearchSnapshot = () => vscode.postMessage({ type: 'debugSnapshot', 
   relationDepth: state.relationDepth,
   relationAnchor: state.relationAnchor,
   status: state.status,
-  resultColumns: state.resultColumns,
+  resultLayout: state.resultLayout,
   requestId: state.requestId,
   page: state.page,
   pageSize: state.pageSize,
@@ -1699,7 +1724,7 @@ const setRelationDepth = value => { state.relationDepth = value === 'all' ? 'all
 const clearRelationAnchor = () => { state.relationAnchor = null; state.relationIncludes = ['direct']; state.relationOpen = false; render(true); search(true); };
 const setScopeChoice = (value, checked) => { state.selectionTouched = true; state.selectedScopeIds = checked ? [...new Set([...state.selectedScopeIds, value])] : state.selectedScopeIds.filter(candidate => candidate !== value); clearOutOfScopeRelationAnchor(); render(false); search(true); };
 const setPreviewContext = value => { const nextContextLines = Math.max(0, Math.min(249, value)); previewContextLines = nextContextLines; render(false); vscode.postMessage({ type: 'previewContext', contextLines: nextContextLines }); };
-const toggleResultLayout = () => { state.resultColumns = state.resultColumns === 2 ? 1 : 2; render(false); };
+const toggleResultLayout = () => { const current = Math.max(0, resultLayouts.findIndex(layout => layout.id === state.resultLayout)); state.resultLayout = resultLayouts[(current + 1) % resultLayouts.length].id; render(false); };
 const resultBody = content => state.error
   ? '<div class="error">' + esc(state.error) + '</div>'
   : state.mode !== 'resource' && selectedEligibleScopeIds().length === 0
