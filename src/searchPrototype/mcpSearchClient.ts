@@ -802,6 +802,41 @@ export class McpSearchClient {
 		};
 	}
 
+	public async readComplete(hit: SearchHit): Promise<SearchDocument> {
+		if (hit.source !== 'gameData' || typeof hit.readInput.relativePath !== 'string') {
+			return this.read(hit);
+		}
+		await this.start();
+		let content = '';
+		let endLine = 0;
+		let nextStartLine = 1;
+		const visitedStarts = new Set<number>();
+		while (!visitedStarts.has(nextStartLine)) {
+			visitedStarts.add(nextStartLine);
+			const value = asRecord(await this.callTool('read_game_data_source', {
+				...hit.readInput,
+				startLine: nextStartLine,
+				lineCount: 500,
+			}));
+			if (typeof value.content !== 'string') {
+				throw new Error('The source read returned no content.');
+			}
+			content += value.content;
+			endLine = asNumber(value.endLine, endLine);
+			if (value.truncated !== true) {
+				return { content, startLine: 1, endLine };
+			}
+			const next = typeof value.nextStartLine === 'number'
+				? Math.floor(value.nextStartLine)
+				: 0;
+			if (next <= nextStartLine) {
+				break;
+			}
+			nextStartLine = next;
+		}
+		throw new Error('The complete source read did not make forward progress.');
+	}
+
 	public async resolveSourcePath(hit: SearchHit): Promise<string | undefined> {
 		const relativePath = typeof hit.readInput.relativePath === 'string'
 			? hit.readInput.relativePath
@@ -867,6 +902,10 @@ export class McpSearchClient {
 	): Promise<SearchResponse> {
 		const trace = createSearchPerformanceTrace();
 		await this.start();
+		if (!this.lastCatalogueRevision) {
+			await this.discoverScope();
+		}
+		const sourceCatalogueRevision = this.lastCatalogueRevision;
 		trace.startupMs = performance.now() - trace.startedAt;
 		const normalizedPageSize = Math.min(100, Math.max(1, Number.isFinite(pageSize) ? Math.floor(pageSize) : 25));
 		const requestedPage = Math.min(maxSearchPages, Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1));
@@ -909,7 +948,7 @@ export class McpSearchClient {
 				}
 				throw error;
 			}
-			const results = normalizeResourceSearchPage(value);
+			const results = normalizeResourceSearchPage(value, sourceCatalogueRevision);
 			pages.set(current, {
 				results,
 				total: asNumber(value.total, results.length),
@@ -1257,7 +1296,10 @@ export function resourceKindsFor(value: string): readonly SearchResourceKind[] {
 	return searchResourceKindFilters.find(filter => filter.value === value)?.kinds ?? allSearchResourceKinds;
 }
 
-export function normalizeResourceSearchPage(value: unknown): SearchHit[] {
+export function normalizeResourceSearchPage(
+	value: unknown,
+	sourceCatalogueRevision?: string,
+): SearchHit[] {
 	const results = asRecord(value).results;
 	if (!Array.isArray(results)) {
 		return [];
@@ -1273,6 +1315,15 @@ export function normalizeResourceSearchPage(value: unknown): SearchHit[] {
 		const extension = asString(hit.extension, 'resource');
 		const addonGuid = asOptionalString(hit.addonGuid);
 		const thumbnailColor = asThumbnailColor(hit.thumbnailColor);
+		const scriptReadInput = extension.toLowerCase() === 'c'
+			&& addonGuid
+			&& sourceCatalogueRevision
+			? {
+				catalogueRevision: sourceCatalogueRevision,
+				addonGuid,
+				relativePath: logicalPath,
+			}
+			: undefined;
 		return [{
 			id: `game-data-resource-${index}-${resourceName}`,
 			source: 'gameData' as const,
@@ -1282,7 +1333,7 @@ export function normalizeResourceSearchPage(value: unknown): SearchHit[] {
 			path: logicalPath,
 			excerpt: '',
 			matchKind: 'resource',
-			readInput: {},
+			readInput: scriptReadInput ?? {},
 			resourceName,
 			...(asOptionalString(hit.workbenchLink) ? { workbenchLink: asOptionalString(hit.workbenchLink) } : {}),
 			...(hit.stale === true ? { resourceStale: true } : {}),

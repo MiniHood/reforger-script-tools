@@ -58,6 +58,27 @@ suite('Reforger search UI MCP mapping', () => {
 		}]);
 	});
 
+	test('maps script resources to complete VS Code source previews', () => {
+		assert.deepStrictEqual(normalizeResourceSearchPage({
+			results: [{
+				resourceName: '{58D0FB3206B6F859}Scripts/Game/SCR_Radio.c',
+				addonGuid: '58D0FB3206B6F859',
+				addonId: 'ArmaReforger',
+				logicalPath: 'Scripts/Game/SCR_Radio.c',
+				basename: 'SCR_Radio.c',
+				extension: 'c',
+				workbenchLink: 'enfusion://ScriptEditor/Scripts/Game/SCR_Radio.c',
+			}],
+		}, 'gd1:revision')[0].readInput, {
+			catalogueRevision: 'gd1:revision',
+			addonGuid: '58D0FB3206B6F859',
+			relativePath: 'Scripts/Game/SCR_Radio.c',
+		});
+		assert.match(searchUiSource, /hit\.kind === 'resource' && !hit\.readInput\.relativePath/);
+		assert.match(searchUiSource, /client\.readComplete\(hit\)/);
+		assert.match(searchUiSource, /showTextDocument\(documentWithLanguage, \{ preview: true \}\)/);
+	});
+
 	test('offers a resource search mode backed by the canonical Workbench tools', () => {
 		assert.match(searchUiSource, /data-mode="resource">Resources/);
 		assert.match(searchUiSource, /resourceResultTypes/);

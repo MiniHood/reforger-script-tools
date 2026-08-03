@@ -938,7 +938,7 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 	}
 	try {
 		diagnostic('searchUi.resultOpenStarted', { source: hit.source, kind: hit.kind });
-		if (hit.kind === 'resource') {
+		if (hit.kind === 'resource' && !hit.readInput.relativePath) {
 			const resourceLink = hit.workbenchLink;
 			if (!resourceLink) {
 				throw new Error('The resource search result did not include a complete Workbench resource link.');
@@ -957,7 +957,9 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 		} else if (sourcePath) {
 			opened = await vscode.workspace.openTextDocument(vscode.Uri.file(sourcePath));
 		} else {
-			boundedDocument = await client.read(hit);
+			boundedDocument = hit.kind === 'resource'
+				? await client.readComplete(hit)
+				: await client.read(hit);
 			const key = `document-${++documentSequence}`;
 			while (searchDocuments.size >= maxSearchDocuments) {
 				const oldest = searchDocuments.keys().next().value;
@@ -983,7 +985,9 @@ async function openSearchResult(active: ActiveSearch, id: string): Promise<void>
 			});
 			return;
 		}
-		const editor = await vscode.window.showTextDocument(documentWithLanguage);
+		const editor = hit.kind === 'resource'
+			? await vscode.window.showTextDocument(documentWithLanguage, { preview: true })
+			: await vscode.window.showTextDocument(documentWithLanguage);
 		const range = selectionRange(documentWithLanguage, hit, boundedDocument?.startLine ?? 1);
 		editor.selection = new vscode.Selection(range.start, range.end);
 		editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);

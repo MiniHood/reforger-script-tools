@@ -213,7 +213,10 @@ contract: scripts use an unqualified `ScriptEditor` path, `.ent` world files
 use an unqualified `WorldEditor` path, behavior trees use an add-on-qualified
 `BehaviorEditor` path, and all other resource families—including prefabs,
 configs, and terrain-support files—use an add-on-qualified `ResourceManager`
-path. Cached catalogue
+path. In the extension-hosted Search page, a `.c` resource uses its exact
+Game Data source-read handoff to assemble the complete script and open it as an
+Enforce document in a VS Code preview editor; other resource results follow
+their Workbench links. Cached catalogue
 records refresh this derived link when read so extension upgrades do not retain
 an older routing rule. Resource cards render the returned identity and path
 without source previews; selecting a resource category performs an
