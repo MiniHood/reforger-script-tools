@@ -31,7 +31,8 @@ trademarks or registered trademarks of Bohemia Interactive a.s.
 
 ## Features
 
-- Enfusion Script syntax highlighting and semantic colors.
+- Enfusion Script syntax highlighting and semantic coloring without replacing
+  your selected VS Code theme.
 - Context-aware completion, snippets, signature help, hover information, and
   go to definition.
 - Document symbols and indexing of Reforger base-game data.
@@ -68,15 +69,11 @@ Save and Validate On Idle** to use only explicit saves and manual validation.
 These steps follow Bohemia Interactive's official
 [Resource Manager options documentation](https://community.bistudio.com/wiki/Arma_Reforger%3AResource_Manager%3A_Options#Enable_net_API).
 
+
 ## MCP Server
 
-Run **Reforger Script Tools: Copy MCP Configuration** and choose Codex TOML or
-generic MCP JSON to connect a compatible MCP client. The bundled server searches
-workspace scripts, indexed add-ons and resources, and packaged official
-Reforger documentation without requiring VS Code to remain open. With
-Workbench Integration enabled, it can also inspect and modify live resources,
-prefabs, and World Editor entities, and run supported editor actions. Run the
-command again after upgrading the extension or changing **External Indexes**.
+Work-in progress framework. Not fully complete but commands and API are currently exposed. See github documentation on usage.
+
 
 ## Settings
 
@@ -110,9 +107,11 @@ over.
 
 ## Customize Semantic Colors
 
-The extension supplies default Enfusion Script colors through VS Code's native
-semantic-token settings. VS Code applies these defaults automatically, so they
-do not appear in **User Settings (JSON)** until you add your own overrides.
+The previous custom color theme has been removed. The extension now supplies
+default Enfusion Script colors through VS Code's native semantic-token settings
+without replacing your selected theme. VS Code applies these defaults
+automatically, so they do not appear in **User Settings (JSON)** until you add
+your own overrides.
 
 To change a color:
 
