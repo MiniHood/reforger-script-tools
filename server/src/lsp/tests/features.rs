@@ -556,6 +556,34 @@ fn semantic_tokens_color_builtin_collection_types_without_external_index() {
 }
 
 #[test]
+fn semantic_tokens_recover_after_dangling_assignment_before_local_declaration() {
+    let source = r#"class Example
+{
+	void Run()
+	{
+		IEntity testEntity =
+
+		map<int, string> testmap = new map<int, string>();
+	}
+}
+"#;
+
+    let report = semantic_tokens_report_for_source(source);
+
+    assert_semantic_type_family_token_count_at_least(&report, "map", 2);
+    assert_semantic_type_family_token_count_at_least(&report, "string", 2);
+    assert_semantic_token(&report, "testmap", "variable");
+    for (needle, delimiter) in [
+        ("map<int, string> testmap", '<'),
+        ("map<int, string> testmap", '>'),
+        ("new map<int, string>", '<'),
+        ("new map<int, string>", '>'),
+    ] {
+        assert_semantic_delimiter_at(source, &report, needle, delimiter, "class");
+    }
+}
+
+#[test]
 fn semantic_tokens_apply_type_keyword_color_policy_in_declarations() {
     let source = r#"class SCR_Class {}
 enum SCR_EEnum { VALUE, }
