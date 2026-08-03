@@ -4,7 +4,6 @@ import * as vscode from 'vscode';
 import { diagnostic, diagnosticsEnabled } from '../diagnostics/diagnostics';
 import { gameDataStorage } from '../extensionConfig/gameData';
 import {
-	loadedAddonSourceInventoryIsConfirmed,
 	onDidConfirmLoadedAddonSourceInventory,
 } from '../gameData/localSourceInventory';
 import { languageClientIndexCache, languageClientSchemes } from '../extensionConfig/languageClient';
@@ -1018,8 +1017,6 @@ async function createClient(context: vscode.ExtensionContext): Promise<McpSearch
 		gameDataStorage.inventoryFile,
 	);
 	const externalIndexMode = readExternalIndexMode();
-	const authoritativeWorkbenchScope = externalIndexMode === 'loaded'
-		&& loadedAddonSourceInventoryIsConfirmed(addonSourceInventory);
 	return new McpSearchClient({
 		serverPath,
 		addonSourceInventory,
@@ -1029,7 +1026,7 @@ async function createClient(context: vscode.ExtensionContext): Promise<McpSearch
 		),
 		externalIndexMode,
 		workspaceScripts: await discoverWorkspaceScriptRoots(),
-		dependencyProjectFiles: authoritativeWorkbenchScope ? [] : await discoverWorkspaceProjectFiles(),
+		dependencyProjectFiles: await discoverWorkspaceProjectFiles(),
 		officialWikiRoot: path.join(context.extensionPath, 'data', 'official-wiki'),
 	});
 }

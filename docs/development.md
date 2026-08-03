@@ -409,7 +409,9 @@ The `reforgerScriptTools.workbench.externalIndexMode` setting controls external
 index scope independently of NET API availability. Its default `loaded` mode
 hydrates the compatible offline indexes for the opened project's dependency
 GUIDs first, then reconciles them with the current live graph when Workbench is
-available. It does not use a previous Workbench graph as a startup source.
+available. Reconciliation retains the dependency closure, adds live-only
+Workbench add-ons, and uses Workbench's source root when both inputs name the
+same GUID. It does not use a previous Workbench graph as a startup source.
 `all` uses compatible cached indexes without a graph; `none`
 disables external add-on indexes. Changing this setting immediately restarts
 the language server and republishes the selected external-index layer; `none`
@@ -418,10 +420,11 @@ current managed manifest avoids repeating bridge maintenance and Workbench
 process probing.
 
 The Source Search panel owns a separate local MCP child. In `loaded` mode it
-uses the same provisional dependency closure until the editor language server
-accepts the current Workbench graph. That acceptance restarts an already-open
-Search child and republishes Search Scope from the authoritative graph. Both
-semantic and resource search therefore change scope together; resource search
+always passes the opened project descriptors alongside the current persisted
+Workbench graph. An accepted graph restarts an already-open Search child and
+republishes the GUID-deduplicated union: project dependencies remain present,
+live-only add-ons are added, and Workbench wins source-root collisions. Both
+semantic and resource search therefore use the same scope; resource search
 resolves provisional dependency source roots from the parser-owned cache
 catalogue rather than silently returning zero for a dependency GUID.
 
@@ -430,10 +433,10 @@ uses the project's transitive dependency descriptors for the no-Workbench
 warmup. Rust consults the bounded Workbench project registry and adjacent
 project descriptors by GUID, always adds the base-game dependency, and loads
 matching caches only. The provisional scope is labelled separately from
-Workbench-loaded data, and a live Workbench graph replaces it when available;
-that live graph validates or builds missing or changed source roots. If the
-cache contains duplicate GUIDs, the unpacked source-root cache is preferred
-over a packed-only cache.
+Workbench-loaded data, and a live Workbench graph is merged with it when
+available; that live graph validates or builds missing or changed source roots.
+If the cache contains duplicate GUIDs, the unpacked source-root cache is
+preferred over a packed-only cache.
 The **Reforger: Indexing loaded add-ons** progress indicator covers active
 offline cache hydration, dependency indexing, PAC inspection, and index
 publication. It closes when the offline index reaches a terminal state; it

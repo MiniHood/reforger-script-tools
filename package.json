@@ -213,7 +213,7 @@
           ],
           "enumDescriptions": [
             "Load every compatible external index already available in the local index cache.",
-            "Load the opened project's offline dependency indexes, including the base-game dependency, then replace them with the current Workbench graph when Workbench connects.",
+            "Combine the opened project's dependency indexes, including the base game, with the current Workbench graph; Workbench wins source-root collisions by add-on GUID.",
             "Do not load external add-on indexes. Workspace scripts remain available."
           ],
           "default": "loaded",

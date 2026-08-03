@@ -744,8 +744,8 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.doesNotMatch(searchClientSource, /'--external-index-mode'/);
 		assert.match(searchUiSource, /const externalIndexMode = readExternalIndexMode\(\)/);
 		assert.match(searchUiSource, /externalIndexMode,/);
-		assert.match(searchUiSource, /loadedAddonSourceInventoryIsConfirmed\(addonSourceInventory\)/);
-		assert.match(searchUiSource, /dependencyProjectFiles: authoritativeWorkbenchScope \? \[\] : await discoverWorkspaceProjectFiles\(\)/);
+		assert.doesNotMatch(searchUiSource, /loadedAddonSourceInventoryIsConfirmed\(addonSourceInventory\)/);
+		assert.match(searchUiSource, /dependencyProjectFiles: await discoverWorkspaceProjectFiles\(\)/);
 		assert.match(searchUiSource, /onDidConfirmLoadedAddonSourceInventory[\s\S]*?refreshSearchScope\(context, activeSearch\)/);
 		assert.doesNotMatch(searchClientSource, /dependencyProjectFiles\.flatMap/);
 		assert.match(searchUiSource, /affectsConfiguration\(`\$\{workbenchConfig\.section\}\.\$\{workbenchConfig\.settings\.externalIndexMode\}`\)/);

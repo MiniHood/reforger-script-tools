@@ -1,7 +1,8 @@
 use crate::addon_sources::{
     load_all_cached_addon_indexes, load_cached_dependency_addon_indexes,
-    read_cached_loaded_addon_indexes, read_cached_virtual_source, read_cached_virtual_sources,
-    LoadedAddonIndexInstance, LoadedAddonIndexResult, BASE_GAME_GUID, ENFUSION_CORE_GUID,
+    read_cached_combined_addon_indexes, read_cached_loaded_addon_indexes,
+    read_cached_virtual_source, read_cached_virtual_sources, LoadedAddonIndexInstance,
+    LoadedAddonIndexResult, BASE_GAME_GUID, ENFUSION_CORE_GUID,
 };
 use crate::game_data_inspection::{
     inspect, read_source as read_source_evidence, GameDataInspectionError,
@@ -957,12 +958,22 @@ fn initialize_catalogue(
                 "Regenerate the MCP configuration from the extension.",
             ));
         };
-        let loaded = load_cached_dependency_addon_indexes(
-            &config.dependency_project_files,
-            storage,
-            &config.workspace_roots,
-            control,
-        )?;
+        let loaded = if let Some(inventory) = config.addon_source_inventory.as_ref() {
+            read_cached_combined_addon_indexes(
+                inventory,
+                &config.dependency_project_files,
+                storage,
+                &config.workspace_roots,
+                control,
+            )?
+        } else {
+            load_cached_dependency_addon_indexes(
+                &config.dependency_project_files,
+                storage,
+                &config.workspace_roots,
+                control,
+            )?
+        };
         if loaded.loaded_instances == 0 {
             return Ok(unavailable_state(
                 source,
@@ -1412,7 +1423,7 @@ mod tests {
     }
 
     #[test]
-    fn loaded_mode_prefers_opened_project_dependencies_over_an_unrelated_graph() {
+    fn loaded_mode_combines_opened_project_dependencies_with_the_workbench_graph() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1495,13 +1506,13 @@ mod tests {
 
         assert_eq!(
             status.scope_authority.as_deref(),
-            Some("project-dependencies-provisional")
+            Some("project-dependencies-and-workbench-loaded")
         );
         assert!(status
             .addons
             .iter()
             .any(|addon| addon.addon_guid == "2222222222222222"));
-        assert!(!status
+        assert!(status
             .addons
             .iter()
             .any(|addon| addon.addon_guid == "1111111111111111"));

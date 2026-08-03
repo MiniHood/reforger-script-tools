@@ -42,6 +42,7 @@ const MAX_LOCATOR_STRING_BYTES: usize = 16 * 1024 * 1024;
 pub enum AddonScopeAuthority {
     WorkbenchLoaded,
     ProjectDependencies,
+    ProjectDependenciesAndWorkbench,
 }
 
 impl AddonScopeAuthority {
@@ -49,6 +50,7 @@ impl AddonScopeAuthority {
         match self {
             Self::WorkbenchLoaded => "workbench-loaded",
             Self::ProjectDependencies => "project-dependencies-provisional",
+            Self::ProjectDependenciesAndWorkbench => "project-dependencies-and-workbench-loaded",
         }
     }
 }
@@ -93,6 +95,26 @@ pub struct LoadedAddonSourceInfo {
     pub display_id: String,
     pub title: String,
     pub source_root: PathBuf,
+}
+
+/// Combines the opened project's transitive dependency closure with the
+/// current Workbench graph. GUID is the add-on identity; when both authorities
+/// name the same GUID, Workbench's live source root is authoritative.
+pub fn merge_loaded_addon_sources(
+    project_dependencies: Vec<LoadedAddonSourceInfo>,
+    workbench_loaded: Vec<LoadedAddonSourceInfo>,
+) -> Vec<LoadedAddonSourceInfo> {
+    let workbench_guids = workbench_loaded
+        .iter()
+        .map(|source| source.guid.to_ascii_uppercase())
+        .collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
+    project_dependencies
+        .into_iter()
+        .filter(|source| !workbench_guids.contains(&source.guid.to_ascii_uppercase()))
+        .chain(workbench_loaded)
+        .filter(|source| seen.insert(source.guid.to_ascii_uppercase()))
+        .collect()
 }
 
 /// Bounded performance facts for one add-on scope refresh.
@@ -248,6 +270,20 @@ struct LoadedAddonSource {
 #[derive(Debug)]
 struct LoadedAddonGraph {
     addons: Vec<LoadedAddonSource>,
+}
+
+fn loaded_addon_graph_from_sources(sources: Vec<LoadedAddonSourceInfo>) -> LoadedAddonGraph {
+    LoadedAddonGraph {
+        addons: sources
+            .into_iter()
+            .map(|source| LoadedAddonSource {
+                guid: source.guid,
+                id: source.display_id,
+                title: source.title,
+                source_root: source.source_root,
+            })
+            .collect(),
+    }
 }
 
 struct BaseGameInspection {
@@ -659,6 +695,38 @@ pub fn load_or_build_loaded_addon_indexes(
     )
 }
 
+/// Reconciles the opened project's cached dependency closure with the live
+/// Workbench graph. The dependency pass is responsible for resolving and
+/// publishing project sources; this pass adds live-only instances and lets the
+/// Workbench source root win when the same GUID appears in both scopes.
+pub fn load_or_build_combined_addon_indexes(
+    inventory_path: &Path,
+    project_files: &[PathBuf],
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+) -> Result<LoadedAddonIndexResult, String> {
+    let graph_start = Instant::now();
+    let project_dependencies =
+        read_cached_dependency_addon_sources(project_files, storage_root, control)?;
+    let workbench_loaded = read_loaded_addon_sources(inventory_path)?;
+    let graph = loaded_addon_graph_from_sources(merge_loaded_addon_sources(
+        project_dependencies,
+        workbench_loaded,
+    ));
+    let graph_read = graph_start.elapsed();
+    let mut result = load_or_build_addon_indexes(
+        graph,
+        graph_read,
+        storage_root,
+        workspace_roots,
+        control,
+        AddonScopeAuthority::ProjectDependenciesAndWorkbench,
+    )?;
+    add_missing_project_dependencies(&mut result, project_files, storage_root, control)?;
+    Ok(result)
+}
+
 pub fn load_or_build_base_game_indexes(
     inventory_path: &Path,
     storage_root: &Path,
@@ -696,7 +764,7 @@ fn load_or_build_addon_indexes(
     let workspace_root_resolution = workspace_root_start.elapsed();
     let addons = graph.addons;
     let cache_prune_start = Instant::now();
-    if scope_authority == AddonScopeAuthority::WorkbenchLoaded {
+    if scope_authority != AddonScopeAuthority::ProjectDependencies {
         prune_unloaded_addon_caches(storage_root, &addons)?;
     }
     let cache_prune = cache_prune_start.elapsed();
@@ -964,6 +1032,54 @@ pub fn read_cached_loaded_addon_indexes(
     )
 }
 
+pub fn read_cached_combined_addon_indexes(
+    inventory_path: &Path,
+    project_files: &[PathBuf],
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+) -> Result<LoadedAddonIndexResult, String> {
+    let total_start = Instant::now();
+    let graph_start = Instant::now();
+    let graph = loaded_addon_graph_from_sources(read_cached_combined_addon_sources(
+        inventory_path,
+        project_files,
+        storage_root,
+        control,
+    )?);
+    let graph_read = graph_start.elapsed();
+    let mut result = load_cached_addon_indexes(
+        graph,
+        graph_read,
+        storage_root,
+        workspace_roots,
+        control,
+        false,
+        AddonScopeAuthority::ProjectDependenciesAndWorkbench,
+        total_start,
+    )?;
+    add_missing_project_dependencies(&mut result, project_files, storage_root, control)?;
+    Ok(result)
+}
+
+/// Resolves the cache-only `loaded` scope used by both semantic and resource
+/// MCP catalogues. An unavailable current Workbench graph leaves the opened
+/// project's dependency closure intact; stale graph contents are not reused.
+pub fn read_cached_combined_addon_sources(
+    inventory_path: &Path,
+    project_files: &[PathBuf],
+    storage_root: &Path,
+    control: &IndexBuildControl,
+) -> Result<Vec<LoadedAddonSourceInfo>, String> {
+    let project_dependencies =
+        read_cached_dependency_addon_sources(project_files, storage_root, control)?;
+    let workbench_loaded = read_loaded_addon_sources(inventory_path).unwrap_or_default();
+    Ok(merge_loaded_addon_sources(
+        project_dependencies,
+        workbench_loaded,
+    ))
+}
+
 fn load_cached_loaded_addon_indexes_with_maintenance(
     inventory_path: &Path,
     storage_root: &Path,
@@ -975,6 +1091,28 @@ fn load_cached_loaded_addon_indexes_with_maintenance(
     let graph_start = Instant::now();
     let graph = read_loaded_addon_graph(inventory_path)?;
     let graph_read = graph_start.elapsed();
+    load_cached_addon_indexes(
+        graph,
+        graph_read,
+        storage_root,
+        workspace_roots,
+        control,
+        maintain_storage,
+        AddonScopeAuthority::WorkbenchLoaded,
+        total_start,
+    )
+}
+
+fn load_cached_addon_indexes(
+    graph: LoadedAddonGraph,
+    graph_read: Duration,
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+    maintain_storage: bool,
+    scope_authority: AddonScopeAuthority,
+    total_start: Instant,
+) -> Result<LoadedAddonIndexResult, String> {
     let workspace_root_start = Instant::now();
     let workspace_roots = workspace_roots
         .iter()
@@ -1155,7 +1293,7 @@ fn load_cached_loaded_addon_indexes_with_maintenance(
     Ok(LoadedAddonIndexResult {
         index: Arc::new(index),
         source_line_starts,
-        scope_authority: AddonScopeAuthority::WorkbenchLoaded,
+        scope_authority,
         summary,
         rebuilt_instances: 0,
         loaded_instances,
@@ -1263,6 +1401,37 @@ pub fn load_cached_dependency_addon_indexes(
         .filter(|guid| !workspace_guids.contains(*guid) && !loaded_guids.contains(*guid))
         .count();
     Ok(result)
+}
+
+fn add_missing_project_dependencies(
+    result: &mut LoadedAddonIndexResult,
+    project_files: &[PathBuf],
+    storage_root: &Path,
+    control: &IndexBuildControl,
+) -> Result<(), String> {
+    let dependency_guids =
+        read_project_dependency_scope_guids(project_files, storage_root, control)?;
+    let workspace_guids = project_files
+        .iter()
+        .filter_map(|project_file| read_dependency_project_candidate(project_file).ok())
+        .map(|candidate| candidate.addon.guid.to_ascii_uppercase())
+        .collect::<BTreeSet<_>>();
+    let represented_guids = result
+        .scope_instances
+        .iter()
+        .map(|instance| instance.guid.to_ascii_uppercase())
+        .chain(
+            result
+                .unavailable_instances
+                .iter()
+                .map(|instance| instance.guid.to_ascii_uppercase()),
+        )
+        .collect::<BTreeSet<_>>();
+    result.missing_instances += dependency_guids
+        .iter()
+        .filter(|guid| !workspace_guids.contains(*guid) && !represented_guids.contains(*guid))
+        .count();
+    Ok(())
 }
 
 /// Resolves the exact cached source instances used by provisional dependency
@@ -3832,6 +4001,39 @@ fn adjacent_manifest_sha512(pack: &Path) -> Option<String> {
 mod tests {
     use super::*;
     use crate::index_cache::IndexCacheStatus;
+
+    #[test]
+    fn combined_scope_deduplicates_by_guid_and_prefers_the_workbench_source() {
+        let source = |guid: &str, display_id: &str, root: &str| LoadedAddonSourceInfo {
+            guid: guid.to_string(),
+            display_id: display_id.to_string(),
+            title: display_id.to_string(),
+            source_root: PathBuf::from(root),
+        };
+        let merged = merge_loaded_addon_sources(
+            vec![
+                source("AAAAAAAAAAAAAAAA", "ProjectCollision", "project/collision"),
+                source("BBBBBBBBBBBBBBBB", "ProjectOnly", "project/only"),
+            ],
+            vec![
+                source("aaaaaaaaaaaaaaaa", "WorkbenchCollision", "live/collision"),
+                source("CCCCCCCCCCCCCCCC", "WorkbenchOnly", "live/only"),
+            ],
+        );
+
+        assert_eq!(merged.len(), 3);
+        assert!(merged.iter().any(|source| {
+            source.guid.eq_ignore_ascii_case("AAAAAAAAAAAAAAAA")
+                && source.display_id == "WorkbenchCollision"
+                && source.source_root == PathBuf::from("live/collision")
+        }));
+        assert!(merged
+            .iter()
+            .any(|source| source.display_id == "ProjectOnly"));
+        assert!(merged
+            .iter()
+            .any(|source| source.display_id == "WorkbenchOnly"));
+    }
 
     #[test]
     fn valid_packed_source_reuses_its_decoded_buffer() {

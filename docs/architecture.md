@@ -24,8 +24,8 @@ first hydrates compatible offline indexes for the opened project's transitive
 dependency GUIDs, always including the base-game dependency. This provisional
 scope makes the cache the warm-start source;
 it does not read a previously loaded Workbench graph as a startup fallback. Once
-Workbench is available, one loaded-add-on graph request supplies the current
-authoritative scope and Rust reconciles the cache by instance identity. `all`
+Workbench is available, one loaded-add-on graph request supplies the live part
+of the scope and Rust reconciles the union by GUID and instance identity. `all`
 loads every compatible cached add-on index, and `none` leaves only workspace
 scripts. These explicit modes do not scan for add-ons or guess installation
 paths.
@@ -45,8 +45,9 @@ transitive descriptor dependency closure by GUID. It uses the bounded
 Workbench project registry and opened-project neighborhood as locators, always
 adds the base-game dependency, and loads matching cached indexes only. It does
 not perform an unrestricted add-on scan or reuse a stale Workbench graph. A
-later live Workbench graph replaces this explicitly provisional dependency
-scope and validates/builds the authoritative source roots. When duplicate
+later live Workbench graph is merged with this dependency scope and
+validates/builds its authoritative source roots. When both scopes name the
+same GUID, the live Workbench source root wins. When duplicate
 cached instances share a GUID, the cache loader prefers the instance whose
 source root contains unpacked scripts.
 
@@ -64,8 +65,8 @@ graph.
 
 When a live graph is available, the extension makes one NET API request for the
 current loaded add-ons, atomically records that exact graph, and delivers its
-path to Rust over a typed LSP notification. Workbench remains the scope
-authority for the `loaded` live scope: the extension does not
+path to Rust over a typed LSP notification. Workbench remains the source-root
+authority for the live portion of the `loaded` scope: the extension does not
 scan, configure, or choose add-on folders. The NET API connection state is
 independent of Workbench's `scriptsCompiled` flag: compiler findings remain
 compiler diagnostics, while a connected bridge can still provide the loaded-
@@ -167,17 +168,19 @@ captures the current `externalIndexMode` and any opened workspace project
 descriptors. In `loaded` mode, an opened project selects the compatible cached
 indexes for its recursive dependency closure; the workspace project itself
 remains represented by the separate live Workspace source. The persisted
-Workbench graph is the `loaded`-mode authority only when no workspace project
-descriptor is available. `all` selects every compatible cached add-on without
+Workbench graph is merged with that closure when both inputs are available;
+the union is deduplicated by GUID and the Workbench source root wins a
+collision. With only one input, that input defines the available scope. `all`
+selects every compatible cached add-on without
 applying either loaded filter, and `none` disables external Game Data. The MCP
 process reconstructs the selected GUID-qualified layered catalogue without
 scanning for add-ons or starting one process per add-on.
 The extension-hosted Search page starts its private MCP child with that same
-resolved mode. While Workbench reconciliation is pending, Semantic and
-Resource search both use the opened project's provisional dependency closure.
-After the editor-owned language server accepts a live Workbench graph, Search
-restarts its child without the dependency warmup inputs, making that graph the
-shared Semantic and Resource authority. A later accepted graph or mode change
+resolved mode. Semantic and Resource search both receive the opened project's
+dependency descriptors and the persisted live Workbench graph. Rust applies
+the same GUID-deduplicated union used by the language server, so accepting a
+live graph adds Workbench-only add-ons without dropping project dependencies.
+A later accepted graph or mode change
 also disposes the existing child and republishes Search Scope, so a retained
 Search panel cannot continue showing the preceding catalogue.
 `game_data_status` publishes the currently available scope; Game Data symbol
@@ -491,8 +494,9 @@ to emulate compiler facts from files.
 - Workspace file notifications are coalesced off the request path; one worker
   owns workspace-wide aggregation and publishes each committed generation as
   a single external-index event.
-- Workbench is authoritative for the live loaded-add-on graph. A persisted
-  graph or cache-only projection is allowed only when the configured external
+- Workbench is authoritative for the live loaded-add-on graph and for source
+  roots when a GUID also appears in the opened project's dependency closure. A
+  persisted graph or cache-only projection is allowed only when the configured external
   index mode explicitly requests a fallback; it never becomes a live graph
   authority.
 - TypeScript bridges transport Rust-authored facts or apply editor behaviour;

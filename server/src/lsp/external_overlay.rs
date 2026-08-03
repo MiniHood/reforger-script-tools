@@ -6,8 +6,9 @@ use super::{
 };
 use crate::addon_sources::{
     load_all_cached_addon_indexes, load_cached_loaded_addon_indexes,
-    load_or_build_dependency_addon_indexes, load_or_build_loaded_addon_indexes,
-    loaded_addon_sources_are_current, loaded_workbench_graph_matches_scope, AddonScopeAuthority,
+    load_or_build_combined_addon_indexes, load_or_build_dependency_addon_indexes,
+    load_or_build_loaded_addon_indexes, loaded_addon_sources_are_current,
+    loaded_workbench_graph_matches_scope, read_cached_combined_addon_indexes, AddonScopeAuthority,
     LoadedAddonIndexResult, LoadedAddonInstanceIdentity,
 };
 use crate::index::SymbolIndex;
@@ -31,7 +32,8 @@ const MAX_DOCUMENT_EXCLUDED_WORKSPACE_INDEXES: usize = 4;
 fn index_phase(scope_authority: AddonScopeAuthority) -> &'static str {
     match scope_authority {
         AddonScopeAuthority::ProjectDependencies => "offline",
-        AddonScopeAuthority::WorkbenchLoaded => "workbench-reconciliation",
+        AddonScopeAuthority::WorkbenchLoaded
+        | AddonScopeAuthority::ProjectDependenciesAndWorkbench => "workbench-reconciliation",
     }
 }
 
@@ -101,6 +103,7 @@ struct ExternalIndexState {
     workspace_startup_pending: bool,
     workspace_roots: Vec<PathBuf>,
     addon_index_storage: Option<PathBuf>,
+    dependency_project_files: Vec<PathBuf>,
     graph_generation: u64,
     summary: Option<RuntimeIndexSummary>,
     workspace_summary: RuntimeIndexSummary,
@@ -249,6 +252,7 @@ impl ExternalIndexHandle {
             workspace_startup_pending: false,
             workspace_roots: Vec::new(),
             addon_index_storage: None,
+            dependency_project_files: Vec::new(),
             graph_generation: 0,
             summary: None,
             workspace_summary: RuntimeIndexSummary::default(),
@@ -310,7 +314,7 @@ impl ExternalIndexHandle {
         if matches!(self.mode, ExternalIndexMode::All | ExternalIndexMode::None) {
             return Ok(());
         }
-        let (storage, workspace_roots, warm_scope, graph_generation) = {
+        let (storage, workspace_roots, dependency_project_files, warm_scope, graph_generation) = {
             let mut state = self.state.lock().unwrap();
             let storage = state
                 .addon_index_storage
@@ -321,6 +325,7 @@ impl ExternalIndexHandle {
             (
                 storage,
                 state.workspace_roots.clone(),
+                state.dependency_project_files.clone(),
                 state.game_data_scope_instances.clone(),
                 state.graph_generation,
             )
@@ -334,6 +339,11 @@ impl ExternalIndexHandle {
         let control = self.control.clone();
         thread::spawn(move || {
             let started = Instant::now();
+            let reconciled_authority = if dependency_project_files.is_empty() {
+                AddonScopeAuthority::WorkbenchLoaded
+            } else {
+                AddonScopeAuthority::ProjectDependenciesAndWorkbench
+            };
             let warm_scope_reused = !warm_scope.is_empty()
                 && loaded_workbench_graph_matches_scope(
                     &inventory_path,
@@ -345,12 +355,11 @@ impl ExternalIndexHandle {
                 if let Ok(mut state) = state.lock() {
                     if state.graph_generation == graph_generation {
                         state.status = ExternalIndexStatus::Ready;
-                        state.game_data_scope_authority =
-                            Some(AddonScopeAuthority::WorkbenchLoaded);
+                        state.game_data_scope_authority = Some(reconciled_authority);
                         state.cache_status = Some("optimistic-loaded".to_string());
                         state.cache_detail = Some(format!(
                             "scopeAuthority={} loadedInstances={} sourceValidation=pending warmSnapshot=reused",
-                            AddonScopeAuthority::WorkbenchLoaded.as_str(),
+                            reconciled_authority.as_str(),
                             warm_scope.len(),
                         ));
                         state.error = None;
@@ -379,7 +388,7 @@ impl ExternalIndexHandle {
                                 state.cache_status = Some("loaded".to_string());
                                 state.cache_detail = Some(format!(
                                     "scopeAuthority={} loadedInstances={} sourceValidation=complete warmSnapshot=reused",
-                                    AddonScopeAuthority::WorkbenchLoaded.as_str(),
+                                    reconciled_authority.as_str(),
                                     warm_scope.len(),
                                 ));
                                 state.error = None;
@@ -412,7 +421,7 @@ impl ExternalIndexHandle {
                                 state.cache_status = Some("optimistic-loaded".to_string());
                                 state.cache_detail = Some(format!(
                                     "scopeAuthority={} loadedInstances={} sourceValidation=failed",
-                                    AddonScopeAuthority::WorkbenchLoaded.as_str(),
+                                    reconciled_authority.as_str(),
                                     warm_scope.len(),
                                 ));
                                 state.status = ExternalIndexStatus::Ready;
@@ -432,12 +441,31 @@ impl ExternalIndexHandle {
                     }
                 }
             }
-            let result = load_or_build_loaded_addon_indexes(
-                &inventory_path,
-                &storage,
-                &workspace_roots,
-                &control,
-            );
+            let result = if dependency_project_files.is_empty() {
+                load_or_build_loaded_addon_indexes(
+                    &inventory_path,
+                    &storage,
+                    &workspace_roots,
+                    &control,
+                )
+            } else {
+                load_or_build_dependency_addon_indexes(
+                    &dependency_project_files,
+                    default_workbench_profile_directory().as_deref(),
+                    &storage,
+                    &workspace_roots,
+                    &control,
+                )
+                .and_then(|_| {
+                    load_or_build_combined_addon_indexes(
+                        &inventory_path,
+                        &dependency_project_files,
+                        &storage,
+                        &workspace_roots,
+                        &control,
+                    )
+                })
+            };
             let mut state = state.lock().unwrap();
             if state.graph_generation != graph_generation {
                 return;
@@ -450,8 +478,13 @@ impl ExternalIndexHandle {
                     logger.diagnostic_lazy("externalIndex.graphDelivered", || json!({"phase": index_phase(result.scope_authority), "elapsedMs": started.elapsed().as_millis(), "loadedInstances": result.loaded_instances, "rebuiltInstances": result.rebuilt_instances, "workspaceExcludedInstances": result.workspace_excluded_instances}));
                 }
                 Err(error) => {
-                    let keep_offline_scope = state.game_data_scope_authority
-                        == Some(AddonScopeAuthority::ProjectDependencies);
+                    let keep_offline_scope = matches!(
+                        state.game_data_scope_authority,
+                        Some(
+                            AddonScopeAuthority::ProjectDependencies
+                                | AddonScopeAuthority::ProjectDependenciesAndWorkbench
+                        )
+                    );
                     if !keep_offline_scope {
                         state.game_data_index = None;
                         state.game_data_summary = None;
@@ -691,6 +724,7 @@ pub(crate) fn start_external_index(
         workspace_startup_pending: true,
         workspace_roots: options.workspace_scripts.clone(),
         addon_index_storage: options.addon_index_storage.clone(),
+        dependency_project_files: options.dependency_project_files.clone(),
         graph_generation: 0,
         summary: None,
         workspace_summary: RuntimeIndexSummary::default(),
@@ -722,6 +756,7 @@ pub(crate) fn start_external_index(
     let external_index_mode = options.external_index_mode;
     let workspace_roots = options.workspace_scripts.clone();
     let dependency_project_files = options.dependency_project_files.clone();
+    let startup_graph_generation = handle.state.lock().unwrap().graph_generation;
     thread::spawn(move || {
         let thread_logger = logger.clone();
         let panic_state = state.clone();
@@ -734,6 +769,7 @@ pub(crate) fn start_external_index(
                 external_index_mode,
                 workspace_roots,
                 dependency_project_files,
+                startup_graph_generation,
                 logger,
                 progress_sender,
                 control,
@@ -939,6 +975,7 @@ fn run_external_index_thread(
     external_index_mode: ExternalIndexMode,
     workspace_roots: Vec<PathBuf>,
     dependency_project_files: Vec<PathBuf>,
+    startup_graph_generation: u64,
     logger: LspLogger,
     event_sender: Option<ServerEventSender>,
     control: crate::index_build::IndexBuildControl,
@@ -967,12 +1004,22 @@ fn run_external_index_thread(
             ExternalIndexMode::Loaded
                 if let Some(inventory_path) = addon_source_inventory.as_ref() =>
             {
-                load_cached_loaded_addon_indexes(
-                    inventory_path,
-                    storage,
-                    &workspace_roots,
-                    &control,
-                )
+                if dependency_project_files.is_empty() {
+                    load_cached_loaded_addon_indexes(
+                        inventory_path,
+                        storage,
+                        &workspace_roots,
+                        &control,
+                    )
+                } else {
+                    read_cached_combined_addon_indexes(
+                        inventory_path,
+                        &dependency_project_files,
+                        storage,
+                        &workspace_roots,
+                        &control,
+                    )
+                }
             }
             _ => Ok(empty_loaded_addon_index_result()),
         };
@@ -1050,12 +1097,29 @@ fn run_external_index_thread(
             let result = addon_index_storage
                 .ok_or_else(|| "add-on index storage is unavailable".to_string())
                 .and_then(|storage| {
-                    load_or_build_loaded_addon_indexes(
-                        &inventory_path,
-                        &storage,
-                        &workspace_roots,
-                        &control,
-                    )
+                    if dependency_project_files.is_empty() {
+                        load_or_build_loaded_addon_indexes(
+                            &inventory_path,
+                            &storage,
+                            &workspace_roots,
+                            &control,
+                        )
+                    } else {
+                        load_or_build_dependency_addon_indexes(
+                            &dependency_project_files,
+                            default_workbench_profile_directory().as_deref(),
+                            &storage,
+                            &workspace_roots,
+                            &control,
+                        )?;
+                        load_or_build_combined_addon_indexes(
+                            &inventory_path,
+                            &dependency_project_files,
+                            &storage,
+                            &workspace_roots,
+                            &control,
+                        )
+                    }
                 });
             if let Some(sender) = &event_sender {
                 for phase in ["inventory-load-end", "pac-inspect-end"] {
@@ -1248,7 +1312,7 @@ fn run_external_index_thread(
         if state.workspace_generation != workspace_generation {
             continue;
         }
-        if has_game_data_source {
+        if has_game_data_source && state.graph_generation == startup_graph_generation {
             state.game_data_index = game_data_index.clone();
             state.game_data_summary = game_data_summary.clone();
             state.game_data_scope_authority = game_data_scope_authority;
@@ -1625,6 +1689,8 @@ fn recompute_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::addon_sources::BASE_GAME_GUID;
+    use crate::index_build::IndexBuildControl;
     use crate::lsp::file_uri_for_path;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -1663,6 +1729,10 @@ mod tests {
         );
         assert_eq!(
             index_phase(AddonScopeAuthority::WorkbenchLoaded),
+            "workbench-reconciliation"
+        );
+        assert_eq!(
+            index_phase(AddonScopeAuthority::ProjectDependenciesAndWorkbench),
             "workbench-reconciliation"
         );
     }
@@ -1769,6 +1839,7 @@ mod tests {
             ExternalIndexMode::Loaded,
             vec![workspace],
             Vec::new(),
+            handle.state.lock().unwrap().graph_generation,
             LspLogger::new(None, None),
             None,
             handle.control.clone(),
@@ -1862,6 +1933,140 @@ mod tests {
         assert!(snapshot.workspace.is_some());
         assert!(snapshot.game_data.is_some());
         assert_eq!(handle.status_summary().game_data_files, 1);
+        handle.cancel();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn delivered_workbench_graph_adds_extras_without_replacing_project_dependencies() {
+        let root = std::env::temp_dir().join(format!(
+            "reforger-external-overlay-union-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let base = root.join("base");
+        let dependency = root.join("dependency");
+        let extra = root.join("extra");
+        let workspace = root.join("workspace");
+        for source_root in [&base, &dependency, &extra] {
+            fs::create_dir_all(source_root.join("Scripts")).unwrap();
+        }
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            base.join("ArmaReforger.gproj"),
+            "GameProject {\n ID \"ArmaReforger\"\n GUID \"58D0FB3206B6F859\"\n Dependencies {}\n}",
+        )
+        .unwrap();
+        fs::write(base.join("Scripts/Base.c"), "class BaseFeature {}\n").unwrap();
+        fs::write(
+            dependency.join("dependency.gproj"),
+            "GameProject {\n ID \"Dependency\"\n GUID \"2222222222222222\"\n Dependencies {}\n}",
+        )
+        .unwrap();
+        fs::write(
+            dependency.join("Scripts/Dependency.c"),
+            "class DependencyFeature {}\n",
+        )
+        .unwrap();
+        fs::write(extra.join("Scripts/Extra.c"), "class LiveExtraFeature {}\n").unwrap();
+        let project = workspace.join("addon.gproj");
+        fs::write(
+            &project,
+            "GameProject {\n ID \"Workspace\"\n GUID \"AAAAAAAAAAAAAAAA\"\n Dependencies {\n  \"2222222222222222\"\n }\n}",
+        )
+        .unwrap();
+        let inventory = root.join("graph.json");
+        let addon = |guid: &str, id: &str, source_root: &Path| {
+            serde_json::json!({
+                "guid": guid,
+                "id": id,
+                "title": id,
+                "sourceRoot": source_root,
+            })
+        };
+        fs::write(
+            &inventory,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "reforger-workbench-loaded-addon-graph-v1",
+                "bridgeVersion": "1.52.0",
+                "protocolVersion": 1,
+                "addons": [
+                    addon(BASE_GAME_GUID, "ArmaReforger", &base),
+                    addon("2222222222222222", "Dependency", &dependency),
+                ],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let storage = root.join("indexes");
+        load_or_build_loaded_addon_indexes(
+            &inventory,
+            &storage,
+            &[],
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+        fs::write(
+            &inventory,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "reforger-workbench-loaded-addon-graph-v1",
+                "bridgeVersion": "1.52.0",
+                "protocolVersion": 1,
+                "addons": [
+                    addon(BASE_GAME_GUID, "ArmaReforger", &base),
+                    addon("1111111111111111", "Extra", &extra),
+                ],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let (sender, receiver) = mpsc::channel();
+        let handle = start_external_index(
+            &LspServerOptions {
+                external_index_mode: ExternalIndexMode::Loaded,
+                addon_index_storage: Some(storage),
+                dependency_project_files: vec![project],
+                ..LspServerOptions::default()
+            },
+            LspLogger::new(None, None),
+            Some(sender.clone().into()),
+        );
+        handle
+            .load_workbench_graph(inventory, LspLogger::new(None, None), Some(sender.into()))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let snapshot = handle.snapshot();
+            let has_union = snapshot.game_data.as_ref().is_some_and(|index| {
+                !index
+                    .preferred_top_level_symbols_for_name("DependencyFeature")
+                    .is_empty()
+                    && !index
+                        .preferred_top_level_symbols_for_name("LiveExtraFeature")
+                        .is_empty()
+            });
+            if has_union && !handle.state.lock().unwrap().workspace_startup_pending {
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "combined scope did not settle");
+            match receiver.recv_timeout(remaining.min(Duration::from_millis(20))) {
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(error) => panic!("combined scope event channel failed: {error}"),
+            }
+        }
+        let index = handle.snapshot().game_data.expect("combined Game Data");
+        assert!(!index
+            .preferred_top_level_symbols_for_name("DependencyFeature")
+            .is_empty());
+        assert_eq!(
+            handle.state.lock().unwrap().game_data_scope_authority,
+            Some(AddonScopeAuthority::ProjectDependenciesAndWorkbench)
+        );
         handle.cancel();
         let _ = fs::remove_dir_all(root);
     }

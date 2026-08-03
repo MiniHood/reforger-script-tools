@@ -1,7 +1,8 @@
 //! Offline, metadata-only resource discovery for the loaded Game Data scope.
 
 use crate::addon_sources::{
-    loaded_addon_archive_paths, read_cached_dependency_addon_sources, read_loaded_addon_sources,
+    loaded_addon_archive_paths, read_cached_combined_addon_sources,
+    read_cached_dependency_addon_sources, read_loaded_addon_sources,
     read_loaded_addon_sources_allow_stale,
 };
 use crate::addon_thumbnail_color::addon_thumbnail_color;
@@ -308,13 +309,28 @@ impl ResourceCatalogue {
                 let storage = config.addon_index_storage.as_ref().ok_or_else(|| {
                     "The parser-owned add-on index storage is not configured.".to_string()
                 })?;
-                read_cached_dependency_addon_sources(
-                    &config.dependency_project_files,
-                    storage,
-                    control,
-                )?
+                if let Some(inventory) = config.addon_source_inventory.as_ref() {
+                    read_cached_combined_addon_sources(
+                        inventory,
+                        &config.dependency_project_files,
+                        storage,
+                        control,
+                    )?
+                } else {
+                    read_cached_dependency_addon_sources(
+                        &config.dependency_project_files,
+                        storage,
+                        control,
+                    )?
+                }
             }
-            GameDataExternalIndexMode::Loaded | GameDataExternalIndexMode::All => {
+            GameDataExternalIndexMode::Loaded => {
+                let inventory = config.addon_source_inventory.as_ref().ok_or_else(|| {
+                    "The Workbench loaded add-on inventory is not configured.".to_string()
+                })?;
+                read_loaded_addon_sources(inventory)?
+            }
+            GameDataExternalIndexMode::All => {
                 let inventory = config.addon_source_inventory.as_ref().ok_or_else(|| {
                     "The Workbench loaded add-on inventory is not configured.".to_string()
                 })?;
@@ -886,6 +902,7 @@ fn decode_cursor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::addon_sources::load_or_build_loaded_addon_indexes;
 
     fn record(path: &str) -> ResourceRecord {
         ResourceRecord::new("1111111111111111", "Test", path, "fixture")
@@ -1123,5 +1140,143 @@ mod tests {
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_file(inventory);
         let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn loaded_mode_combines_project_dependency_resources_with_workbench_extras() {
+        let root = std::env::temp_dir().join(format!(
+            "rst-resource-union-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let dependency = root.join("dependency");
+        let extra = root.join("extra");
+        let workspace = root.join("workspace");
+        for source_root in [&dependency, &extra] {
+            fs::create_dir_all(source_root.join("Scripts")).unwrap();
+        }
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            dependency.join("Scripts/Dependency.c"),
+            "class DependencyResource {}\n",
+        )
+        .unwrap();
+        fs::write(extra.join("Scripts/Extra.c"), "class ExtraResource {}\n").unwrap();
+        let project = workspace.join("addon.gproj");
+        fs::write(
+            &project,
+            "GameProject {\n GUID \"AAAAAAAAAAAAAAAA\"\n Dependencies {\n  \"2222222222222222\"\n }\n}",
+        )
+        .unwrap();
+        let inventory = root.join("graph.json");
+        let addon = |guid: &str, id: &str, source_root: &Path| {
+            serde_json::json!({
+                "guid": guid,
+                "id": id,
+                "title": id,
+                "sourceRoot": source_root,
+            })
+        };
+        fs::write(
+            &inventory,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "reforger-workbench-loaded-addon-graph-v1",
+                "bridgeVersion": "1.52.0",
+                "protocolVersion": 1,
+                "addons": [
+                    addon("2222222222222222", "Dependency", &dependency),
+                    addon("1111111111111111", "Extra", &extra),
+                ],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let storage = root.join("indexes");
+        load_or_build_loaded_addon_indexes(
+            &inventory,
+            &storage,
+            &[],
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+        fs::write(
+            &inventory,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "reforger-workbench-loaded-addon-graph-v1",
+                "bridgeVersion": "1.52.0",
+                "protocolVersion": 1,
+                "addons": [addon("1111111111111111", "Extra", &extra)],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let (catalogue, stats) = ResourceCatalogue::from_config(
+            &ResourceCatalogueConfig {
+                addon_source_inventory: Some(inventory),
+                addon_index_storage: Some(storage),
+                external_index_mode: GameDataExternalIndexMode::Loaded,
+                workspace_roots: Vec::new(),
+                dependency_project_files: vec![project],
+            },
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+
+        assert_eq!(stats.addon_count, 2);
+        assert!(catalogue
+            .records
+            .iter()
+            .any(|record| record.addon_guid == "2222222222222222"));
+        assert!(catalogue
+            .records
+            .iter()
+            .any(|record| record.addon_guid == "1111111111111111"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn graph_only_loaded_mode_does_not_reuse_a_stale_workbench_graph() {
+        let root = std::env::temp_dir().join(format!(
+            "rst-resource-current-graph-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let inventory = root.join("graph.json");
+        fs::write(
+            &inventory,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "reforger-workbench-loaded-addon-graph-v1",
+                "bridgeVersion": "1.52.0",
+                "protocolVersion": 1,
+                "addons": [{
+                    "guid": "1111111111111111",
+                    "id": "Stale",
+                    "title": "Stale",
+                    "sourceRoot": root.join("missing"),
+                }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let result = ResourceCatalogue::from_config(
+            &ResourceCatalogueConfig {
+                addon_source_inventory: Some(inventory),
+                external_index_mode: GameDataExternalIndexMode::Loaded,
+                ..ResourceCatalogueConfig::default()
+            },
+            &IndexBuildControl::default(),
+        );
+
+        assert!(result.is_err());
+        let _ = fs::remove_dir_all(root);
     }
 }
