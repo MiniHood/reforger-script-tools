@@ -27,7 +27,7 @@ Use `workbench_state` first. World mutation requires an active World Editor/API 
 | Atomic transform | Inspect entity; call `workbench_transform_entity` with position, angles, and uniform scale; compare returned transform and fresh inspection |
 | Rename | Inspect entity; call `workbench_rename_entity`; inspect identity and name |
 | Reparent | Inspect child and parent; call `workbench_reparent_entity`; inspect hierarchy |
-| Delete | Inspect entity; preview and confirm `workbench_delete_entity` with unchanged `confirmationToken`; search or inspect to prove absence |
+| Delete | Inspect entity; preview and confirm `workbench_delete_entity` with unchanged `workbench_delete_entity.confirmationToken`; search or inspect to prove absence |
 | Selection only | Call `workbench_set_selection` or `workbench_clear_selection`; read `workbench_world_selection_summary`; world content remains unchanged |
 
 World content edits are native Workbench actions but remain unsaved until the authorized world-save route completes.
@@ -38,8 +38,8 @@ World content edits are native Workbench actions but remain unsaved until the au
 | --- | --- |
 | Add component | Inspect entity; verify exact component class in Game Data; call `workbench_add_component`; list and inspect returned component |
 | Remove component | Call `workbench_list_components`, then `workbench_inspect_component`; preview and confirm `workbench_remove_component`; list again to prove absence |
-| Entity property | Call `workbench_list_entity_properties`; copy its `writeDescriptor`; call `workbench_set_entity_properties`; list the property again |
-| Component property | Call `workbench_inspect_component`; copy its `writeDescriptor`; call `workbench_set_component_properties`; inspect again |
+| Entity property | Call `workbench_list_entity_properties`; copy `workbench_list_entity_properties.writeDescriptor`; pass it as `workbench_set_entity_properties.writeDescriptor`; list the property again |
+| Component property | Call `workbench_inspect_component`; copy `workbench_inspect_component.writeDescriptor`; pass it as `workbench_set_component_properties.writeDescriptor`; inspect again |
 
 Descriptors bind observed property and value. A stale or rejected descriptor requires new inspection; never reconstruct one manually.
 
@@ -73,9 +73,9 @@ Project-relative destinations and canonical resource names are accepted; absolut
 
 ## Confirmation, persistence, and rollback
 
-- Preview and confirm destructive, resource-creation, resource-save, and saved-prefab-resource operations using the returned `confirmationToken` unchanged.
-- World persistence: `workbench_save` saves all open tabs and the named active world. Call it only when that full scope is authorized; require `saveAllAccepted`, `worldSaveAccepted`, and `worldSaveStatus` for separate persistence claims.
+- Preview and confirm destructive, resource-creation, resource-save, and saved-prefab-resource operations using each tool's returned confirmation token unchanged.
+- World persistence: `workbench_save` saves all open tabs and the named active world. Call it only when that full scope is authorized; require `workbench_save.saveAllAccepted`, `workbench_save.worldSaveAccepted`, and `workbench_save.worldSaveStatus` for separate persistence claims.
 - Prefab persistence: resource-level confirmed operations save immediately; Prefab Editor property setters require `workbench_save_prefab`.
-- Rollback: call `workbench_undo` only for a known latest native undoable World Editor action and when rollback is authorized. Require `historyAvailable` and `changed` true, then re-inspect. Do not assume undo reverses auto-saved prefab-resource mutation.
+- Rollback: call `workbench_undo` only for a known latest native undoable World Editor action and when rollback is authorized. Require `workbench_undo.historyAvailable` and `workbench_undo.changed` true, then re-inspect. Do not assume undo reverses auto-saved prefab-resource mutation.
 - Redo: call `workbench_redo` only for the immediately verified undo belonging to this transaction, then re-inspect.
 - Unsupported operation: when no exact public route exists, report it as unsupported. Keep authored files untouched and do not improvise UI automation or source mutation.

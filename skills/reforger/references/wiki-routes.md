@@ -23,10 +23,10 @@ Choose the narrowest route that covers the task. Search with the system noun plu
 
 ## Search discipline
 
-1. Check `official_wiki_status` on first use, after failure, or when corpus availability is uncertain. Require `available` to be true.
-2. Call `search_official_wiki` with a narrow phrase and compare matching headings and paths before selecting a result from `results`.
-3. Pass the selected `readInput` unchanged to `read_official_wiki`. Follow returned continuation data unchanged until the required section is complete.
-4. Preserve returned `content`, `sourceUrl`, `relativePath`, exact lines, and revision when available.
+1. Check `official_wiki_status` on first use, after failure, or when corpus availability is uncertain. Require `official_wiki_status.available` to be true.
+2. Call `search_official_wiki` with a narrow phrase and compare matching headings and paths before selecting a result from `search_official_wiki.results`.
+3. Pass `search_official_wiki.readInput` unchanged to `read_official_wiki`. Follow returned continuation data unchanged until the required section is complete.
+4. Preserve `read_official_wiki.content`, `read_official_wiki.sourceUrl`, `read_official_wiki.relativePath`, exact lines, and revision when available.
 5. Use Wiki examples to understand concepts and intended workflows. Resolve declaration-looking code through Game Data before emitting it.
 
 For a broad system task, start with one route, identify adjacent authored or runtime surfaces from that evidence, then search only those routes. Avoid loading whole pages or catalogues when one section answers the question.

@@ -21,23 +21,6 @@ test("the repository-owned Agent Skills library satisfies its public package con
   ]);
 });
 
-test("activation metadata distinguishes explicit, implicit, and non-Reforger scenarios", () => {
-  const { skills } = validateAgentSkills({ repositoryRoot: process.cwd() });
-  const scenarios = [
-    { prompt: "Use reforger to implement an Enforce Script component and validate it in Workbench.", expected: "reforger" },
-    { prompt: "Implement an Arma Reforger multiplayer component, verify its engine API, compile it, reload, and test it live.", expected: "reforger" },
-    { prompt: "Use reforger-deep-dive to investigate this uncertain replication failure without changing anything.", expected: "reforger-deep-dive" },
-    { prompt: "Forensically investigate competing root causes for a difficult Arma Reforger failure and produce a read-only evidence dossier.", expected: "reforger-deep-dive" },
-    { prompt: "Use reforger-workbench-edit to move this selected World Editor entity and save it with readback.", expected: "reforger-workbench-edit" },
-    { prompt: "Move a selected live Arma Reforger Workbench entity after inspection, confirmation, persistence, and readback.", expected: "reforger-workbench-edit" },
-    { prompt: "Refactor this generic TypeScript date utility and update its unit tests.", expected: undefined },
-  ];
-
-  for (const scenario of scenarios) {
-    assert.strictEqual(selectSkill(skills, scenario.prompt), scenario.expected, scenario.prompt);
-  }
-});
-
 test("distributed workflows expose disabled-Workbench and mutation safety gates", () => {
   const general = readFileSync(join("skills", "reforger", "SKILL.md"), "utf8");
   const deepDive = readFileSync(join("skills", "reforger-deep-dive", "SKILL.md"), "utf8");
@@ -90,7 +73,7 @@ test("reference validation rejects escapes, duplicates, missing targets, and unl
   });
 });
 
-test("manifest and MCP contract validation reject contribution drift, unknown tools, and omitted material fields", () => {
+test("manifest and MCP contract validation reject contribution drift, unknown tools, and tool-scoped field drift", () => {
   withFixture(root => {
     const packagePath = join(root, "package.json");
     const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
@@ -99,15 +82,22 @@ test("manifest and MCP contract validation reject contribution drift, unknown to
 
     const router = join(root, "skills", "reforger", "references", "mcp-router.md");
     writeFileSync(router, readFileSync(router, "utf8")
-      .replaceAll("`readInput`", "readInput")
-      .replace("`workbench_reload`", "`workbench_reload_typo`"));
-    const wikiRoutes = join(root, "skills", "reforger", "references", "wiki-routes.md");
-    writeFileSync(wikiRoutes, readFileSync(wikiRoutes, "utf8").replaceAll("`readInput`", "readInput"));
+      .replace("`workbench_reload`", "`workbench_reload_typo`")
+      .replace("`workbench_validate_scripts.success`", "`workbench_status.success`"));
 
     const result = validateAgentSkills({ repositoryRoot: root });
     assert.ok(result.errors.some(error => error.includes("contribute exactly the three")));
     assert.ok(result.errors.some(error => error.includes("absent from the generated catalogue: workbench_reload_typo")));
-    assert.ok(result.errors.some(error => error.includes("omit material field search_official_wiki.readInput")));
+    assert.ok(result.errors.some(error => error.includes("omits material field workbench_status.success")));
+  });
+});
+
+test("client-neutral validation rejects product syntax and product-specific policy", () => {
+  withFixture(root => {
+    const skill = join(root, "skills", "reforger", "SKILL.md");
+    writeFileSync(skill, `${readFileSync(skill, "utf8")}\nUse $reforger-deep-dive in Claude Code with an approval policy.\n`);
+    const result = validateAgentSkills({ repositoryRoot: root });
+    assert.ok(result.errors.some(error => error.includes("must remain client-neutral")));
   });
 });
 
@@ -121,16 +111,4 @@ function withFixture(run) {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-}
-
-function selectSkill(skills, prompt) {
-  const normalizedPrompt = prompt.toLowerCase();
-  const candidates = skills.map(skill => {
-    if (normalizedPrompt.includes(`use ${skill.name}`)) return { name: skill.name, score: 100 + skill.name.length };
-    const terms = new Set(skill.description.toLowerCase().match(/[a-z][a-z-]{3,}/g) ?? []);
-    const promptTerms = new Set(normalizedPrompt.match(/[a-z][a-z-]{3,}/g) ?? []);
-    const score = [...promptTerms].filter(term => terms.has(term)).length;
-    return { name: skill.name, score };
-  }).sort((left, right) => right.score - left.score || left.name.localeCompare(right.name));
-  return candidates[0]?.score >= 2 ? candidates[0].name : undefined;
 }

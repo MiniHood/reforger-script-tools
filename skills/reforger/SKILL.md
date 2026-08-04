@@ -11,7 +11,8 @@ Run Reforger work through one evidence pipeline: discover current facts, design 
 
 | Question | Source of truth |
 | --- | --- |
-| Concepts, terminology, language rules, and intended workflows | Packaged Official Wiki |
+| Concepts, terminology, and intended workflows | Packaged Official Wiki |
+| Compiler-observable language and editor behavior | Workbench/compiler behavior |
 | Current engine declarations, relationships, examples, source, and offline resources | Indexed Game Data |
 | Add-on declarations, usages, and local conventions | Workspace source and repository instructions |
 | Current compiler, editor, resource, world, reload, and play-session state | Live Workbench |
@@ -36,7 +37,7 @@ Complete this phase when the mode, surfaces, local constraints, and write author
 - Establish concepts from the Wiki, exact engine declarations from Game Data, and existing add-on behavior from workspace evidence. Treat supplied or suspected API names as search terms until Game Data verifies them.
 - Build the API ledger required by the [evidence contract](references/evidence-contract.md). Include every engine-facing identifier that proposed code will emit.
 
-Complete this phase when every material concept and existing-code claim has evidence, and every proposed engine identifier is verified or explicitly blocked. Missing Wiki evidence blocks Reforger-specific design. Missing Game Data limits output to generic architecture or placeholder pseudocode without unverified engine identifiers.
+Complete this phase when every material concept and existing-code claim has evidence, and every proposed engine identifier is verified or explicitly blocked. Missing Wiki evidence blocks only claims owned by documented concepts or workflows; directly observed Workbench/compiler behavior remains the higher authority for language and editor facts. Missing Game Data limits output to generic architecture or placeholder pseudocode without unverified engine identifiers.
 
 ### 3. Design and code
 
@@ -52,8 +53,8 @@ Complete this phase when the requested behavior is implemented end to end and ev
 ### 4. Pass the compiler gate
 
 - Run repository checks required by local instructions.
-- Follow the compiler route in the MCP router: call `workbench_validate_scripts`, exhaust its `nextCursor`, fix failures, and begin a new uncursored validation after each code change.
-- Require the latest result's `success` to be true. Treat `workbench_status` and its `scriptsCompiled` field, source inspection, parser diagnostics, and old logs as useful context but not native compiler proof.
+- Follow the compiler route in the MCP router: call `workbench_validate_scripts`, exhaust `workbench_validate_scripts.nextCursor`, fix failures, and begin a new uncursored validation after each code change.
+- Require `workbench_validate_scripts.success` to be true. Treat `workbench_status.scriptsCompiled`, source inspection, parser diagnostics, and old logs as useful context but not native compiler proof.
 
 Complete this phase only when the latest native validation succeeds and every diagnostic page is accounted for. A failed or unavailable compiler blocks reload and runtime success claims.
 
@@ -61,7 +62,7 @@ Complete this phase only when the latest native validation succeeds and every di
 
 - After the compiler gate passes for an implementation request, follow the reload and runtime route in the MCP router.
 - Confirm project context, then call `workbench_reload` only within the authorized implementation workflow. Account for Save All and active-world persistence.
-- Require `reloadDispatched`, a replacement `runtimeGeneration`, and the persistence fields `worldSavedBeforeReload` and `worldSaveStatus`.
+- Require `workbench_reload.reloadDispatched`, a replacement `workbench_reload.runtimeGeneration`, and the persistence fields `workbench_reload.worldSavedBeforeReload` and `workbench_reload.worldSaveStatus`.
 - Inspect fresh Workbench state and reload-scoped logs, then exercise the requested behavior in each feasible editor or runtime role.
 - Treat play-session command acceptance as a transition request, not behavioral proof. Stop any play session started for the task and inspect final logs.
 

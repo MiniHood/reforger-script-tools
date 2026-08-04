@@ -30,8 +30,8 @@ Complete the design when the chosen approach explains why it fits the authoritie
 | Engine usage pattern | Handwritten Game Data example plus separate declaration verification |
 | Add-on declaration or behavior | Current workspace source/symbol evidence and relationships |
 | Offline resource identity | Game Data resource result with canonical identity and provenance |
-| Compilation | Latest complete `workbench_validate_scripts` result with `success` true |
-| Reload | Successful `workbench_reload` with `reloadDispatched` true and replacement `runtimeGeneration` |
+| Compilation | Latest complete `workbench_validate_scripts` result with `workbench_validate_scripts.success` true |
+| Reload | Successful `workbench_reload` with `workbench_reload.reloadDispatched` true and replacement `workbench_reload.runtimeGeneration` |
 | Authored resource, prefab, or world state | Exact live Workbench inspection and readback |
 | Runtime or multiplayer behavior | Direct observation in each relevant runtime role or session |
 | Diagnostic history | Reload-scoped or explicitly bounded Workbench logs |

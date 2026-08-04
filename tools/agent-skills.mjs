@@ -17,24 +17,6 @@ export const expectedAgentSkillContributions = [
   { path: "./skills/reforger-workbench-edit/SKILL.md" },
 ];
 
-const materialToolFields = {
-  official_wiki_status: ["available"],
-  search_official_wiki: ["results", "readInput"],
-  read_official_wiki: ["content", "sourceUrl", "relativePath"],
-  game_data_status: ["available", "catalogueRevision"],
-  search_game_data_symbols: ["inspectInput", "symbolRef", "readSourceInput"],
-  inspect_game_data_symbol: ["membersTruncated"],
-  list_game_data_symbol_members: ["nextCursor"],
-  read_game_data_source: ["nextStartLine"],
-  search_workspace_symbols: ["inspectInput", "symbolRef", "readSourceInput"],
-  workbench_validate_scripts: ["success", "nextCursor"],
-  workbench_reload: ["reloadDispatched", "runtimeGeneration", "worldSavedBeforeReload", "worldSaveStatus"],
-  workbench_delete_entity: ["confirmationToken"],
-  workbench_list_entity_properties: ["writeDescriptor"],
-  workbench_set_entity_properties: ["writeDescriptor"],
-  workbench_save: ["saveAllAccepted", "worldSaveAccepted", "worldSaveStatus"],
-};
-
 const nonToolIdentifiers = new Set([
   "game_data_changed",
   "game_data_unavailable",
@@ -73,7 +55,6 @@ export function validateAgentSkills({ repositoryRoot }) {
   }
 
   const skillNames = [];
-  const skills = [];
   const allText = [];
   const reachable = new Set();
   const pending = contributions
@@ -134,7 +115,6 @@ export function validateAgentSkills({ repositoryRoot }) {
     const parsed = parseSkill(text, skillFile, errors);
     if (!parsed) continue;
     skillNames.push(parsed.name);
-    skills.push({ name: parsed.name, description: parsed.description });
     const directoryName = normalize(dirname(skillFile)).split("/").at(-1);
     if (parsed.name !== directoryName) {
       errors.push(`${skillFile} name must match its directory (${directoryName}).`);
@@ -142,8 +122,8 @@ export function validateAgentSkills({ repositoryRoot }) {
   }
 
   const libraryText = allText.join("\n");
-  if (/\b(?:Codex|Visual Studio Code|VS Code)\b|\$reforger\b/i.test(libraryText)) {
-    errors.push("Agent Skills must remain client-neutral and may not depend on Codex or VS Code invocation syntax.");
+  if (/\b(?:Codex|Claude Code|Copilot|Visual Studio Code|VS Code|Cursor (?:agent|editor|IDE))\b|\$[a-z0-9][a-z0-9-]*\b|(?:^|\s)\/[a-z][a-z0-9-]*\b|\b(?:approval policy|sandbox permissions?)\b/im.test(libraryText)) {
+    errors.push("Agent Skills must remain client-neutral and may not depend on product syntax or product-specific policy.");
   }
 
   const toolDocsRoot = resolve(root, "docs", "mcp-api", "tools");
@@ -159,20 +139,29 @@ export function validateAgentSkills({ repositoryRoot }) {
       errors.push(`Agent Skills name an MCP tool absent from the generated catalogue: ${identifier}`);
     }
   }
-  for (const [tool, fields] of Object.entries(materialToolFields)) {
-    if (!namedIdentifiers.has(tool)) {
-      errors.push(`Agent Skills omit contracted MCP tool: ${tool}`);
+  const generatedRouter = existsSync(resolve(root, "docs", "mcp-api.md"))
+    ? readFileSync(resolve(root, "docs", "mcp-api.md"), "utf8")
+    : "";
+  const dependencies = [...libraryText.matchAll(/`(MCP|[a-z][a-z0-9_]+)\.([A-Za-z][A-Za-z0-9]*)`/g)];
+  if (dependencies.length === 0) {
+    errors.push("Agent Skills must declare material MCP fields as tool.field dependencies.");
+  }
+  for (const [, owner, field] of dependencies) {
+    if (owner === "MCP") {
+      if (!generatedRouter.includes(`\`${field}\``) && !generatedRouter.includes(`"${field}"`)) {
+        errors.push(`Generated MCP router omits material envelope field MCP.${field}.`);
+      }
+      continue;
+    }
+    const tool = owner;
+    if (!toolDocs.has(tool)) {
+      errors.push(`Agent Skills declare a field dependency on an unknown MCP tool: ${tool}.${field}`);
       continue;
     }
     const toolDocPath = resolve(toolDocsRoot, `${tool}.md`);
     const toolDoc = existsSync(toolDocPath) ? readFileSync(toolDocPath, "utf8") : "";
-    for (const field of fields) {
-      if (!libraryText.includes(`\`${field}\``)) {
-        errors.push(`Agent Skills omit material field ${tool}.${field}.`);
-      }
-      if (!toolDoc.includes(`"${field}"`)) {
-        errors.push(`Generated MCP catalogue omits material field ${tool}.${field}.`);
-      }
+    if (!toolDoc.includes(`"${field}"`)) {
+      errors.push(`Generated MCP catalogue omits material field ${tool}.${field}.`);
     }
   }
 
@@ -180,7 +169,6 @@ export function validateAgentSkills({ repositoryRoot }) {
     errors: [...new Set(errors)].sort(),
     files,
     skillNames: skillNames.sort(),
-    skills: skills.sort((left, right) => left.name.localeCompare(right.name)),
   };
 }
 

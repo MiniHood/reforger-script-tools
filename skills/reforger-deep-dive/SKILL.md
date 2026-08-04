@@ -17,7 +17,7 @@ If Workbench integration is disabled, perform no Workbench traffic and use only 
 - Start with one evidence pass; expand only for a material unresolved contradiction.
 - Preflight each relevant authority once. Follow one explicit retryable recovery; otherwise mark that evidence blocked without substituting a weaker source.
 - Use parallel read-only investigation only when independent evidence tracks or a falsification pass can change the conclusion. Keep synthesis in the primary investigation.
-- At twelve primary evidence calls, checkpoint. Continue for one additional pass only when a named unresolved hypothesis has a specific deciding call.
+- At twelve primary evidence calls, checkpoint the matrix, cost, and remaining deciding routes. Continue while a named unresolved material hypothesis has a specific next call capable of deciding it.
 - Stop when every material hypothesis is supported, refuted, or blocked by a named unavailable authority.
 
 ## 1. Fix the forensic question

@@ -29,9 +29,9 @@ Complete this step when one tool call and its expected readback are fully determ
 
 ## 4. Preview, execute, and read back
 
-For a preview-confirm route such as `workbench_delete_entity`, call it without a token, inspect the proposed target and effect, then repeat it with the returned `confirmationToken` unchanged. Execute one mutation at a time. Immediately use the route's named inspection tool to compare the effective after-state with the expected state.
+For a preview-confirm route such as `workbench_delete_entity`, call it without a token, inspect the proposed target and effect, then repeat it with the returned `workbench_delete_entity.confirmationToken` unchanged. Execute one mutation at a time. Immediately use the route's named inspection tool to compare the effective after-state with the expected state.
 
-For property changes, obtain `writeDescriptor` from `workbench_list_entity_properties` or the corresponding component inspection and pass it unchanged to `workbench_set_entity_properties` or its component equivalent.
+For property changes, obtain `workbench_list_entity_properties.writeDescriptor` or the corresponding component inspection descriptor and pass it unchanged as `workbench_set_entity_properties.writeDescriptor` or its component equivalent.
 
 On stale identity, rejected descriptor, changed editor context, structured error, or readback mismatch, stop the transaction and follow returned recovery. Use native undo only under the rollback conditions in the operator routes.
 
@@ -39,7 +39,7 @@ Complete this step when the operation has matching readback or has safely stoppe
 
 ## 5. Continue and persist
 
-Repeat preparation and readback for each remaining authorized operation. Keep the live write sequence in one primary transaction; parallel work may perform only separable read-only API or resource research. Persist using the exact route for the owning surface. Account for auto-saving tools and for `workbench_save`, whose `saveAllAccepted`, `worldSaveAccepted`, and `worldSaveStatus` fields separately establish its full persistence scope.
+Repeat preparation and readback for each remaining authorized operation. Keep the live write sequence in one primary transaction; parallel work may perform only separable read-only API or resource research. Persist using the exact route for the owning surface. Account for auto-saving tools and for `workbench_save`, whose `workbench_save.saveAllAccepted`, `workbench_save.worldSaveAccepted`, and `workbench_save.worldSaveStatus` fields separately establish its full persistence scope.
 
 Complete this step when every authorized operation is read back and requested persistence is independently confirmed.
 

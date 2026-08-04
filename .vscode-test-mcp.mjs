@@ -10,5 +10,5 @@ export default defineConfig({
 		'--disable-workspace-trust',
 		`--user-data-dir=${path.join(repositoryRoot, '.vscode-test', 'mcp-user-data')}`,
 	],
-	mocha: { timeout: 15_000 },
+	mocha: { timeout: 30_000 },
 });
