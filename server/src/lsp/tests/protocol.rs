@@ -714,6 +714,29 @@ fn input_route_finishes_an_unambiguous_statement_with_a_semicolon_before_enter()
 }
 
 #[test]
+fn input_route_finishes_a_super_call_inside_a_modded_class_before_enter() {
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    let uri = "file:///Scripts/ModdedSuperSemicolonEnter.c";
+    let source = "modded class SCR_InventoryStorageManagerComponent\r\n{\r\n    override void OpenInventory()\r\n    {\r\n        super.OpenInventory()\r\n    }\r\n}";
+    server.handle_message(json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": { "uri": uri, "languageId": "enforce", "version": 1, "text": source }
+    }}), None, 0, 0).unwrap();
+    server.writer.clear();
+    server.handle_message(json!({ "jsonrpc": "2.0", "id": 1, "method": CONTROL_HEADER_ENTER_METHOD, "params": {
+        "textDocument": { "uri": uri }, "operation": "insertNewline", "version": 1,
+        "selections": [{ "start": { "line": 4, "character": 29 }, "end": { "line": 4, "character": 29 } }],
+        "options": { "tabSize": 4, "insertSpaces": true }
+    }}), None, 0, 0).unwrap();
+    let output = String::from_utf8_lossy(&server.writer);
+
+    assert!(
+        output.contains("\"newText\":\";\\r\\n        \""),
+        "{output}"
+    );
+    assert!(output.contains("\"owner\":\"semicolon\""), "{output}");
+}
+
+#[test]
 fn input_route_finishes_a_new_map_declaration_before_its_trailing_comment() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
     let uri = "file:///Scripts/NewMapSemicolonEnter.c";

@@ -1350,6 +1350,10 @@ mod tests {
             insertion("Run(value, Other())\n"),
             Some("Run(value, Other())".len())
         );
+        assert_eq!(
+            insertion("\t\tsuper.OpenInventory()\n\t\t"),
+            Some("\t\tsuper.OpenInventory()".len())
+        );
     }
 
     #[test]

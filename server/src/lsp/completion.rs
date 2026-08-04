@@ -8,7 +8,9 @@ use crate::callable::{
 use crate::construction::{
     compatible_construction_candidates, lexical_construction_context_at_operand, ConstructionQuery,
 };
-use crate::expression_type::{expression_type_from_index_symbol, strip_all_type_prefixes};
+use crate::expression_type::{
+    expression_type_from_index_symbol, preferred_class_is_implicit_modded, strip_all_type_prefixes,
+};
 use crate::index::SymbolIndex;
 use crate::index_query::{
     completion_name_match_rank, EditorCompletionCandidate, EditorCompletionOrigin,
@@ -725,15 +727,16 @@ pub(crate) fn completion_report_for_current_override_at_offset_with_external_ind
 
     let mut candidates = Vec::new();
     for owner in external_completion_owners(&context.base_type, workspace_index, game_data_index) {
+        let implicit_modded_owner = context.implicit_modded && owner == context.base_type;
         if let Some(index) = workspace_index {
             candidates.extend(prefixed_candidates(
-                override_candidates_for_owner(index, &owner),
+                override_candidates_for_super_owner(index, &owner, implicit_modded_owner),
                 &context.prefix,
             ));
         }
         if let Some(index) = game_data_index {
             candidates.extend(prefixed_candidates(
-                override_candidates_for_owner(index, &owner),
+                override_candidates_for_super_owner(index, &owner, implicit_modded_owner),
                 &context.prefix,
             ));
         }
@@ -1008,10 +1011,15 @@ pub(crate) fn completion_report_for_current_super_at_offset_with_external_indexe
     let mut candidates = Vec::new();
     for index in ExternalIndexes::new(workspace_index, game_data_index).ordered() {
         candidates.extend(
-            completion_candidates_for_owner(index, &context.base_type, false)
-                .into_iter()
-                .filter(is_overridable_method_candidate)
-                .filter(|candidate| candidate.name.as_deref() == Some(&context.method_name)),
+            completion_candidates_for_super_owner(
+                index,
+                &context.base_type,
+                false,
+                context.implicit_modded,
+            )
+            .into_iter()
+            .filter(is_overridable_method_candidate)
+            .filter(|candidate| candidate.name.as_deref() == Some(&context.method_name)),
         );
     }
     let candidates = combine_completion_candidates(candidates);
@@ -1065,19 +1073,25 @@ fn super_call_completion_report_for_indexes(
 ) -> Option<LspCompletionReport> {
     let region = BoundedCompletionRegion::for_current_override(source, offset)?;
     let context = region.current_super_call_context(source, offset)?;
-    let mut candidates = completion_candidates_for_owner(local_index, &context.base_type, false);
+    let mut candidates = if context.implicit_modded {
+        Vec::new()
+    } else {
+        completion_candidates_for_owner(local_index, &context.base_type, false)
+    };
     if let Some(index) = workspace_index {
-        candidates.extend(completion_candidates_for_owner(
+        candidates.extend(completion_candidates_for_super_owner(
             index,
             &context.base_type,
             false,
+            context.implicit_modded,
         ));
     }
     if let Some(index) = game_data_index {
-        candidates.extend(completion_candidates_for_owner(
+        candidates.extend(completion_candidates_for_super_owner(
             index,
             &context.base_type,
             false,
+            context.implicit_modded,
         ));
     }
     let candidates = combine_completion_candidates(
@@ -1224,6 +1238,7 @@ struct BoundedCompletionRegion {
 
 struct CurrentOverrideCompletionContext {
     base_type: String,
+    implicit_modded: bool,
     prefix: String,
     prefix_span: TextSpan,
     typed_modifiers: BTreeSet<String>,
@@ -1231,9 +1246,16 @@ struct CurrentOverrideCompletionContext {
 
 struct CurrentSuperCallCompletionContext {
     base_type: String,
+    implicit_modded: bool,
     method_name: String,
     prefix: String,
     prefix_span: TextSpan,
+}
+
+#[derive(Clone)]
+struct ClassSuperContext {
+    owner: String,
+    implicit_modded: bool,
 }
 
 impl BoundedCompletionRegion {
@@ -1444,22 +1466,7 @@ impl BoundedCompletionRegion {
         let previous = tokens.last().map(|token| token.kind);
         is_declaration_boundary(previous).then_some(())?;
 
-        let mut class_bases = BTreeMap::new();
-        for window in tokens.windows(5) {
-            if matches!(window[0].kind, TokenKind::Keyword(Keyword::Class))
-                && window[1].kind == TokenKind::Identifier
-                && window[2].kind == TokenKind::Colon
-                && window[3].kind == TokenKind::Identifier
-                && window[4].kind == TokenKind::LeftBrace
-            {
-                class_bases.insert(
-                    window[4].span.start,
-                    source
-                        .get(window[3].span.start..window[3].span.end)?
-                        .to_string(),
-                );
-            }
-        }
+        let mut class_bases = class_super_contexts(source, &tokens)?;
 
         let mut scopes = Vec::new();
         for token in tokens {
@@ -1471,9 +1478,10 @@ impl BoundedCompletionRegion {
                 _ => {}
             }
         }
-        let base_type = scopes.last().and_then(|base| base.clone())?;
+        let class_context = scopes.last().and_then(|base| base.clone())?;
         Some(CurrentOverrideCompletionContext {
-            base_type,
+            base_type: class_context.owner,
+            implicit_modded: class_context.implicit_modded,
             prefix,
             prefix_span,
             typed_modifiers: bounded_typed_declaration_modifiers(&self.tokens, prefix_span),
@@ -1516,22 +1524,7 @@ impl BoundedCompletionRegion {
         (method.kind == TokenKind::Identifier).then_some(())?;
         let method_name = source.get(method.span.start..method.span.end)?.to_string();
 
-        let mut class_bases = BTreeMap::new();
-        for window in tokens.windows(5) {
-            if matches!(window[0].kind, TokenKind::Keyword(Keyword::Class))
-                && window[1].kind == TokenKind::Identifier
-                && window[2].kind == TokenKind::Colon
-                && window[3].kind == TokenKind::Identifier
-                && window[4].kind == TokenKind::LeftBrace
-            {
-                class_bases.insert(
-                    window[4].span.start,
-                    source
-                        .get(window[3].span.start..window[3].span.end)?
-                        .to_string(),
-                );
-            }
-        }
+        let mut class_bases = class_super_contexts(source, &tokens)?;
         let mut scopes = Vec::new();
         for token in tokens {
             match token.kind {
@@ -1542,14 +1535,68 @@ impl BoundedCompletionRegion {
                 _ => {}
             }
         }
-        let base_type = scopes.into_iter().rev().flatten().next()?;
+        let class_context = scopes.into_iter().rev().flatten().next()?;
         Some(CurrentSuperCallCompletionContext {
-            base_type,
+            base_type: class_context.owner,
+            implicit_modded: class_context.implicit_modded,
             method_name,
             prefix,
             prefix_span,
         })
     }
+}
+
+fn class_super_contexts(
+    source: &str,
+    tokens: &[Token],
+) -> Option<BTreeMap<usize, ClassSuperContext>> {
+    let mut contexts = BTreeMap::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if !matches!(token.kind, TokenKind::Keyword(Keyword::Class)) {
+            continue;
+        }
+        let name = tokens.get(index + 1)?;
+        if name.kind != TokenKind::Identifier {
+            continue;
+        }
+        let header = &tokens[index + 2..];
+        let body_index = header
+            .iter()
+            .position(|token| token.kind == TokenKind::LeftBrace)?;
+        let explicit_base = header[..body_index]
+            .windows(2)
+            .find(|window| {
+                matches!(
+                    window[0].kind,
+                    TokenKind::Colon | TokenKind::Keyword(Keyword::Extends)
+                ) && window[1].kind == TokenKind::Identifier
+            })
+            .and_then(|window| source.get(window[1].span.start..window[1].span.end))
+            .map(str::to_string);
+        let is_modded = index.checked_sub(1).is_some_and(|previous| {
+            matches!(tokens[previous].kind, TokenKind::Keyword(Keyword::Modded))
+        });
+        let implicit_modded = explicit_base.is_none() && is_modded;
+        let owner = explicit_base.or_else(|| {
+            implicit_modded
+                .then(|| {
+                    source
+                        .get(name.span.start..name.span.end)
+                        .map(str::to_string)
+                })
+                .flatten()
+        });
+        if let Some(owner) = owner {
+            contexts.insert(
+                header[body_index].span.start,
+                ClassSuperContext {
+                    owner,
+                    implicit_modded,
+                },
+            );
+        }
+    }
+    Some(contexts)
 }
 
 fn external_call_chain_owner<'a>(
@@ -3463,19 +3510,27 @@ fn member_completion_report_for_indexes(
     total_start: Instant,
 ) -> LspCompletionReport {
     let lookup_start = Instant::now();
-    let mut candidates = completion_candidates_for_owner(local_index, owner, receiver_is_static);
+    let implicit_modded_super = receiver_text.as_deref() == Some("super")
+        && preferred_class_is_implicit_modded(local_index, owner);
+    let mut candidates = if implicit_modded_super {
+        Vec::new()
+    } else {
+        completion_candidates_for_owner(local_index, owner, receiver_is_static)
+    };
     if let Some(external_index) = workspace_index {
-        candidates.extend(completion_candidates_for_owner(
+        candidates.extend(completion_candidates_for_super_owner(
             external_index,
             owner,
             receiver_is_static,
+            implicit_modded_super,
         ));
     }
     if let Some(external_index) = game_data_index {
-        candidates.extend(completion_candidates_for_owner(
+        candidates.extend(completion_candidates_for_super_owner(
             external_index,
             owner,
             receiver_is_static,
+            implicit_modded_super,
         ));
     }
     let candidates = filter_member_candidates_by_visibility(candidates, visibility);
@@ -3637,6 +3692,39 @@ fn completion_candidates_for_owner(
     } else {
         query.completion_members_for_class(owner).candidates
     }
+}
+
+fn completion_candidates_for_super_owner(
+    index: &SymbolIndex,
+    owner: &str,
+    receiver_is_static: bool,
+    implicit_modded_super: bool,
+) -> Vec<EditorCompletionCandidate> {
+    if implicit_modded_super && preferred_class_is_implicit_modded(index, owner) {
+        return Vec::new();
+    }
+    let mut candidates = completion_candidates_for_owner(index, owner, receiver_is_static);
+    if implicit_modded_super {
+        candidates.retain(|candidate| !candidate_belongs_to_modded_class(index, candidate));
+    }
+    candidates
+}
+
+fn candidate_belongs_to_modded_class(
+    index: &SymbolIndex,
+    candidate: &EditorCompletionCandidate,
+) -> bool {
+    let mut parent = index.symbol(candidate.id).and_then(|symbol| symbol.parent);
+    while let Some(parent_id) = parent {
+        let Some(symbol) = index.symbol(parent_id) else {
+            return false;
+        };
+        if symbol.kind == SymbolKind::Class {
+            return symbol.modifiers.iter().any(|modifier| modifier == "modded");
+        }
+        parent = symbol.parent;
+    }
+    false
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4734,21 +4822,25 @@ fn override_completion_candidates_for_context(
         game_data_index,
         &class_name,
     );
+    let implicit_modded = preferred_class_is_implicit_modded(local_index, &class_name);
     let mut candidates = Vec::new();
-    for owner in owners.into_iter().skip(1) {
-        candidates.extend(prefixed_candidates(
-            override_candidates_for_owner(local_index, &owner),
-            prefix,
-        ));
+    for owner in owners.into_iter().skip(usize::from(!implicit_modded)) {
+        let implicit_modded_owner = implicit_modded && owner == class_name;
+        if !implicit_modded_owner {
+            candidates.extend(prefixed_candidates(
+                override_candidates_for_owner(local_index, &owner),
+                prefix,
+            ));
+        }
         if let Some(external_index) = workspace_index {
             candidates.extend(prefixed_candidates(
-                override_candidates_for_owner(external_index, &owner),
+                override_candidates_for_super_owner(external_index, &owner, implicit_modded_owner),
                 prefix,
             ));
         }
         if let Some(external_index) = game_data_index {
             candidates.extend(prefixed_candidates(
-                override_candidates_for_owner(external_index, &owner),
+                override_candidates_for_super_owner(external_index, &owner, implicit_modded_owner),
                 prefix,
             ));
         }
@@ -4767,6 +4859,21 @@ fn override_candidates_for_owner(
         .into_iter()
         .filter(is_overridable_method_candidate)
         .collect()
+}
+
+fn override_candidates_for_super_owner(
+    index: &SymbolIndex,
+    owner: &str,
+    implicit_modded_super: bool,
+) -> Vec<EditorCompletionCandidate> {
+    if implicit_modded_super && preferred_class_is_implicit_modded(index, owner) {
+        return Vec::new();
+    }
+    let mut candidates = override_candidates_for_owner(index, owner);
+    if implicit_modded_super {
+        candidates.retain(|candidate| !candidate_belongs_to_modded_class(index, candidate));
+    }
+    candidates
 }
 
 fn is_overridable_method_candidate(candidate: &EditorCompletionCandidate) -> bool {

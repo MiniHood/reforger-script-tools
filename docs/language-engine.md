@@ -154,6 +154,10 @@ same proven override graph.
 Within the same semantic match-quality tier, original declarations rank before
 `modded` or `override` declarations and before members declared inside those
 overlays. Remaining ties use the stable symbol identity and source ordering.
+Inside an implicit `modded class`, `super` uses the same-named predecessor as
+its owner rather than resolving back to the active overlay. Expression typing
+owns that fact so member resolution, hover, member completion, base-call
+completion, and override skeleton completion cannot disagree about the target.
 The later authoritative Workbench graph validates the exact packed and loose
 sources and atomically replaces only changed instances. Unchanged validation
 inspects bounded PAC catalogues and hashes only selected compressed script

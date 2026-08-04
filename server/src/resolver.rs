@@ -4,7 +4,7 @@ use crate::ast::{
 use crate::expression_type::{
     base_owner_type_from_symbol, enum_member_ids_for_owner, has_modifier,
     is_pseudo_class_member_name, matching_members_for_exact_owner, member_lookup_owners,
-    ExpressionType, ExpressionTypeEnvironment,
+    preferred_class_is_implicit_modded, ExpressionType, ExpressionTypeEnvironment,
 };
 use crate::index::{GlobalSymbolId, IndexedFile, IndexedSymbol, SymbolIndex};
 use crate::lexer::{lex, Keyword, Operator, TextSpan, Token, TokenKind};
@@ -1113,18 +1113,27 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         } else {
             ResolutionReason::ReceiverMember
         };
+        let implicit_modded_super = inferred.is_implicit_modded_super();
         let before = candidates.len();
-        self.push_members_for_owner(
-            self.file_index,
-            CandidateSource::FileLocal,
-            &inferred.owner_type,
-            member_name,
-            inferred.is_static,
-            reason,
-            candidates,
-            seen,
-        );
+        if !implicit_modded_super {
+            self.push_members_for_owner(
+                self.file_index,
+                CandidateSource::FileLocal,
+                &inferred.owner_type,
+                member_name,
+                inferred.is_static,
+                reason,
+                false,
+                candidates,
+                seen,
+            );
+        }
         for external_index in self.external_indexes() {
+            if implicit_modded_super
+                && preferred_class_is_implicit_modded(external_index, &inferred.owner_type)
+            {
+                continue;
+            }
             self.push_members_for_owner(
                 external_index,
                 CandidateSource::External,
@@ -1132,6 +1141,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                 member_name,
                 inferred.is_static,
                 reason,
+                implicit_modded_super,
                 candidates,
                 seen,
             );
@@ -1162,6 +1172,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         member_name: &str,
         static_only: bool,
         mut reason: ResolutionReason,
+        exclude_modded_owner: bool,
         candidates: &mut Vec<ReferenceCandidate>,
         seen: &mut BTreeSet<CandidateKey>,
     ) {
@@ -1171,6 +1182,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                 if index.symbol(id).is_some_and(|symbol| {
                     is_member_lookup_kind(symbol.kind)
                         && symbol.name.as_deref() == Some(member_name)
+                        && (!exclude_modded_owner || !member_belongs_to_modded_class(index, id))
                 }) {
                     push_unique_id(&mut matching, id);
                 }
@@ -1247,6 +1259,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             member_name,
             true,
             ResolutionReason::EngineClassCast,
+            false,
             candidates,
             seen,
         );
@@ -1258,6 +1271,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                 member_name,
                 true,
                 ResolutionReason::EngineClassCast,
+                false,
                 candidates,
                 seen,
             );
@@ -1701,6 +1715,20 @@ fn is_member_lookup_kind(kind: SymbolKind) -> bool {
         kind,
         SymbolKind::Field | SymbolKind::Method | SymbolKind::Constructor | SymbolKind::Destructor
     )
+}
+
+fn member_belongs_to_modded_class(index: &SymbolIndex, id: GlobalSymbolId) -> bool {
+    let mut parent = index.symbol(id).and_then(|symbol| symbol.parent);
+    while let Some(parent_id) = parent {
+        let Some(symbol) = index.symbol(parent_id) else {
+            return false;
+        };
+        if symbol.kind == SymbolKind::Class {
+            return has_modifier(symbol, "modded");
+        }
+        parent = symbol.parent;
+    }
+    false
 }
 
 fn span_contains(span: TextSpan, offset: usize) -> bool {

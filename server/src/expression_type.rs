@@ -11,6 +11,7 @@ pub struct ExpressionType {
     pub owner_type: String,
     pub is_static: bool,
     pub raw_type_text: Option<String>,
+    implicit_modded_super: bool,
 }
 
 impl ExpressionType {
@@ -19,6 +20,7 @@ impl ExpressionType {
             owner_type,
             is_static: false,
             raw_type_text: None,
+            implicit_modded_super: false,
         }
     }
 
@@ -27,6 +29,7 @@ impl ExpressionType {
             owner_type,
             is_static: false,
             raw_type_text: Some(raw_type_text),
+            implicit_modded_super: false,
         }
     }
 
@@ -35,6 +38,7 @@ impl ExpressionType {
             owner_type,
             is_static: true,
             raw_type_text: None,
+            implicit_modded_super: false,
         }
     }
 
@@ -43,7 +47,21 @@ impl ExpressionType {
             owner_type,
             is_static: true,
             raw_type_text: Some(raw_type_text),
+            implicit_modded_super: false,
         }
+    }
+
+    fn implicit_modded_super(owner_type: String) -> Self {
+        Self {
+            owner_type,
+            is_static: false,
+            raw_type_text: None,
+            implicit_modded_super: true,
+        }
+    }
+
+    pub(crate) const fn is_implicit_modded_super(&self) -> bool {
+        self.implicit_modded_super
     }
 }
 
@@ -261,12 +279,16 @@ impl<'source, 'index> ExpressionTypeEnvironment<'source, 'index> {
                 }
 
                 if name == "super" {
-                    let base_type = self
-                        .containing_class(offset)
-                        .and_then(|id| base_owner_type_from_symbol(self.file_index, id));
-                    if let Some(base_type) = base_type {
+                    let class = self.containing_class(offset)?;
+                    if let Some(base_type) = base_owner_type_from_symbol(self.file_index, class) {
                         lookup_path.push(format!("`super` inferred as base `{base_type}`"));
                         return Some(ExpressionType::instance(base_type));
+                    }
+                    if let Some(owner) = self.implicit_modded_super_owner(class) {
+                        lookup_path.push(format!(
+                            "`super` inferred as original modded class `{owner}`"
+                        ));
+                        return Some(ExpressionType::implicit_modded_super(owner));
                     }
                 }
 
@@ -613,19 +635,26 @@ impl<'source, 'index> ExpressionTypeEnvironment<'source, 'index> {
         static_only: bool,
         lookup_path: &mut Vec<String>,
     ) -> Option<ExpressionType> {
-        if let Some(result) = member_result_type_for_receiver_from_index(
-            self.file_index,
-            receiver,
-            member,
-            static_only,
-        ) {
-            lookup_path.push(format!(
-                "member `{}.{member}` matched file-local",
-                receiver.owner_type
-            ));
-            return Some(result);
+        if !receiver.is_implicit_modded_super() {
+            if let Some(result) = member_result_type_for_receiver_from_index(
+                self.file_index,
+                receiver,
+                member,
+                static_only,
+            ) {
+                lookup_path.push(format!(
+                    "member `{}.{member}` matched file-local",
+                    receiver.owner_type
+                ));
+                return Some(result);
+            }
         }
         for external_index in self.external_indexes() {
+            if receiver.is_implicit_modded_super()
+                && preferred_class_is_implicit_modded(external_index, &receiver.owner_type)
+            {
+                continue;
+            }
             if let Some(result) = member_result_type_for_receiver_from_index(
                 external_index,
                 receiver,
@@ -640,6 +669,14 @@ impl<'source, 'index> ExpressionTypeEnvironment<'source, 'index> {
             }
         }
         None
+    }
+
+    fn implicit_modded_super_owner(&self, class: GlobalSymbolId) -> Option<String> {
+        let facts = TypeFacts::new(self.file_index);
+        facts
+            .is_implicit_modded_class(class)
+            .then(|| facts.class_super_type(class).map(str::to_string))
+            .flatten()
     }
 
     fn member_type_from_owner_for_name(
@@ -810,6 +847,13 @@ pub fn base_owner_type_from_symbol(index: &SymbolIndex, id: GlobalSymbolId) -> O
     TypeFacts::new(index)
         .class_base_type(id)
         .and_then(owner_type_from_type_text)
+}
+
+pub(crate) fn preferred_class_is_implicit_modded(index: &SymbolIndex, owner: &str) -> bool {
+    index
+        .preferred_classes_by_name(owner)
+        .first()
+        .is_some_and(|id| TypeFacts::new(index).is_implicit_modded_class(*id))
 }
 
 pub fn collection_index_result_type(type_text: &str) -> Option<ExpressionType> {

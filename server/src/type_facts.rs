@@ -89,6 +89,30 @@ impl<'index> TypeFacts<'index> {
         }
     }
 
+    /// Returns the class owner targeted by `super`. A normal class targets its
+    /// declared base, while an implicit `modded class` layer targets the
+    /// original same-named class that it replaces.
+    pub fn class_super_type(&self, id: GlobalSymbolId) -> Option<&'index str> {
+        let symbol = self.index.symbol(id)?;
+        if symbol.kind != SymbolKind::Class {
+            return None;
+        }
+        symbol.detail.base_type.as_deref().or_else(|| {
+            self.is_implicit_modded_class(id)
+                .then_some(symbol.name.as_deref())
+                .flatten()
+        })
+    }
+
+    pub fn is_implicit_modded_class(&self, id: GlobalSymbolId) -> bool {
+        self.index.symbol(id).is_some_and(|symbol| {
+            symbol.kind == SymbolKind::Class
+                && symbol.detail.base_type.is_none()
+                && symbol.modifiers.iter().any(|modifier| modifier == "modded")
+                && symbol.name.as_deref().is_some_and(|name| !name.is_empty())
+        })
+    }
+
     pub fn enum_member_value_text(&self, id: GlobalSymbolId) -> Option<&'index str> {
         let symbol = self.index.symbol(id)?;
         if symbol.kind == SymbolKind::EnumMember {
@@ -171,6 +195,7 @@ class Example : Base
 
         let class = only_named(&index, "Example");
         assert_eq!(facts.class_base_type(class), Some("Base"));
+        assert_eq!(facts.class_super_type(class), Some("Base"));
 
         let enum_member = only_named(&index, "One");
         assert_eq!(facts.enum_member_value_text(enum_member), Some("1"));
@@ -211,5 +236,16 @@ class Example : Base
         assert_eq!(facts.typedef_target_text(class), None);
         assert_eq!(facts.enum_member_value_text(method), None);
         assert_eq!(facts.containing_type_name(class), None);
+    }
+
+    #[test]
+    fn exposes_the_original_same_named_class_as_an_implicit_modded_super_type() {
+        let index = index_for_source("modded class Example {}");
+        let class = only_named(&index, "Example");
+        let facts = TypeFacts::new(&index);
+
+        assert_eq!(facts.class_base_type(class), None);
+        assert!(facts.is_implicit_modded_class(class));
+        assert_eq!(facts.class_super_type(class), Some("Example"));
     }
 }

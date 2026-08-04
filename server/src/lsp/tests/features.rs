@@ -1624,6 +1624,83 @@ class Example : Base
 }
 
 #[test]
+fn completion_returns_original_class_methods_for_super_in_a_modded_class() {
+    let source = r#"modded class SCR_InventoryStorageManagerComponent
+{
+	override void OpenInventory()
+	{
+		super.
+	}
+}
+"#;
+    let external = file_index_for_source(
+        r#"class SCR_InventoryStorageManagerComponent
+{
+	void OpenInventory();
+}
+"#,
+    )
+    .index;
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "super."),
+        Some(&external),
+    );
+
+    assert_eq!(report.receiver_text.as_deref(), Some("super"));
+    assert_eq!(
+        report.owner_type.as_deref(),
+        Some("SCR_InventoryStorageManagerComponent")
+    );
+    assert!(
+        report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "OpenInventory"),
+        "{:?}",
+        report.list.items
+    );
+}
+
+#[test]
+fn hover_resolves_super_calls_to_the_original_modded_class_method() {
+    let source = r#"modded class SCR_InventoryStorageManagerComponent
+{
+	override void OpenInventory()
+	{
+		super.OpenInventory();
+	}
+}
+"#;
+    let external = file_index_for_source(
+        r#"class SCR_InventoryStorageManagerComponent
+{
+	void OpenInventory();
+}
+"#,
+    )
+    .index;
+    let report = hover_report_for_source_position_with_external(
+        source,
+        position_for_needle(source, "super.OpenInventory", "OpenInventory"),
+        Some(&external),
+    );
+
+    assert!(report.is_hit(), "{report:?}");
+    assert_eq!(report.selected_kind, Some(SymbolKind::Method));
+    assert_eq!(report.selected_label.as_deref(), Some("OpenInventory"));
+    assert_eq!(report.selected_source, Some(CandidateSource::External));
+    assert_eq!(
+        report
+            .receiver_resolution
+            .as_ref()
+            .and_then(|receiver| receiver.owner_type.as_deref()),
+        Some("SCR_InventoryStorageManagerComponent")
+    );
+}
+
+#[test]
 fn completion_expands_super_to_the_matching_base_call() {
     let source = r#"class Base
 {
@@ -4719,6 +4796,40 @@ fn completion_returns_inherited_override_method_skeletons() {
 }
 
 #[test]
+fn completion_returns_original_method_skeletons_in_a_modded_class() {
+    let source = r#"modded class SCR_InventoryStorageManagerComponent
+{
+	OpenInv
+}
+"#;
+    let external = file_index_for_source(
+        r#"class SCR_InventoryStorageManagerComponent
+{
+	void OpenInventory();
+}
+"#,
+    )
+    .index;
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "OpenInv"),
+        Some(&external),
+    );
+
+    assert_eq!(report.completion_context, "override");
+    let item = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "OpenInventory")
+        .expect("expected the original method override completion");
+    assert_eq!(
+        item.text_edit.new_text,
+        "override void OpenInventory()\n{\n\t$0\n}"
+    );
+}
+
+#[test]
 fn completion_returns_override_skeletons_for_event_base_methods() {
     let source = r#"class Child : ScriptComponent
 {
@@ -5441,6 +5552,35 @@ fn hover_returns_none_for_whitespace_outside_symbols() {
     assert_eq!(report.selection_source, HoverSelectionSource::None);
     assert_eq!(report.resolver_reason, None);
     assert_eq!(report.resolver_candidate_count, 0);
+}
+
+#[test]
+fn completion_expands_super_to_the_original_method_in_a_modded_class() {
+    let source = r#"modded class SCR_InventoryStorageManagerComponent
+{
+	override void OpenInventory()
+	{
+		sup
+	}
+}
+"#;
+    let external = file_index_for_source(
+        "class SCR_InventoryStorageManagerComponent { void OpenInventory(); }",
+    )
+    .index;
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "sup"),
+        Some(&external),
+    );
+
+    let item = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "super.OpenInventory")
+        .expect("expected the original method base-call completion");
+    assert_eq!(item.text_edit.new_text, "super.OpenInventory()");
 }
 
 #[test]
