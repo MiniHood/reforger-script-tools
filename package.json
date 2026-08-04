@@ -320,7 +320,7 @@
     "report:text-search": "node tools/text-search-performance.mjs",
     "test:packaged-official-wiki": "npm run package && node tools/test-packaged-official-wiki.mjs",
     "lint": "eslint src",
-    "test": "vscode-test && npm run test:packaged-official-wiki"
+    "test": "vscode-test && vscode-test --config .vscode-test-mcp.mjs && npm run test:packaged-official-wiki"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

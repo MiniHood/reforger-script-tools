@@ -16,6 +16,7 @@ tools/**
 .gitignore
 .vscodeignore
 .vscode-test.mjs
+.vscode-test-mcp.mjs
 AGENTS.md
 CONTEXT.md
 esbuild.js

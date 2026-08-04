@@ -17,7 +17,7 @@ From the repository root:
 | `npm run check-types` | TypeScript type checking. |
 | `npm run lint` | Extension-source linting. |
 | `npm run compile` | Type checking, linting, the bundled Rust server, and the extension bundle. |
-| `npm test` | Extension test setup and test suite; its pretest step compiles tests and runs the full compile path. |
+| `npm test` | Extension test setup, the normal workspace suite, an isolated no-workspace native MCP discovery acceptance, and packaged-runtime acceptance; its pretest step compiles tests and runs the full compile path. |
 | `npm run package` | Production Rust server and production extension bundle. |
 | `npm run test:packaged-official-wiki` | Build a VSIX, verify every Official Wiki Markdown byte is packaged, and launch the installed MCP runtime from an unrelated working directory. |
 | `npm run mcp-api:generate` | Regenerate the MCP guide and per-tool contracts from live Rust descriptors. |

@@ -46,6 +46,7 @@ type WorkbenchUiPhase =
 
 export interface WorkbenchCompilerObservation {
 	phase: WorkbenchUiPhase;
+	statusVisible: boolean;
 	text: string;
 	tooltip: string;
 	backgroundColor?: string;
@@ -215,6 +216,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private staleReason: string | undefined;
 	private bridgeInactive = false;
 	private runtimeActivated = false;
+	private statusVisible = false;
 	private disposed = false;
 
 	public constructor(
@@ -229,7 +231,6 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	public start(extensionMode: vscode.ExtensionMode): void {
 		this.statusItem.name = 'Reforger Workbench';
 		this.statusItem.command = workbenchCommands.validateScripts;
-		this.statusItem.show();
 		this.disposables.push(
 			this.statusItem,
 			this.compilerDiagnostics,
@@ -296,6 +297,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			return;
 		}
 		this.runtimeActivated = true;
+		this.showStatusItem();
 		void this.integration?.start();
 		this.applyConfiguration(false);
 	}
@@ -329,6 +331,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		if (!this.runtimeActivated
 			&& shouldActivateWorkbenchRuntime(explicitIntent, this.configuration.enabled)) {
 			this.runtimeActivated = true;
+			this.showStatusItem();
 			void this.integration?.start();
 		}
 		this.gateway = this.createGatewayForCurrentConfiguration();
@@ -978,6 +981,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private observation(): WorkbenchCompilerObservation {
 		return {
 			phase: this.phase,
+			statusVisible: this.statusVisible,
 			text: this.statusItem.text,
 			tooltip: typeof this.statusItem.tooltip === 'string'
 				? this.statusItem.tooltip
@@ -996,6 +1000,14 @@ class WorkbenchCompilerController implements vscode.Disposable {
 				? { lastValidationResult: cloneValidationResult(this.lastValidationResult) }
 				: {}),
 		};
+	}
+
+	private showStatusItem(): void {
+		if (this.statusVisible) {
+			return;
+		}
+		this.statusVisible = true;
+		this.statusItem.show();
 	}
 }
 

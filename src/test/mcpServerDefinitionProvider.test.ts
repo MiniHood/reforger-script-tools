@@ -214,6 +214,12 @@ suite('MCP server definition provider', () => {
 					method: 'tools/call',
 					params: { name: 'official_wiki_status', arguments: {} },
 				},
+				{
+					jsonrpc: '2.0',
+					id: 4,
+					method: 'tools/call',
+					params: { name: 'workbench_status', arguments: {} },
+				},
 			];
 			const processResult = spawnSync(
 				definition.command,
@@ -234,17 +240,34 @@ suite('MCP server definition provider', () => {
 					result?: {
 						protocolVersion?: string;
 						tools?: Array<{ name: string }>;
-						structuredContent?: { available?: boolean };
+						isError?: boolean;
+						structuredContent?: {
+							available?: boolean;
+							isRunning?: boolean;
+							scriptsCompiled?: boolean;
+							code?: string;
+						};
 					};
 				});
 			assert.strictEqual(responses.find(response => response.id === 1)?.result?.protocolVersion, '2025-11-25');
 			assert.ok(responses.find(response => response.id === 2)?.result?.tools?.some(
 				tool => tool.name === 'official_wiki_status',
 			));
+			assert.ok(responses.find(response => response.id === 2)?.result?.tools?.some(
+				tool => tool.name === 'workbench_status',
+			));
 			assert.strictEqual(
 				responses.find(response => response.id === 3)?.result?.structuredContent?.available,
 				true,
 			);
+			const workbenchStatus = responses.find(response => response.id === 4)?.result;
+			assert.ok(workbenchStatus);
+			if (workbenchStatus.isError) {
+				assert.match(workbenchStatus.structuredContent?.code ?? '', /^workbench_/);
+			} else {
+				assert.strictEqual(typeof workbenchStatus.structuredContent?.isRunning, 'boolean');
+				assert.strictEqual(typeof workbenchStatus.structuredContent?.scriptsCompiled, 'boolean');
+			}
 		} finally {
 			await fs.rm(storagePath, { recursive: true, force: true });
 		}
