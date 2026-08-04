@@ -1391,6 +1391,14 @@ impl SymbolIndex {
         self.completion_from_member_segments(member_segments)
     }
 
+    /// Resolves the member chain visible to `super` in a `modded` class. The
+    /// active Workspace layer is removed before shadowing, then retained
+    /// overlays are walked in reverse load order toward the original class.
+    pub fn completion_members_for_modded_predecessor(&self, owner: &str) -> CompletionMemberLookup {
+        let member_segments = self.modded_predecessor_member_segments_including_bases(owner, None);
+        self.completion_from_member_segments(member_segments)
+    }
+
     pub fn preferred_members_named_for_class(
         &self,
         owner: &str,
@@ -1398,6 +1406,17 @@ impl SymbolIndex {
     ) -> Vec<GlobalSymbolId> {
         let member_segments =
             self.preferred_class_member_segments_including_bases(owner, Some(member_name));
+        self.completion_from_member_segments(member_segments)
+            .members
+    }
+
+    pub fn preferred_members_named_for_modded_predecessor(
+        &self,
+        owner: &str,
+        member_name: &str,
+    ) -> Vec<GlobalSymbolId> {
+        let member_segments =
+            self.modded_predecessor_member_segments_including_bases(owner, Some(member_name));
         self.completion_from_member_segments(member_segments)
             .members
     }
@@ -1686,6 +1705,22 @@ impl SymbolIndex {
         segments
     }
 
+    fn modded_predecessor_member_segments_including_bases(
+        &self,
+        owner: &str,
+        member_name: Option<&str>,
+    ) -> Vec<Vec<GlobalSymbolId>> {
+        let mut segments = Vec::new();
+        let mut visited = BTreeSet::new();
+        self.add_modded_predecessor_member_segments_including_bases(
+            owner,
+            member_name,
+            &mut visited,
+            &mut segments,
+        );
+        segments
+    }
+
     fn add_member_segments_for_class_including_bases(
         &self,
         owner: &str,
@@ -1739,6 +1774,61 @@ impl SymbolIndex {
             return;
         };
         self.add_preferred_class_member_segments_including_bases(
+            &base_name,
+            member_name,
+            visited,
+            segments,
+        );
+    }
+
+    fn add_modded_predecessor_member_segments_including_bases(
+        &self,
+        owner: &str,
+        member_name: Option<&str>,
+        visited: &mut BTreeSet<String>,
+        segments: &mut Vec<Vec<GlobalSymbolId>>,
+    ) {
+        if !visited.insert(owner.to_string()) {
+            return;
+        }
+
+        let mut classes = self
+            .preferred_classes_by_name(owner)
+            .into_iter()
+            .filter(|class_id| {
+                self.file(class_id.file_id)
+                    .is_none_or(|file| file.metadata.kind != SourceKind::Workspace)
+            })
+            .collect::<Vec<_>>();
+        let base_name = self.first_class_base_name(&classes);
+        // Layered indexes retain canonical load order: the original class is
+        // encountered before the overlays that modify it. `super` in the
+        // active modded layer begins at the last retained overlay and walks
+        // backward toward the original declaration.
+        classes.reverse();
+        for class_id in &classes {
+            let members = self
+                .children(*class_id)
+                .iter()
+                .copied()
+                .filter(|child_id| {
+                    self.symbol(*child_id).is_some_and(|symbol| {
+                        is_class_member_kind(symbol.kind)
+                            && member_name.is_none_or(|member_name| {
+                                symbol.name.as_deref() == Some(member_name)
+                            })
+                    })
+                })
+                .collect::<Vec<_>>();
+            if member_name.is_none() || !members.is_empty() {
+                segments.push(members);
+            }
+        }
+
+        let Some(base_name) = base_name else {
+            return;
+        };
+        self.add_modded_predecessor_member_segments_including_bases(
             &base_name,
             member_name,
             visited,

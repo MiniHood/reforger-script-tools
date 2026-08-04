@@ -2120,6 +2120,95 @@ fn framed_lsp_did_change_replaces_cached_analysis() {
 }
 
 #[test]
+fn framed_lsp_completion_excludes_the_active_document_workspace_contribution() {
+    let root = temp_test_dir("active_document_completion_projection");
+    let scripts = root.join("Scripts");
+    std::fs::create_dir_all(&scripts).unwrap();
+    let active_file = scripts.join("Active.c");
+    let saved_source = "class Example\n{\n\tvoid SavedOnly();\n}\n";
+    std::fs::write(&active_file, saved_source).unwrap();
+    let current_source = "class Example\n{\n\tvoid CurrentOnly();\n\tvoid Test()\n\t{\n\t\tthis.\n\t}\n}\n";
+    let completion_position = position_after_needle(current_source, "this.");
+    let active_uri = file_uri_for_path(&active_file).unwrap();
+    let mut input = Vec::new();
+    write_test_message(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {}
+        }),
+    );
+    write_test_message(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": active_uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": current_source
+                }
+            }
+        }),
+    );
+    write_test_message(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0",
+            "method": WORKSPACE_FILE_CHANGED_METHOD,
+            "params": {
+                "path": active_file.display().to_string(),
+                "text": saved_source,
+                "sequence": 1
+            }
+        }),
+    );
+    write_test_message(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": active_uri },
+                "position": {
+                    "line": completion_position.line,
+                    "character": completion_position.character
+                }
+            }
+        }),
+    );
+    write_test_message(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "shutdown",
+            "params": null
+        }),
+    );
+    write_test_message(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "exit",
+            "params": null
+        }),
+    );
+
+    let mut output = Vec::new();
+    run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("CurrentOnly"), "{output}");
+    assert!(!output.contains("SavedOnly"), "{output}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn framed_lsp_did_close_removes_cached_document() {
     let source = "class Closed {}\n";
     let mut input = Vec::new();

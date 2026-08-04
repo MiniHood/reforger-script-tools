@@ -38,7 +38,7 @@ impl<'a> DocumentQuery<'a> {
         let state = Self::state_for(document);
         Self {
             document,
-            external_indexes,
+            external_indexes: external_indexes.into_document_projection(),
             state,
         }
     }

@@ -22,10 +22,10 @@ use super::{
     signature_help_report_for_cached_analysis_with_external_indexes,
     signature_help_report_for_pending_snapshot, source_backed_request_method, symbol_kind_label,
     DebugCompletionJob, DebugHoverJob, DebugRequestJob, DocumentQuery, DocumentQueryState,
-    DocumentRuntime, ExternalIndexHandle, HoverSelectionSource, LspPositionIndex, QueryQuality,
-    RuntimeEffect, TextSpan, ACTIVE_SCOPE_DELIMITERS_METHOD, BLOCK_COMMENT_PAIR_METHOD,
-    CONTROL_HEADER_ENTER_METHOD, DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD,
-    PREVIEW_CONTEXT_METHOD, RANGE_FORMATTING_METHOD, READ_PACK_SOURCE_METHOD,
+    DocumentRuntime, ExternalIndexHandle, ExternalIndexSnapshot, HoverSelectionSource,
+    LspPositionIndex, QueryQuality, RuntimeEffect, TextSpan, ACTIVE_SCOPE_DELIMITERS_METHOD,
+    BLOCK_COMMENT_PAIR_METHOD, CONTROL_HEADER_ENTER_METHOD, DEBUG_COMPLETION_METHOD,
+    DEBUG_HOVER_METHOD, PREVIEW_CONTEXT_METHOD, RANGE_FORMATTING_METHOD, READ_PACK_SOURCE_METHOD,
     WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::{json, Value};
@@ -298,7 +298,7 @@ impl FeatureDispatcher<'_> {
                                 .map(str::to_string);
                             log_uri = params.text_document.uri;
                             self.document_runtime
-                                .capture_query(&log_uri, self.external_index.snapshot())
+                                .capture_query(&log_uri, self.document_external_snapshot(&log_uri))
                                 .map(|query| {
                                 let DocumentQuery {
                                     document,
@@ -908,8 +908,10 @@ impl FeatureDispatcher<'_> {
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.document_runtime
-                                .capture_query(&log_uri, self.external_index.snapshot())
+                            self.document_runtime.capture_query(
+                                &log_uri,
+                                self.document_external_snapshot(&log_uri),
+                            )
                                 .map(|query| {
                                 let DocumentQuery {
                                     document,
@@ -1131,7 +1133,7 @@ impl FeatureDispatcher<'_> {
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
                             self.document_runtime
-                                .capture_query(&log_uri, self.external_index.snapshot())
+                                .capture_query(&log_uri, self.document_external_snapshot(&log_uri))
                                 .map(|query| {
                                     query_quality = query.quality();
                                     let DocumentQuery {
@@ -1256,7 +1258,7 @@ impl FeatureDispatcher<'_> {
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
                             self.document_runtime
-                                .capture_query(&log_uri, self.external_index.snapshot())
+                                .capture_query(&log_uri, self.document_external_snapshot(&log_uri))
                                 .map(|query| {
                                     query_quality = query.quality();
                                     let DocumentQuery {
@@ -1350,7 +1352,7 @@ impl FeatureDispatcher<'_> {
                     if let Some(ref params) = params {
                         if let Some(query) = self.document_runtime.capture_query(
                             &params.text_document.uri,
-                            self.external_index.snapshot(),
+                            self.document_external_snapshot(&params.text_document.uri),
                         ) {
                             let DocumentQuery {
                                 document,
@@ -1411,7 +1413,7 @@ impl FeatureDispatcher<'_> {
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
                             self.document_runtime
-                                .capture_query(&log_uri, self.external_index.snapshot())
+                                .capture_query(&log_uri, self.document_external_snapshot(&log_uri))
                                 .and_then(|query| {
                                     let DocumentQuery {
                                         document,
@@ -1470,7 +1472,7 @@ impl FeatureDispatcher<'_> {
                     if let Some(ref params) = params {
                         if let Some(query) = self.document_runtime.capture_query(
                             &params.text_document.uri,
-                            self.external_index.snapshot(),
+                            self.document_external_snapshot(&params.text_document.uri),
                         ) {
                             let DocumentQuery {
                                 document,
@@ -1533,7 +1535,7 @@ impl FeatureDispatcher<'_> {
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
                             self.document_runtime
-                                .capture_query(&log_uri, self.external_index.snapshot())
+                                .capture_query(&log_uri, self.document_external_snapshot(&log_uri))
                                 .and_then(|query| {
                                 let DocumentQuery {
                                     document,
@@ -1643,6 +1645,11 @@ impl FeatureDispatcher<'_> {
     fn deliver_effect(&mut self, effect: RuntimeEffect) -> Result<(), String> {
         self.effects.push(effect);
         Ok(())
+    }
+
+    fn document_external_snapshot(&self, uri: &str) -> ExternalIndexSnapshot {
+        self.external_index
+            .snapshot_for_document_identity(self.document_runtime.document_path_identity(uri))
     }
 
     fn log(&mut self, message: impl FnOnce() -> String) {

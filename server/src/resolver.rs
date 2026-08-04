@@ -4,7 +4,7 @@ use crate::ast::{
 use crate::expression_type::{
     base_owner_type_from_symbol, enum_member_ids_for_owner, has_modifier,
     is_pseudo_class_member_name, matching_members_for_exact_owner, member_lookup_owners,
-    preferred_class_is_implicit_modded, ExpressionType, ExpressionTypeEnvironment,
+    ExpressionType, ExpressionTypeEnvironment,
 };
 use crate::index::{GlobalSymbolId, IndexedFile, IndexedSymbol, SymbolIndex};
 use crate::lexer::{lex, Keyword, Operator, TextSpan, Token, TokenKind};
@@ -1113,35 +1113,30 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         } else {
             ResolutionReason::ReceiverMember
         };
-        let implicit_modded_super = inferred.is_implicit_modded_super();
+        let modded_super = inferred.is_modded_super();
         let before = candidates.len();
-        if !implicit_modded_super {
+        if !modded_super {
             self.push_members_for_owner(
                 self.file_index,
                 CandidateSource::FileLocal,
                 &inferred.owner_type,
                 member_name,
                 inferred.is_static,
-                reason,
                 false,
+                reason,
                 candidates,
                 seen,
             );
         }
         for external_index in self.external_indexes() {
-            if implicit_modded_super
-                && preferred_class_is_implicit_modded(external_index, &inferred.owner_type)
-            {
-                continue;
-            }
             self.push_members_for_owner(
                 external_index,
                 CandidateSource::External,
                 &inferred.owner_type,
                 member_name,
                 inferred.is_static,
+                modded_super,
                 reason,
-                implicit_modded_super,
                 candidates,
                 seen,
             );
@@ -1171,23 +1166,32 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         owner: &str,
         member_name: &str,
         static_only: bool,
+        modded_predecessor: bool,
         mut reason: ResolutionReason,
-        exclude_modded_owner: bool,
         candidates: &mut Vec<ReferenceCandidate>,
         seen: &mut BTreeSet<CandidateKey>,
     ) {
         let mut matching = Vec::new();
-        for owner in member_lookup_owners(index, owner) {
-            for id in index.preferred_members_named_for_class(&owner, member_name) {
-                if index.symbol(id).is_some_and(|symbol| {
-                    is_member_lookup_kind(symbol.kind)
-                        && symbol.name.as_deref() == Some(member_name)
-                        && (!exclude_modded_owner || !member_belongs_to_modded_class(index, id))
-                }) {
-                    push_unique_id(&mut matching, id);
+        if modded_predecessor {
+            matching
+                .extend(index.preferred_members_named_for_modded_predecessor(owner, member_name));
+        } else {
+            for owner in member_lookup_owners(index, owner) {
+                for id in index.preferred_members_named_for_class(&owner, member_name) {
+                    if index.symbol(id).is_some_and(|symbol| {
+                        is_member_lookup_kind(symbol.kind)
+                            && symbol.name.as_deref() == Some(member_name)
+                    }) {
+                        push_unique_id(&mut matching, id);
+                    }
                 }
             }
         }
+        matching.retain(|id| {
+            index.symbol(*id).is_some_and(|symbol| {
+                is_member_lookup_kind(symbol.kind) && symbol.name.as_deref() == Some(member_name)
+            })
+        });
 
         if static_only {
             let static_matching = matching
@@ -1204,7 +1208,11 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             }
         }
 
-        if matching.is_empty() && !static_only && is_pseudo_class_member_name(member_name) {
+        if !modded_predecessor
+            && matching.is_empty()
+            && !static_only
+            && is_pseudo_class_member_name(member_name)
+        {
             for id in matching_members_for_exact_owner(index, "Class", member_name) {
                 push_unique_id(&mut matching, id);
             }
@@ -1215,15 +1223,17 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             push_index_candidate(index, candidates, seen, source, id, reason);
         }
 
-        self.push_enum_members_for_owner(
-            index,
-            source,
-            owner,
-            member_name,
-            reason,
-            candidates,
-            seen,
-        );
+        if !modded_predecessor {
+            self.push_enum_members_for_owner(
+                index,
+                source,
+                owner,
+                member_name,
+                reason,
+                candidates,
+                seen,
+            );
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1258,8 +1268,8 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             "Class",
             member_name,
             true,
-            ResolutionReason::EngineClassCast,
             false,
+            ResolutionReason::EngineClassCast,
             candidates,
             seen,
         );
@@ -1270,8 +1280,8 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                 "Class",
                 member_name,
                 true,
-                ResolutionReason::EngineClassCast,
                 false,
+                ResolutionReason::EngineClassCast,
                 candidates,
                 seen,
             );
@@ -1717,20 +1727,6 @@ fn is_member_lookup_kind(kind: SymbolKind) -> bool {
     )
 }
 
-fn member_belongs_to_modded_class(index: &SymbolIndex, id: GlobalSymbolId) -> bool {
-    let mut parent = index.symbol(id).and_then(|symbol| symbol.parent);
-    while let Some(parent_id) = parent {
-        let Some(symbol) = index.symbol(parent_id) else {
-            return false;
-        };
-        if symbol.kind == SymbolKind::Class {
-            return has_modifier(symbol, "modded");
-        }
-        parent = symbol.parent;
-    }
-    false
-}
-
 fn span_contains(span: TextSpan, offset: usize) -> bool {
     span.start <= offset && offset < span.end
 }
@@ -1866,47 +1862,12 @@ fn type_position_span_is_reliable(
     }
 
     let between = &source[token_span.end..boundary_end];
-    let crosses_line = between.contains(['\r', '\n']);
-    if !crosses_line {
-        return true;
-    }
-
-    !lex(between).into_iter().any(|token| {
-        matches!(
-            token.kind,
-            TokenKind::Semicolon
-                | TokenKind::LeftBrace
-                | TokenKind::RightBrace
-                | TokenKind::Keyword(
-                    Keyword::Void
-                        | Keyword::Int
-                        | Keyword::Float
-                        | Keyword::Bool
-                        | Keyword::String
-                        | Keyword::Vector
-                        | Keyword::Typename
-                        | Keyword::Auto
-                        | Keyword::Class
-                        | Keyword::Enum
-                        | Keyword::Typedef
-                        | Keyword::Modded
-                        | Keyword::Sealed
-                        | Keyword::Static
-                        | Keyword::Private
-                        | Keyword::Protected
-                        | Keyword::Override
-                        | Keyword::Const
-                        | Keyword::Ref
-                        | Keyword::Out
-                        | Keyword::Inout
-                        | Keyword::Notnull
-                        | Keyword::Event
-                        | Keyword::Proto
-                        | Keyword::External
-                        | Keyword::Native
-                )
-        )
-    })
+    // A recovered local declaration must not make an unfinished statement on
+    // the preceding line type-only. The parser can legally join
+    // `GetGam\nWidget root` as one malformed declaration while the user is
+    // typing, but that interpretation would hide global callables such as
+    // `GetGame()`. Same-line declaration prefixes remain authoritative.
+    !between.contains(['\r', '\n'])
 }
 
 fn is_type_like_kind(kind: SymbolKind) -> bool {

@@ -218,6 +218,11 @@ impl ExternalIndexSnapshot {
             .unwrap_or_else(|| self.workspace.clone())
     }
 
+    pub(crate) fn into_document_projection(mut self) -> Self {
+        self.workspace = self.workspace_for_projection();
+        self
+    }
+
     pub(crate) fn workspace_excludes_document(&self) -> bool {
         self.workspace_exclusion.is_some()
     }
@@ -532,11 +537,12 @@ impl ExternalIndexHandle {
         }
     }
 
-    /// Returns the external facts used by rich semantic projection without
-    /// the active document's workspace contribution. The excluded aggregate
-    /// is constructed lazily by the rich worker and cached in a small bounded
-    /// set for the current workspace generation. The request path captures
-    /// only immutable file contributions and never rebuilds an index.
+    /// Returns the external facts used by document-backed semantic projection
+    /// without the active document's workspace contribution. The excluded
+    /// aggregate is constructed lazily, normally by the rich worker, and
+    /// cached in a small bounded set for the current workspace generation.
+    /// Capturing the snapshot only retains immutable file contributions; the
+    /// projection boundary owns the one aggregate build when it is first used.
     pub(crate) fn snapshot_for_document_identity(
         &self,
         identity: Option<&str>,

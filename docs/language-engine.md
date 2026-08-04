@@ -154,10 +154,22 @@ same proven override graph.
 Within the same semantic match-quality tier, original declarations rank before
 `modded` or `override` declarations and before members declared inside those
 overlays. Remaining ties use the stable symbol identity and source ordering.
-Inside an implicit `modded class`, `super` uses the same-named predecessor as
-its owner rather than resolving back to the active overlay. Expression typing
-owns that fact so member resolution, hover, member completion, base-call
-completion, and override skeleton completion cannot disagree about the target.
+Inside every `modded class`, `super` uses the preceding same-named class layer
+as its owner rather than the active overlay or a repeated explicit base clause.
+The predecessor query removes every Workspace declaration before member
+shadowing, then walks the retained same-name overlays in reverse load order
+toward the original class and its ordinary base chain. Workspace roots are one
+live editing authority; loaded dependency add-ons belong to Game Data rather
+than that active layer. This prevents another current-add-on file, as well as
+the open file itself, from becoming a false predecessor. A Workbench-loaded
+graph supplies authoritative overlay order. An offline dependency graph uses
+its captured deterministic order as a best-effort editor target, but does not
+become proof of an exact predecessor relationship for relationship APIs when
+duplicate declarations are ambiguous. Expression typing owns the same-name fact and uses the same
+predecessor query as member resolution, hover, member completion, base-call
+completion, and override skeleton completion. Document-backed semantic requests
+also use the cached current-document-excluded Workspace projection used by rich
+semantic analysis.
 The later authoritative Workbench graph validates the exact packed and loose
 sources and atomically replaces only changed instances. Unchanged validation
 inspects bounded PAC catalogues and hashes only selected compressed script
@@ -273,6 +285,13 @@ the TypeScript client can screen impossible editor states, apply a versioned
 result, and use an explicit native fallback. It must not infer Enfusion source
 shape or recreate an edit after the fact. The enduring editor-input ownership
 policy is in [Key input routing](key-input-routing.md).
+
+Completion narrows the indexed symbol universe only for a positively identified
+grammar role. Recovery must keep an unfinished line in value/callable mode when
+the parser can form a local declaration only by joining it to the following
+line; that ambiguous repair cannot hide global engine functions from ordinary
+method-body completion. Proven same-line declarations, constructed types, and
+generic type arguments retain type-specific completion.
 
 ## Change Rules
 

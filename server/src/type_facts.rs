@@ -90,24 +90,23 @@ impl<'index> TypeFacts<'index> {
     }
 
     /// Returns the class owner targeted by `super`. A normal class targets its
-    /// declared base, while an implicit `modded class` layer targets the
-    /// original same-named class that it replaces.
+    /// declared base, while a `modded class` layer targets the preceding
+    /// same-named class layer regardless of whether it repeats a base clause.
     pub fn class_super_type(&self, id: GlobalSymbolId) -> Option<&'index str> {
         let symbol = self.index.symbol(id)?;
         if symbol.kind != SymbolKind::Class {
             return None;
         }
-        symbol.detail.base_type.as_deref().or_else(|| {
-            self.is_implicit_modded_class(id)
-                .then_some(symbol.name.as_deref())
-                .flatten()
-        })
+        if self.is_modded_class(id) {
+            symbol.name.as_deref().filter(|name| !name.is_empty())
+        } else {
+            symbol.detail.base_type.as_deref()
+        }
     }
 
-    pub fn is_implicit_modded_class(&self, id: GlobalSymbolId) -> bool {
+    pub fn is_modded_class(&self, id: GlobalSymbolId) -> bool {
         self.index.symbol(id).is_some_and(|symbol| {
             symbol.kind == SymbolKind::Class
-                && symbol.detail.base_type.is_none()
                 && symbol.modifiers.iter().any(|modifier| modifier == "modded")
                 && symbol.name.as_deref().is_some_and(|name| !name.is_empty())
         })
@@ -239,13 +238,23 @@ class Example : Base
     }
 
     #[test]
-    fn exposes_the_original_same_named_class_as_an_implicit_modded_super_type() {
+    fn exposes_the_original_same_named_class_as_a_modded_super_type() {
         let index = index_for_source("modded class Example {}");
         let class = only_named(&index, "Example");
         let facts = TypeFacts::new(&index);
 
         assert_eq!(facts.class_base_type(class), None);
-        assert!(facts.is_implicit_modded_class(class));
+        assert!(facts.is_modded_class(class));
+        assert_eq!(facts.class_super_type(class), Some("Example"));
+    }
+
+    #[test]
+    fn explicit_base_does_not_replace_the_same_named_modded_super_type() {
+        let index = index_for_source("modded class Example : Base {}");
+        let class = only_named(&index, "Example");
+        let facts = TypeFacts::new(&index);
+
+        assert_eq!(facts.class_base_type(class), Some("Base"));
         assert_eq!(facts.class_super_type(class), Some("Example"));
     }
 }

@@ -115,6 +115,11 @@ impl<'index> IndexQuery<'index> {
         members
     }
 
+    pub fn completion_members_for_modded_predecessor(&self, name: &str) -> EditorCompletionMembers {
+        let completion = self.index.completion_members_for_modded_predecessor(name);
+        self.editor_completion_members(name, completion)
+    }
+
     pub fn completion_static_members_for_type(&self, name: &str) -> Vec<EditorCompletionCandidate> {
         let mut candidates = self.enum_member_completion_candidates(name);
         if !candidates.is_empty() {

@@ -1,3 +1,24 @@
+fn game_data_index_for_source(source: &str, relative_path: &str) -> SymbolIndex {
+    let parse = crate::parser::parse_source(source);
+    assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+    let semantic = crate::semantic_file::SemanticFile::build(source, &parse);
+    let relative_path = std::path::PathBuf::from(relative_path);
+    let mut index = SymbolIndex::default();
+    index.add_semantic_file(
+        &semantic,
+        crate::model::SourceFileMetadata {
+            kind: crate::model::SourceKind::GameData,
+            category: crate::model::SourceCategory::Game,
+            absolute_path: Some(std::path::PathBuf::from("C:/game").join(&relative_path)),
+            virtual_source: None,
+            root_path: Some(std::path::PathBuf::from("C:/game")),
+            relative_path: Some(relative_path),
+            priority: crate::model::SOURCE_PRIORITY_GAME_DATA,
+        },
+    );
+    index
+}
+
 #[test]
 fn semantic_token_refresh_coalesces_until_the_client_acknowledges_it() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
@@ -1633,14 +1654,14 @@ fn completion_returns_original_class_methods_for_super_in_a_modded_class() {
 	}
 }
 "#;
-    let external = file_index_for_source(
+    let external = game_data_index_for_source(
         r#"class SCR_InventoryStorageManagerComponent
 {
 	void OpenInventory();
 }
 "#,
-    )
-    .index;
+        "Scripts/Game/SCR_InventoryStorageManagerComponent.c",
+    );
     let report = completion_report_for_source_position_with_external(
         source,
         position_after_needle(source, "super."),
@@ -1664,6 +1685,59 @@ fn completion_returns_original_class_methods_for_super_in_a_modded_class() {
 }
 
 #[test]
+fn completion_uses_the_same_named_predecessor_for_explicit_base_modded_super() {
+    let source = r#"modded class SCR_PlayerController : PlayerController
+{
+	void CurrentLayerOnly();
+
+	void Test()
+	{
+		super.
+	}
+}
+"#;
+    let predecessor = game_data_index_for_source(
+        r#"modded class SCR_PlayerController : PlayerController
+{
+	void TILW_ShowJIPInfo();
+}
+"#,
+        "Scripts/Game/GC_Core/SCR_PlayerController_M.c",
+    );
+    let original = game_data_index_for_source(
+        r#"class SCR_PlayerController : PlayerController
+{
+	void OriginalOnly();
+}
+
+class PlayerController
+{
+	void BaseOnly();
+}
+"#,
+        "Scripts/Game/SCR_PlayerController.c",
+    );
+    let external = SymbolIndex::layered([original, predecessor]);
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "super."),
+        Some(&external),
+    );
+    let labels = report
+        .list
+        .items
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(report.owner_type.as_deref(), Some("SCR_PlayerController"));
+    assert!(labels.contains(&"TILW_ShowJIPInfo"), "{labels:?}");
+    assert!(labels.contains(&"OriginalOnly"), "{labels:?}");
+    assert!(labels.contains(&"BaseOnly"), "{labels:?}");
+    assert!(!labels.contains(&"CurrentLayerOnly"), "{labels:?}");
+}
+
+#[test]
 fn hover_resolves_super_calls_to_the_original_modded_class_method() {
     let source = r#"modded class SCR_InventoryStorageManagerComponent
 {
@@ -1673,14 +1747,14 @@ fn hover_resolves_super_calls_to_the_original_modded_class_method() {
 	}
 }
 "#;
-    let external = file_index_for_source(
+    let external = game_data_index_for_source(
         r#"class SCR_InventoryStorageManagerComponent
 {
 	void OpenInventory();
 }
 "#,
-    )
-    .index;
+        "Scripts/Game/SCR_InventoryStorageManagerComponent.c",
+    );
     let report = hover_report_for_source_position_with_external(
         source,
         position_for_needle(source, "super.OpenInventory", "OpenInventory"),
@@ -1697,6 +1771,133 @@ fn hover_resolves_super_calls_to_the_original_modded_class_method() {
             .as_ref()
             .and_then(|receiver| receiver.owner_type.as_deref()),
         Some("SCR_InventoryStorageManagerComponent")
+    );
+}
+
+#[test]
+fn hover_resolves_explicit_base_modded_super_to_the_predecessor_layer() {
+    let source = r#"modded class SCR_PlayerController : PlayerController
+{
+	void Test()
+	{
+		super.TILW_ShowJIPInfo();
+	}
+}
+"#;
+    let predecessor = game_data_index_for_source(
+        r#"modded class SCR_PlayerController : PlayerController
+{
+	void TILW_ShowJIPInfo();
+}
+"#,
+        "Scripts/Game/GC_Core/SCR_PlayerController_M.c",
+    );
+    let original = game_data_index_for_source(
+        "class SCR_PlayerController : PlayerController {} class PlayerController {}",
+        "Scripts/Game/SCR_PlayerController.c",
+    );
+    let external = SymbolIndex::layered([original, predecessor]);
+    let report = hover_report_for_source_position_with_external(
+        source,
+        position_for_needle(source, "super.TILW_ShowJIPInfo", "TILW_ShowJIPInfo"),
+        Some(&external),
+    );
+
+    assert!(report.is_hit(), "{report:?}");
+    assert_eq!(report.selected_label.as_deref(), Some("TILW_ShowJIPInfo"));
+    assert_eq!(report.selected_source, Some(CandidateSource::External));
+    assert_eq!(
+        report
+            .receiver_resolution
+            .as_ref()
+            .and_then(|receiver| receiver.owner_type.as_deref()),
+        Some("SCR_PlayerController")
+    );
+}
+
+#[test]
+fn modded_super_excludes_the_workspace_layer_before_predecessor_shadowing() {
+    let source = r#"modded class SCR_PlayerController : PlayerController
+{
+	void Test()
+	{
+		super.SharedMethod();
+	}
+}
+"#;
+    let analysis = file_index_for_source(source);
+    let workspace = file_index_for_source(
+        r#"modded class SCR_PlayerController : PlayerController
+{
+	void CurrentAddonOnly();
+	void SharedMethod();
+}
+"#,
+    )
+    .index;
+    let predecessor = game_data_index_for_source(
+        r#"modded class SCR_PlayerController : PlayerController
+{
+	void PredecessorOnly();
+	/// Immediate predecessor declaration.
+	void SharedMethod();
+}
+"#,
+        "Scripts/Game/GC_Core/SCR_PlayerController_M.c",
+    );
+    let original = game_data_index_for_source(
+        r#"class SCR_PlayerController : PlayerController
+{
+	void OriginalOnly();
+	/// Original declaration shadowed by the predecessor.
+	void SharedMethod();
+}
+
+class PlayerController {}
+"#,
+        "Scripts/Game/SCR_PlayerController.c",
+    );
+    let game_data = SymbolIndex::layered([original, predecessor]);
+
+    let completion = completion_report_for_cached_analysis_with_external_indexes(
+        source,
+        &analysis,
+        position_after_needle(source, "super."),
+        Some(&workspace),
+        Some(&game_data),
+    );
+    let labels = completion
+        .list
+        .items
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect::<Vec<_>>();
+    assert!(labels.contains(&"PredecessorOnly"), "{labels:?}");
+    assert!(labels.contains(&"OriginalOnly"), "{labels:?}");
+    assert!(!labels.contains(&"CurrentAddonOnly"), "{labels:?}");
+    assert_eq!(
+        labels
+            .iter()
+            .filter(|label| **label == "SharedMethod")
+            .count(),
+        1,
+        "{labels:?}"
+    );
+
+    let hover = hover_report_for_cached_analysis_with_external_indexes(
+        source,
+        &analysis,
+        "file:///Scripts/Current.c",
+        position_for_needle(source, "super.SharedMethod", "SharedMethod"),
+        Some(&workspace),
+        Some(&game_data),
+    );
+    assert!(hover.is_hit(), "{hover:?}");
+    assert_eq!(hover.resolver_candidate_count, 1);
+    let markdown = hover.hover.expect("predecessor hover").contents.value;
+    assert!(
+        markdown.contains("GC_Core%2FSCR_PlayerController_M.c"),
+        "{markdown}"
     );
 }
 
@@ -4796,20 +4997,55 @@ fn completion_returns_inherited_override_method_skeletons() {
 }
 
 #[test]
+fn completion_keeps_value_context_before_a_user_defined_declaration() {
+    let source = r#"class TEST_UI : ChimeraMenuBase
+{
+	 override void OnMenuOpen()
+    {
+        PrintFormat("GRAY | OnMenuOpen");
+        GetGam
+
+        Widget root = GetRootWidget();
+    }
+}
+"#;
+    let external = file_index_for_source(
+        r#"class Game {}
+Game GetGame();
+class ChimeraMenuBase {}
+class Widget {}
+"#,
+    )
+    .index;
+
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "GetGam"),
+        Some(&external),
+    );
+
+    assert_eq!(report.completion_context, "top-level");
+    assert_eq!(report.prefix, "GetGam");
+    assert!(report.list.items.iter().any(|item| item.label == "GetGame"
+        && item.kind == 3
+        && item.text_edit.new_text == "GetGame()"));
+}
+
+#[test]
 fn completion_returns_original_method_skeletons_in_a_modded_class() {
     let source = r#"modded class SCR_InventoryStorageManagerComponent
 {
 	OpenInv
 }
 "#;
-    let external = file_index_for_source(
+    let external = game_data_index_for_source(
         r#"class SCR_InventoryStorageManagerComponent
 {
 	void OpenInventory();
 }
 "#,
-    )
-    .index;
+        "Scripts/Game/SCR_InventoryStorageManagerComponent.c",
+    );
     let report = completion_report_for_source_position_with_external(
         source,
         position_after_needle(source, "OpenInv"),
@@ -5564,10 +5800,10 @@ fn completion_expands_super_to_the_original_method_in_a_modded_class() {
 	}
 }
 "#;
-    let external = file_index_for_source(
+    let external = game_data_index_for_source(
         "class SCR_InventoryStorageManagerComponent { void OpenInventory(); }",
-    )
-    .index;
+        "Scripts/Game/SCR_InventoryStorageManagerComponent.c",
+    );
     let report = completion_report_for_source_position_with_external(
         source,
         position_after_needle(source, "sup"),
@@ -5581,6 +5817,44 @@ fn completion_expands_super_to_the_original_method_in_a_modded_class() {
         .find(|item| item.label == "super.OpenInventory")
         .expect("expected the original method base-call completion");
     assert_eq!(item.text_edit.new_text, "super.OpenInventory()");
+}
+
+#[test]
+fn completion_expands_super_to_a_predecessor_method_with_an_explicit_base() {
+    let source = r#"modded class SCR_PlayerController : PlayerController
+{
+	override void TILW_ShowJIPInfo()
+	{
+		sup
+	}
+}
+"#;
+    let predecessor = game_data_index_for_source(
+        r#"modded class SCR_PlayerController : PlayerController
+{
+	void TILW_ShowJIPInfo();
+}
+"#,
+        "Scripts/Game/GC_Core/SCR_PlayerController_M.c",
+    );
+    let original = game_data_index_for_source(
+        "class SCR_PlayerController : PlayerController {} class PlayerController {}",
+        "Scripts/Game/SCR_PlayerController.c",
+    );
+    let external = SymbolIndex::layered([original, predecessor]);
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "sup"),
+        Some(&external),
+    );
+
+    let item = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "super.TILW_ShowJIPInfo")
+        .expect("expected the predecessor method base-call completion");
+    assert_eq!(item.text_edit.new_text, "super.TILW_ShowJIPInfo()");
 }
 
 #[test]

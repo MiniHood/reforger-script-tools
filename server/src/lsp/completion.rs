@@ -9,7 +9,7 @@ use crate::construction::{
     compatible_construction_candidates, lexical_construction_context_at_operand, ConstructionQuery,
 };
 use crate::expression_type::{
-    expression_type_from_index_symbol, preferred_class_is_implicit_modded, strip_all_type_prefixes,
+    expression_type_from_index_symbol, preferred_class_is_modded, strip_all_type_prefixes,
 };
 use crate::index::SymbolIndex;
 use crate::index_query::{
@@ -727,16 +727,23 @@ pub(crate) fn completion_report_for_current_override_at_offset_with_external_ind
 
     let mut candidates = Vec::new();
     for owner in external_completion_owners(&context.base_type, workspace_index, game_data_index) {
-        let implicit_modded_owner = context.implicit_modded && owner == context.base_type;
         if let Some(index) = workspace_index {
             candidates.extend(prefixed_candidates(
-                override_candidates_for_super_owner(index, &owner, implicit_modded_owner),
+                if context.modded {
+                    override_candidates_for_predecessor_owner(index, &owner)
+                } else {
+                    override_candidates_for_owner(index, &owner)
+                },
                 &context.prefix,
             ));
         }
         if let Some(index) = game_data_index {
             candidates.extend(prefixed_candidates(
-                override_candidates_for_super_owner(index, &owner, implicit_modded_owner),
+                if context.modded {
+                    override_candidates_for_predecessor_owner(index, &owner)
+                } else {
+                    override_candidates_for_owner(index, &owner)
+                },
                 &context.prefix,
             ));
         }
@@ -1011,12 +1018,11 @@ pub(crate) fn completion_report_for_current_super_at_offset_with_external_indexe
     let mut candidates = Vec::new();
     for index in ExternalIndexes::new(workspace_index, game_data_index).ordered() {
         candidates.extend(
-            completion_candidates_for_super_owner(
-                index,
-                &context.base_type,
-                false,
-                context.implicit_modded,
-            )
+            if context.modded {
+                completion_candidates_for_predecessor_owner(index, &context.base_type, false)
+            } else {
+                completion_candidates_for_owner(index, &context.base_type, false)
+            }
             .into_iter()
             .filter(is_overridable_method_candidate)
             .filter(|candidate| candidate.name.as_deref() == Some(&context.method_name)),
@@ -1073,26 +1079,24 @@ fn super_call_completion_report_for_indexes(
 ) -> Option<LspCompletionReport> {
     let region = BoundedCompletionRegion::for_current_override(source, offset)?;
     let context = region.current_super_call_context(source, offset)?;
-    let mut candidates = if context.implicit_modded {
+    let mut candidates = if context.modded {
         Vec::new()
     } else {
         completion_candidates_for_owner(local_index, &context.base_type, false)
     };
     if let Some(index) = workspace_index {
-        candidates.extend(completion_candidates_for_super_owner(
-            index,
-            &context.base_type,
-            false,
-            context.implicit_modded,
-        ));
+        candidates.extend(if context.modded {
+            completion_candidates_for_predecessor_owner(index, &context.base_type, false)
+        } else {
+            completion_candidates_for_owner(index, &context.base_type, false)
+        });
     }
     if let Some(index) = game_data_index {
-        candidates.extend(completion_candidates_for_super_owner(
-            index,
-            &context.base_type,
-            false,
-            context.implicit_modded,
-        ));
+        candidates.extend(if context.modded {
+            completion_candidates_for_predecessor_owner(index, &context.base_type, false)
+        } else {
+            completion_candidates_for_owner(index, &context.base_type, false)
+        });
     }
     let candidates = combine_completion_candidates(
         candidates
@@ -1238,7 +1242,7 @@ struct BoundedCompletionRegion {
 
 struct CurrentOverrideCompletionContext {
     base_type: String,
-    implicit_modded: bool,
+    modded: bool,
     prefix: String,
     prefix_span: TextSpan,
     typed_modifiers: BTreeSet<String>,
@@ -1246,7 +1250,7 @@ struct CurrentOverrideCompletionContext {
 
 struct CurrentSuperCallCompletionContext {
     base_type: String,
-    implicit_modded: bool,
+    modded: bool,
     method_name: String,
     prefix: String,
     prefix_span: TextSpan,
@@ -1255,7 +1259,7 @@ struct CurrentSuperCallCompletionContext {
 #[derive(Clone)]
 struct ClassSuperContext {
     owner: String,
-    implicit_modded: bool,
+    modded: bool,
 }
 
 impl BoundedCompletionRegion {
@@ -1481,7 +1485,7 @@ impl BoundedCompletionRegion {
         let class_context = scopes.last().and_then(|base| base.clone())?;
         Some(CurrentOverrideCompletionContext {
             base_type: class_context.owner,
-            implicit_modded: class_context.implicit_modded,
+            modded: class_context.modded,
             prefix,
             prefix_span,
             typed_modifiers: bounded_typed_declaration_modifiers(&self.tokens, prefix_span),
@@ -1538,7 +1542,7 @@ impl BoundedCompletionRegion {
         let class_context = scopes.into_iter().rev().flatten().next()?;
         Some(CurrentSuperCallCompletionContext {
             base_type: class_context.owner,
-            implicit_modded: class_context.implicit_modded,
+            modded: class_context.modded,
             method_name,
             prefix,
             prefix_span,
@@ -1576,22 +1580,19 @@ fn class_super_contexts(
         let is_modded = index.checked_sub(1).is_some_and(|previous| {
             matches!(tokens[previous].kind, TokenKind::Keyword(Keyword::Modded))
         });
-        let implicit_modded = explicit_base.is_none() && is_modded;
-        let owner = explicit_base.or_else(|| {
-            implicit_modded
-                .then(|| {
-                    source
-                        .get(name.span.start..name.span.end)
-                        .map(str::to_string)
-                })
-                .flatten()
-        });
+        let owner = if is_modded {
+            source
+                .get(name.span.start..name.span.end)
+                .map(str::to_string)
+        } else {
+            explicit_base
+        };
         if let Some(owner) = owner {
             contexts.insert(
                 header[body_index].span.start,
                 ClassSuperContext {
                     owner,
-                    implicit_modded,
+                    modded: is_modded,
                 },
             );
         }
@@ -3510,28 +3511,26 @@ fn member_completion_report_for_indexes(
     total_start: Instant,
 ) -> LspCompletionReport {
     let lookup_start = Instant::now();
-    let implicit_modded_super = receiver_text.as_deref() == Some("super")
-        && preferred_class_is_implicit_modded(local_index, owner);
-    let mut candidates = if implicit_modded_super {
+    let modded_super =
+        receiver_text.as_deref() == Some("super") && preferred_class_is_modded(local_index, owner);
+    let mut candidates = if modded_super {
         Vec::new()
     } else {
         completion_candidates_for_owner(local_index, owner, receiver_is_static)
     };
     if let Some(external_index) = workspace_index {
-        candidates.extend(completion_candidates_for_super_owner(
-            external_index,
-            owner,
-            receiver_is_static,
-            implicit_modded_super,
-        ));
+        candidates.extend(if modded_super {
+            completion_candidates_for_predecessor_owner(external_index, owner, receiver_is_static)
+        } else {
+            completion_candidates_for_owner(external_index, owner, receiver_is_static)
+        });
     }
     if let Some(external_index) = game_data_index {
-        candidates.extend(completion_candidates_for_super_owner(
-            external_index,
-            owner,
-            receiver_is_static,
-            implicit_modded_super,
-        ));
+        candidates.extend(if modded_super {
+            completion_candidates_for_predecessor_owner(external_index, owner, receiver_is_static)
+        } else {
+            completion_candidates_for_owner(external_index, owner, receiver_is_static)
+        });
     }
     let candidates = filter_member_candidates_by_visibility(candidates, visibility);
     let candidates = combine_completion_candidates(candidates);
@@ -3694,37 +3693,28 @@ fn completion_candidates_for_owner(
     }
 }
 
-fn completion_candidates_for_super_owner(
+fn completion_candidates_for_predecessor_owner(
     index: &SymbolIndex,
     owner: &str,
     receiver_is_static: bool,
-    implicit_modded_super: bool,
 ) -> Vec<EditorCompletionCandidate> {
-    if implicit_modded_super && preferred_class_is_implicit_modded(index, owner) {
-        return Vec::new();
-    }
-    let mut candidates = completion_candidates_for_owner(index, owner, receiver_is_static);
-    if implicit_modded_super {
-        candidates.retain(|candidate| !candidate_belongs_to_modded_class(index, candidate));
+    let query = IndexQuery::new(index);
+    let candidates = query
+        .completion_members_for_modded_predecessor(owner)
+        .candidates;
+    if !receiver_is_static {
+        return candidates;
     }
     candidates
-}
-
-fn candidate_belongs_to_modded_class(
-    index: &SymbolIndex,
-    candidate: &EditorCompletionCandidate,
-) -> bool {
-    let mut parent = index.symbol(candidate.id).and_then(|symbol| symbol.parent);
-    while let Some(parent_id) = parent {
-        let Some(symbol) = index.symbol(parent_id) else {
-            return false;
-        };
-        if symbol.kind == SymbolKind::Class {
-            return symbol.modifiers.iter().any(|modifier| modifier == "modded");
-        }
-        parent = symbol.parent;
-    }
-    false
+        .into_iter()
+        .filter(|candidate| {
+            candidate
+                .display
+                .modifiers
+                .iter()
+                .any(|modifier| modifier == "static")
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4822,11 +4812,11 @@ fn override_completion_candidates_for_context(
         game_data_index,
         &class_name,
     );
-    let implicit_modded = preferred_class_is_implicit_modded(local_index, &class_name);
+    let modded = preferred_class_is_modded(local_index, &class_name);
     let mut candidates = Vec::new();
-    for owner in owners.into_iter().skip(usize::from(!implicit_modded)) {
-        let implicit_modded_owner = implicit_modded && owner == class_name;
-        if !implicit_modded_owner {
+    for owner in owners.into_iter().skip(usize::from(!modded)) {
+        let modded_owner = modded && owner == class_name;
+        if !modded_owner {
             candidates.extend(prefixed_candidates(
                 override_candidates_for_owner(local_index, &owner),
                 prefix,
@@ -4834,13 +4824,21 @@ fn override_completion_candidates_for_context(
         }
         if let Some(external_index) = workspace_index {
             candidates.extend(prefixed_candidates(
-                override_candidates_for_super_owner(external_index, &owner, implicit_modded_owner),
+                if modded {
+                    override_candidates_for_predecessor_owner(external_index, &owner)
+                } else {
+                    override_candidates_for_owner(external_index, &owner)
+                },
                 prefix,
             ));
         }
         if let Some(external_index) = game_data_index {
             candidates.extend(prefixed_candidates(
-                override_candidates_for_super_owner(external_index, &owner, implicit_modded_owner),
+                if modded {
+                    override_candidates_for_predecessor_owner(external_index, &owner)
+                } else {
+                    override_candidates_for_owner(external_index, &owner)
+                },
                 prefix,
             ));
         }
@@ -4861,19 +4859,14 @@ fn override_candidates_for_owner(
         .collect()
 }
 
-fn override_candidates_for_super_owner(
+fn override_candidates_for_predecessor_owner(
     index: &SymbolIndex,
     owner: &str,
-    implicit_modded_super: bool,
 ) -> Vec<EditorCompletionCandidate> {
-    if implicit_modded_super && preferred_class_is_implicit_modded(index, owner) {
-        return Vec::new();
-    }
-    let mut candidates = override_candidates_for_owner(index, owner);
-    if implicit_modded_super {
-        candidates.retain(|candidate| !candidate_belongs_to_modded_class(index, candidate));
-    }
-    candidates
+    completion_candidates_for_predecessor_owner(index, owner, false)
+        .into_iter()
+        .filter(is_overridable_method_candidate)
+        .collect()
 }
 
 fn is_overridable_method_candidate(candidate: &EditorCompletionCandidate) -> bool {
