@@ -43,6 +43,30 @@ suite('native MCP clean-window acceptance', () => {
 			false,
 		);
 
+		await vscode.commands.executeCommand(
+			'workbench.mcp.startServer',
+			'*',
+			{ waitForLiveTools: true },
+		);
+		const wikiStatus = vscode.lm.tools.find(tool =>
+			tool.name.endsWith('official_wiki_status'));
+		assert.ok(
+			wikiStatus,
+			`Discovered MCP tools did not include Official Wiki status: ${vscode.lm.tools
+				.map(tool => tool.name)
+				.join(', ')}`,
+		);
+		const wikiResult = await vscode.lm.invokeTool(
+			wikiStatus.name,
+			{ input: {}, toolInvocationToken: undefined },
+		);
+		const wikiText = wikiResult.content
+			.filter((part): part is vscode.LanguageModelTextPart =>
+				part instanceof vscode.LanguageModelTextPart)
+			.map(part => part.value)
+			.join('\n');
+		assert.match(wikiText, /"available"\s*:\s*true/);
+
 		await new Promise(resolve => setTimeout(resolve, 250));
 		const observation = await vscode.commands.executeCommand<WorkbenchCompilerObservation>(
 			workbenchTestCommands.observeCompiler,
