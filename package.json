@@ -3,7 +3,7 @@
   "displayName": "Reforger Script Tools",
   "description": "Enfusion Script language support and Workbench compiler integration for Arma Reforger.",
   "publisher": "burn0ut7",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "icon": "images/icon.jpg",
   "repository": {
     "type": "git",
@@ -20,6 +20,12 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "reforger-script-tools.mcp-runtime",
+        "label": "Reforger Script Tools"
+      }
+    ],
     "languages": [
       {
         "id": "enforce",

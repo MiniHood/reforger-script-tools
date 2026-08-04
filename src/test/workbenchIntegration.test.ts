@@ -11,6 +11,27 @@ import { WorkbenchEndpoint } from '../workbenchNetApi/gateway/workbenchGateway';
 const endpoint: WorkbenchEndpoint = { host: '127.0.0.1', port: 5775 };
 
 suite('Workbench Integration', () => {
+	test('does not contact Workbench before editor feature startup requests it', async () => {
+		let statuses = 0;
+		const coordinator = new WorkbenchIntegrationCoordinator(
+			runtimeWith({
+				status: async () => {
+					statuses += 1;
+					return statusResult({ workbenchRunning: false });
+				},
+			}),
+			uiWith({}),
+			true,
+		);
+
+		coordinator.onWorkbenchConfigurationChanged(true);
+		await Promise.resolve();
+		assert.strictEqual(statuses, 0);
+
+		await coordinator.start();
+		assert.strictEqual(statuses, 1);
+	});
+
 	test('startup leaves an unset Workbench setting disabled and eligible for first approval', () => {
 		assert.deepStrictEqual(workbenchStartupPolicy(false, false), {
 			enabled: false,

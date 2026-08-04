@@ -1,4 +1,6 @@
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs/promises';
 import * as vscode from 'vscode';
 import { mcpCommands, mcpServer } from '../extensionConfig/mcp';
 import { gameDataStorage } from '../extensionConfig/gameData';
@@ -25,6 +27,12 @@ export interface McpLaunchInputs {
 	officialWikiRoot?: string;
 	workspaceScripts?: string[];
 	dependencyProjectFiles?: string[];
+	dependencyProjectContents?: string[];
+}
+
+export interface McpLaunchPolicy {
+	launch: McpLaunch;
+	scopeIdentity: string;
 }
 
 type ConfigurationFormat = 'generic' | 'codex';
@@ -49,6 +57,47 @@ export function buildMcpLaunchConfiguration(inputs: McpLaunchInputs): McpLaunch 
 		command: inputs.serverPath,
 		args,
 	};
+}
+
+export function buildMcpLaunchPolicy(inputs: McpLaunchInputs): McpLaunchPolicy {
+	const launch = buildMcpLaunchConfiguration(inputs);
+	const scopeIdentity = createHash('sha256')
+		.update(JSON.stringify({
+			launch,
+			dependencyProjectContents: inputs.dependencyProjectContents ?? [],
+		}))
+		.digest('hex');
+	return { launch, scopeIdentity };
+}
+
+export async function resolveMcpLaunchPolicy(
+	context: vscode.ExtensionContext,
+): Promise<McpLaunchPolicy> {
+	const serverPath = await resolveLanguageServerPath(context);
+	if (!serverPath) {
+		throw new Error(mcpServer.runtimeUnavailableMessage);
+	}
+	const dependencyProjectFiles = await discoverWorkspaceProjectFiles();
+	const dependencyProjectContents = await Promise.all(
+		dependencyProjectFiles.map(readProjectIdentity),
+	);
+	return buildMcpLaunchPolicy({
+		serverPath,
+		addonSourceInventory: path.join(
+			context.globalStorageUri.fsPath,
+			gameDataStorage.rootFolder,
+			gameDataStorage.inventoryFile,
+		),
+		addonIndexStorage: path.join(
+			context.globalStorageUri.fsPath,
+			languageClientIndexCache.rootFolder,
+		),
+		externalIndexMode: readExternalIndexMode(),
+		officialWikiRoot: path.join(context.extensionPath, 'data', 'official-wiki'),
+		workspaceScripts: await discoverWorkspaceScriptRoots(),
+		dependencyProjectFiles,
+		dependencyProjectContents,
+	});
 }
 
 export function renderGenericMcpConfiguration(launch: McpLaunch): string {
@@ -76,10 +125,12 @@ export function registerMcpConfigurationCommand(
 	context.subscriptions.push(vscode.commands.registerCommand(
 		mcpCommands.copyConfiguration,
 		async (requestedFormat?: ConfigurationFormat) => {
-			const serverPath = await resolveLanguageServerPath(context);
-			if (!serverPath) {
+			let policy: McpLaunchPolicy;
+			try {
+				policy = await resolveMcpLaunchPolicy(context);
+			} catch (error) {
 				await vscode.window.showErrorMessage(
-					'Reforger Script Tools could not find its packaged Rust runtime.',
+					error instanceof Error ? error.message : mcpServer.runtimeUnavailableMessage,
 				);
 				return;
 			}
@@ -88,22 +139,7 @@ export function registerMcpConfigurationCommand(
 			if (!format) {
 				return;
 			}
-			const launch = buildMcpLaunchConfiguration({
-				serverPath,
-				addonSourceInventory: path.join(
-					context.globalStorageUri.fsPath,
-					gameDataStorage.rootFolder,
-					gameDataStorage.inventoryFile,
-				),
-				addonIndexStorage: path.join(
-					context.globalStorageUri.fsPath,
-					languageClientIndexCache.rootFolder,
-				),
-				externalIndexMode: readExternalIndexMode(),
-				officialWikiRoot: path.join(context.extensionPath, 'data', 'official-wiki'),
-				workspaceScripts: await discoverWorkspaceScriptRoots(),
-				dependencyProjectFiles: await discoverWorkspaceProjectFiles(),
-			});
+			const launch = policy.launch;
 			const configuration = format === 'codex'
 				? renderCodexMcpConfiguration(launch)
 				: renderGenericMcpConfiguration(launch);
@@ -114,6 +150,14 @@ export function registerMcpConfigurationCommand(
 			);
 		},
 	));
+}
+
+async function readProjectIdentity(projectFile: string): Promise<string> {
+	try {
+		return await fs.readFile(projectFile, 'utf8');
+	} catch {
+		return '<unavailable>';
+	}
 }
 
 export function readExternalIndexMode(): ExternalIndexMode {

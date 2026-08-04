@@ -211,18 +211,25 @@ dist/server/win32-x64/reforger_language_server.exe mcp `
   --external-index-mode <all|loaded|none>
 ```
 
-In VS Code, run **Reforger Script Tools: Copy MCP Configuration** and choose
-Codex TOML or generic MCP JSON. The copied command contains the absolute
-packaged runtime, loaded-add-on inventory, parser-owned index storage, and
-packaged official-wiki evidence root, so the client does not depend on a
-running VS Code process. The copied command captures the current
-`reforgerScriptTools.workbench.externalIndexMode`; regenerate the configuration
-after changing that setting. In `loaded` mode MCP filters compatible caches by
-the persisted Workbench graph, while `all` publishes every compatible cached
-add-on and `none` disables external Game Data.
-After an extension upgrade, rerun the command and replace the client entry:
-the versioned installed runtime path changes deliberately, and the extension
-does not edit third-party client configuration itself.
+VS Code discovers the bundled runtime through the extension's native MCP server
+definition provider. The provider and **Reforger Script Tools: Copy MCP
+Configuration** consume the same launch policy: absolute packaged runtime,
+loaded-add-on inventory, parser-owned index storage, packaged Official Wiki
+root, workspace script roots, opened project descriptors, and current
+`reforgerScriptTools.workbench.externalIndexMode`. Native discovery is available
+without an Enforce document and does not start the Workbench consent flow. VS
+Code receives a changed definition after a workspace-folder, root `.gproj`, or
+External Index mode change.
+
+For an external client, run **Reforger Script Tools: Copy MCP Configuration**
+and choose Codex TOML or generic MCP JSON. The resulting process does not depend
+on a running VS Code instance. Regenerate the external configuration after
+changing External Index mode, changing the opened project scope, or upgrading
+the extension; the versioned installed runtime path changes deliberately, and
+the extension does not edit third-party client configuration itself. In
+`loaded` mode MCP filters compatible caches by the persisted Workbench graph,
+while `all` publishes every compatible cached add-on and `none` disables
+external Game Data.
 The generated [MCP API Reference](mcp-api.md) is the inspectable agent-facing
 guide and router to exact per-tool contracts; standard `tools/list` remains
 authoritative at runtime.

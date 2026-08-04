@@ -76,7 +76,24 @@ These steps follow Bohemia Interactive's official
 
 ## MCP Server
 
-Work-in progress framework. Not fully complete but commands and API are currently exposed. See github documentation on usage.
+Installing the extension also installs its local MCP Runtime. VS Code discovers
+**Reforger Script Tools** automatically in Chat and manages the bundled stdio
+process; no `.vscode/mcp.json`, separate runtime, Rust toolchain, or open
+Enforce document is required. Official Wiki and workspace evidence remain
+available when Workbench integration is disabled or Workbench is closed.
+
+Native MCP discovery does not enable Workbench integration, contact the
+Workbench NET API, or install the managed bridge. Live Workbench tools remain
+in the same MCP catalogue and report their current availability through their
+typed results. Enable Workbench integration separately when live editor
+capabilities are wanted.
+
+For Codex or another MCP client outside VS Code, run **Reforger Script Tools:
+Copy MCP Configuration** and choose Codex TOML or generic MCP JSON. The copied
+entry launches the same bundled runtime with the current workspace and External
+Indexes scope. Copy it again after changing that scope or upgrading the
+extension because external clients do not receive VS Code's native definition
+updates.
 
 
 ## Settings

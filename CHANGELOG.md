@@ -4,6 +4,12 @@ All notable changes to the "reforger-script-tools" extension will be documented 
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [2.0.1] - 2026-08-04
+
+- Added automatic native VS Code discovery for the bundled MCP Runtime, with
+  workspace-aware refreshes and no separate MCP configuration required.
+- Kept MCP-only activation independent of Workbench consent and editor startup.
+
 ## [2.0.0] - 2026-08-03
 
 - Added automatic discovery and indexing for installed add-ons and base-game data.

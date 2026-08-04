@@ -162,6 +162,25 @@ The packaged executable also has an independent MCP mode. An MCP client starts
 its own local `stdio` process; it neither attaches to the editor-owned LSP nor
 requires VS Code to remain running. LSP and MCP reuse the same Rust language
 and evidence modules, so they do not establish competing semantic authorities.
+The extension contributes one native VS Code MCP collection and registers its
+definition provider before any Workbench startup gate. VS Code's MCP collection
+activation starts the extension narrowly when an agent needs the provider; the
+extension does not add unconditional startup activation. In an MCP-only window,
+editor and Workbench startup remain dormant until an Enforce document opens or
+the user explicitly requests Workbench enablement. Provider discovery therefore
+performs only deterministic launch-input resolution and does not prompt, write,
+build an index, contact Workbench, or install the managed handler package.
+
+The native definition and the external-client configuration command consume
+one TypeScript launch policy. It resolves the packaged executable, persisted
+loaded-add-on inventory, parser-owned index storage, External Index mode,
+Official Wiki Corpus, workspace script roots, and opened project descriptors.
+The definition version combines the bundled extension/runtime version with a
+SHA-256 identity of those launch inputs and project-descriptor contents. The
+provider republishes after workspace-folder, root project-descriptor, or
+External Index mode changes and recomputes the definition again when VS Code
+resolves a retained server. Missing runtime files produce an actionable failure;
+the provider never guesses a substitute executable.
 The MCP process consumes the persisted loaded-add-on inventory and parser-owned
 per-instance index storage. Extension-generated MCP launch configuration also
 captures the current `externalIndexMode` and any opened workspace project

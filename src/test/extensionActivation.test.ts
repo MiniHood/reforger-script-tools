@@ -6,7 +6,7 @@ import * as vscode from 'vscode';
 import { diagnosticsDefaults } from '../extensionConfig/diagnostics';
 import { gameDataCommands } from '../extensionConfig/gameData';
 import { languageClientCommands } from '../extensionConfig/languageClient';
-import { mcpCommands } from '../extensionConfig/mcp';
+import { mcpCommands, mcpServer } from '../extensionConfig/mcp';
 import { searchCommands } from '../extensionConfig/search';
 import {
 	workbenchCommands,
@@ -50,12 +50,54 @@ import {
 	hoverSemanticPaletteReport,
 } from '../languageClient/hoverSemanticPalette';
 import { RestartCoordinator } from '../languageClient/restartCoordinator';
+import { registerLanguageFeatureActivation } from '../languageClient/languageFeatureActivation';
 import {
 	semanticTokenBoundaryGuardDecorationOptions,
 	semanticTokenBoundaryRanges,
 } from '../languageClient/semanticTokenBoundaryGuardBridge';
 
 suite('extension activation', () => {
+	test('starts editor features only when an Enforce document becomes available', () => {
+		const opened = new vscode.EventEmitter<vscode.TextDocument>();
+		let starts = 0;
+		const activation = registerLanguageFeatureActivation(
+			{
+				textDocuments: [],
+				onDidOpenTextDocument: opened.event,
+			},
+			() => {
+				starts += 1;
+			},
+		);
+
+		assert.strictEqual(starts, 0);
+		opened.fire({ languageId: 'plaintext' } as vscode.TextDocument);
+		assert.strictEqual(starts, 0);
+		opened.fire({ languageId: 'enforce' } as vscode.TextDocument);
+		opened.fire({ languageId: 'enforce' } as vscode.TextDocument);
+		assert.strictEqual(starts, 1);
+
+		activation.dispose();
+		opened.dispose();
+	});
+
+	test('starts editor features immediately for an already-open Enforce document', () => {
+		const opened = new vscode.EventEmitter<vscode.TextDocument>();
+		let starts = 0;
+		const activation = registerLanguageFeatureActivation(
+			{
+				textDocuments: [{ languageId: 'enforce' } as vscode.TextDocument],
+				onDidOpenTextDocument: opened.event,
+			},
+			() => {
+				starts += 1;
+			},
+		);
+
+		assert.strictEqual(starts, 1);
+		activation.dispose();
+		opened.dispose();
+	});
 	test('deduplicates case-insensitive workspace script roots', () => {
 		const roots = process.platform === 'win32'
 			? ['C:\\Workspace\\Scripts', 'c:\\workspace\\scripts']
@@ -388,6 +430,26 @@ suite('extension activation', () => {
 			'**/Scripts/**/*.c',
 			'**/scripts/**/*.c',
 		]);
+	});
+
+	test('contributes the native MCP provider without unconditional startup activation', async () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		const providers = extension.packageJSON.contributes.mcpServerDefinitionProviders as Array<{
+			id: string;
+			label: string;
+		}>;
+
+		assert.deepStrictEqual(providers, [{
+			id: mcpServer.providerId,
+			label: mcpServer.label,
+		}]);
+		assert.ok(!extension.packageJSON.activationEvents.includes('*'));
+		assert.ok(!extension.packageJSON.activationEvents.includes('onStartupFinished'));
+		await extension.activate();
+		assert.strictEqual(extension.isActive, true);
 	});
 
 	test('uses Workbench enabled as the single integration setting', () => {

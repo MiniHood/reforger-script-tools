@@ -8,10 +8,12 @@ import {
 	registerLanguageClientFeatures,
 } from './languageClient/languageClient';
 import { registerMcpConfigurationCommand } from './mcp/mcpConfiguration';
+import { registerMcpServerDefinitionProvider } from './mcp/mcpServerDefinitionProvider';
 import { registerSearchUi } from './searchPrototype/searchUiPrototype';
 import { registerWorkbenchCompilerFeatures } from './workbenchNetApi/compiler/workbenchCompiler';
 import { createWorkbenchIntegration } from './workbenchNetApi/integration/workbenchIntegration';
 import { resolveLanguageServerPath } from './languageClient/serverPath';
+import { registerLanguageFeatureActivation } from './languageClient/languageFeatureActivation';
 
 export async function activate(context: vscode.ExtensionContext) {
 	initializeDiagnostics(context);
@@ -21,14 +23,14 @@ export async function activate(context: vscode.ExtensionContext) {
 		extensionMode: extensionModeName(context.extensionMode),
 		workspaceFolders: String(vscode.workspace.workspaceFolders?.length ?? 0),
 	});
+	registerMcpServerDefinitionProvider(context);
+	registerMcpConfigurationCommand(context);
 	const integration = context.extensionMode === vscode.ExtensionMode.Test
 		? undefined
 		: createWorkbenchIntegration(resolveLanguageServerPath(context));
-	const workbenchReady = integration?.start() ?? Promise.resolve(true);
+	const workbenchReady = integration?.whenReady() ?? Promise.resolve(true);
 	const workbenchStartupGate = integration?.whenConsentSettled() ?? Promise.resolve(true);
-	registerMcpConfigurationCommand(context);
 	registerSearchUi(context);
-	await workbenchStartupGate;
 	let refreshLanguageClientGameData: ReturnType<typeof registerLanguageClientFeatures> | undefined;
 	let workbenchConnectedBeforeLanguageClient = false;
 	registerWorkbenchCompilerFeatures(context, integration, () => {
@@ -38,15 +40,20 @@ export async function activate(context: vscode.ExtensionContext) {
 			workbenchConnectedBeforeLanguageClient = true;
 		}
 	});
-	refreshLanguageClientGameData = registerLanguageClientFeatures(
-		context,
-		workbenchReady,
-		workbenchStartupGate,
-	);
-	if (workbenchConnectedBeforeLanguageClient) {
-		void refreshLanguageClientGameData({ showProgress: false });
-	}
-	registerGameDataFeatures(context, () => refreshLanguageClientGameData?.());
+	registerGameDataFeatures(context, async () => {
+		await refreshLanguageClientGameData?.();
+	});
+	context.subscriptions.push(registerLanguageFeatureActivation(vscode.workspace, () => {
+		void integration?.start();
+		refreshLanguageClientGameData = registerLanguageClientFeatures(
+			context,
+			workbenchReady,
+			workbenchStartupGate,
+		);
+		if (workbenchConnectedBeforeLanguageClient) {
+			void refreshLanguageClientGameData({ showProgress: false });
+		}
+	}));
 	logLanguageClientStartupTiming(context, 'activationEnd');
 	diagnostic('activationEnd');
 }
