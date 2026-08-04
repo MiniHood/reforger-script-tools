@@ -27,7 +27,16 @@ export interface McpLaunchInputs {
 	officialWikiRoot?: string;
 	workspaceScripts?: string[];
 	dependencyProjectFiles?: string[];
-	dependencyProjectContents?: string[];
+}
+
+export interface McpDependencyProject {
+	path: string;
+	contents: string;
+}
+
+export interface McpLaunchPolicyInputs extends Omit<McpLaunchInputs, 'dependencyProjectFiles'> {
+	dependencyProjects?: McpDependencyProject[];
+	addonSourceInventoryContents?: string;
 }
 
 export interface McpLaunchPolicy {
@@ -59,12 +68,16 @@ export function buildMcpLaunchConfiguration(inputs: McpLaunchInputs): McpLaunch 
 	};
 }
 
-export function buildMcpLaunchPolicy(inputs: McpLaunchInputs): McpLaunchPolicy {
-	const launch = buildMcpLaunchConfiguration(inputs);
+export function buildMcpLaunchPolicy(inputs: McpLaunchPolicyInputs): McpLaunchPolicy {
+	const launch = buildMcpLaunchConfiguration({
+		...inputs,
+		dependencyProjectFiles: inputs.dependencyProjects?.map(project => project.path),
+	});
 	const scopeIdentity = createHash('sha256')
 		.update(JSON.stringify({
 			launch,
-			dependencyProjectContents: inputs.dependencyProjectContents ?? [],
+			addonSourceInventoryContents: inputs.addonSourceInventoryContents ?? '<unavailable>',
+			dependencyProjects: inputs.dependencyProjects ?? [],
 		}))
 		.digest('hex');
 	return { launch, scopeIdentity };
@@ -77,17 +90,22 @@ export async function resolveMcpLaunchPolicy(
 	if (!serverPath) {
 		throw new Error(mcpServer.runtimeUnavailableMessage);
 	}
+	const addonSourceInventory = path.join(
+		context.globalStorageUri.fsPath,
+		gameDataStorage.rootFolder,
+		gameDataStorage.inventoryFile,
+	);
 	const dependencyProjectFiles = await discoverWorkspaceProjectFiles();
-	const dependencyProjectContents = await Promise.all(
-		dependencyProjectFiles.map(readProjectIdentity),
+	const dependencyProjects = await Promise.all(
+		dependencyProjectFiles.map(async projectFile => ({
+			path: projectFile,
+			contents: await readEvidenceIdentity(projectFile),
+		})),
 	);
 	return buildMcpLaunchPolicy({
 		serverPath,
-		addonSourceInventory: path.join(
-			context.globalStorageUri.fsPath,
-			gameDataStorage.rootFolder,
-			gameDataStorage.inventoryFile,
-		),
+		addonSourceInventory,
+		addonSourceInventoryContents: await readEvidenceIdentity(addonSourceInventory),
 		addonIndexStorage: path.join(
 			context.globalStorageUri.fsPath,
 			languageClientIndexCache.rootFolder,
@@ -95,8 +113,7 @@ export async function resolveMcpLaunchPolicy(
 		externalIndexMode: readExternalIndexMode(),
 		officialWikiRoot: path.join(context.extensionPath, 'data', 'official-wiki'),
 		workspaceScripts: await discoverWorkspaceScriptRoots(),
-		dependencyProjectFiles,
-		dependencyProjectContents,
+		dependencyProjects,
 	});
 }
 
@@ -152,9 +169,9 @@ export function registerMcpConfigurationCommand(
 	));
 }
 
-async function readProjectIdentity(projectFile: string): Promise<string> {
+async function readEvidenceIdentity(filePath: string): Promise<string> {
 	try {
-		return await fs.readFile(projectFile, 'utf8');
+		return await fs.readFile(filePath, 'utf8');
 	} catch {
 		return '<unavailable>';
 	}

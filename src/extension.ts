@@ -33,18 +33,21 @@ export async function activate(context: vscode.ExtensionContext) {
 	registerSearchUi(context);
 	let refreshLanguageClientGameData: ReturnType<typeof registerLanguageClientFeatures> | undefined;
 	let workbenchConnectedBeforeLanguageClient = false;
-	registerWorkbenchCompilerFeatures(context, integration, () => {
+	const workbenchCompiler = registerWorkbenchCompilerFeatures(context, integration, () => {
 		if (refreshLanguageClientGameData) {
 			void refreshLanguageClientGameData({ showProgress: false });
 		} else {
 			workbenchConnectedBeforeLanguageClient = true;
 		}
 	});
+	const startWorkbenchFeatures = (): void => {
+		workbenchCompiler.activate();
+	};
 	registerGameDataFeatures(context, async () => {
 		await refreshLanguageClientGameData?.();
 	});
 	context.subscriptions.push(registerLanguageFeatureActivation(vscode.workspace, () => {
-		void integration?.start();
+		startWorkbenchFeatures();
 		refreshLanguageClientGameData = registerLanguageClientFeatures(
 			context,
 			workbenchReady,

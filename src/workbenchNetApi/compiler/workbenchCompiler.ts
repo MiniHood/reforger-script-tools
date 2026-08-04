@@ -119,6 +119,13 @@ export function workbenchStatusCommand(phase: WorkbenchUiPhase): string {
 		: workbenchCommands.validateScripts;
 }
 
+export function shouldRunWorkbenchProbe(
+	runtimeActivated: boolean,
+	workbenchEnabled: boolean,
+): boolean {
+	return runtimeActivated && workbenchEnabled;
+}
+
 interface WorkbenchCompilerFailure {
 	category: WorkbenchGatewayFailureCategory | 'save-failed';
 	recoveryHint: string;
@@ -128,7 +135,7 @@ export function registerWorkbenchCompilerFeatures(
 	context: vscode.ExtensionContext,
 	integration?: WorkbenchIntegrationCoordinator,
 	onWorkbenchGraphRefreshRequested?: () => void,
-): void {
+): { activate(): void } {
 	const startupValidationEnabled = context.extensionMode !== vscode.ExtensionMode.Test;
 	const serverPath = resolveLanguageServerPath(context);
 	let controller = new WorkbenchCompilerController(
@@ -158,6 +165,9 @@ export function registerWorkbenchCompilerFeatures(
 			}),
 		);
 	}
+	return {
+		activate: () => controller.activate(),
+	};
 }
 
 class WorkbenchCompilerController implements vscode.Disposable {
@@ -197,6 +207,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private validationCompletedThisSession = false;
 	private staleReason: string | undefined;
 	private bridgeInactive = false;
+	private runtimeActivated = false;
 	private disposed = false;
 
 	public constructor(
@@ -228,11 +239,17 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			),
 			vscode.commands.registerCommand(
 				workbenchCommands.validateScripts,
-				() => this.requestManualValidation(),
+				() => {
+					this.activate();
+					return this.requestManualValidation();
+				},
 			),
 			vscode.commands.registerCommand(
 				workbenchCommands.enableIntegration,
-				() => this.integration?.requestEnablement(),
+				() => {
+					this.activate();
+					return this.integration?.requestEnablement();
+				},
 			),
 			vscode.commands.registerCommand(
 				workbenchCommands.openCompilerDiagnostic,
@@ -240,7 +257,15 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			),
 			vscode.workspace.onDidChangeConfiguration(event => {
 				if (event.affectsConfiguration(workbenchConfig.section)) {
-					this.applyConfiguration();
+					const runtimeIntent = [
+						workbenchConfig.settings.enabled,
+						workbenchConfig.settings.host,
+						workbenchConfig.settings.port,
+						workbenchConfig.settings.saveOnIdle,
+					].some(setting => event.affectsConfiguration(
+						`${workbenchConfig.section}.${setting}`,
+					));
+					this.applyConfiguration(runtimeIntent);
 				}
 			}),
 			vscode.workspace.onDidChangeTextDocument(event => {
@@ -256,7 +281,16 @@ class WorkbenchCompilerController implements vscode.Disposable {
 				() => this.observation(),
 			));
 		}
-		this.applyConfiguration();
+		this.applyConfiguration(false);
+	}
+
+	public activate(): void {
+		if (this.disposed || this.runtimeActivated) {
+			return;
+		}
+		this.runtimeActivated = true;
+		void this.integration?.start();
+		this.applyConfiguration(false);
 	}
 
 	public armStartupValidation(): void {
@@ -279,14 +313,20 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.integration?.dispose();
 	}
 
-	private applyConfiguration(): void {
+	private applyConfiguration(explicitIntent: boolean): void {
 		if (this.disposed) {
 			return;
+		}
+		if (explicitIntent) {
+			this.runtimeActivated = true;
+			void this.integration?.start();
 		}
 		this.configurationGeneration += 1;
 		this.configuration = readConfiguration();
 		this.gateway = this.createGatewayForCurrentConfiguration();
-		this.integration?.onWorkbenchConfigurationChanged(this.configuration.enabled);
+		if (this.runtimeActivated) {
+			this.integration?.onWorkbenchConfigurationChanged(this.configuration.enabled);
+		}
 		this.clearProbeTimer();
 		this.clearValidationTimer();
 		this.pendingValidation = undefined;
@@ -299,7 +339,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			return;
 		}
 		this.setPhase('connecting');
-		this.scheduleProbe(0, this.configurationGeneration);
+		if (shouldRunWorkbenchProbe(this.runtimeActivated, this.configuration.enabled)) {
+			this.scheduleProbe(0, this.configurationGeneration);
+		}
 	}
 
 	private async requestManualValidation(): Promise<void> {
@@ -742,7 +784,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private async probe(generation: number): Promise<void> {
 		if (this.disposed
 			|| generation !== this.configurationGeneration
-			|| !this.configuration.enabled) {
+			|| !shouldRunWorkbenchProbe(this.runtimeActivated, this.configuration.enabled)) {
 			return;
 		}
 		if (this.validating) {
@@ -827,7 +869,8 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	}
 
 	private scheduleProbe(delayMs: number, generation: number): void {
-		if (this.disposed) {
+		if (this.disposed
+			|| !shouldRunWorkbenchProbe(this.runtimeActivated, this.configuration.enabled)) {
 			return;
 		}
 		this.clearProbeTimer();

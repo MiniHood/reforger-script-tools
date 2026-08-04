@@ -12,6 +12,7 @@ import {
 } from '../extensionConfig/workbench';
 import {
 	shouldRefreshWorkbenchGraph,
+	shouldRunWorkbenchProbe,
 	workbenchConnectionStarted,
 	workbenchStatusCommand,
 	type WorkbenchCompilerObservation,
@@ -27,6 +28,13 @@ const workbenchFixtureSource = 'class WorkbenchCompilerFixture\n{\n}\n';
 let temporaryScriptCounter = 0;
 
 suite('Workbench compiler status', () => {
+	test('keeps Workbench probing dormant until the user activates that runtime', () => {
+		assert.strictEqual(shouldRunWorkbenchProbe(false, true), false);
+		assert.strictEqual(shouldRunWorkbenchProbe(false, false), false);
+		assert.strictEqual(shouldRunWorkbenchProbe(true, false), false);
+		assert.strictEqual(shouldRunWorkbenchProbe(true, true), true);
+	});
+
 	test('routes the disabled status item to Workbench enablement', () => {
 		assert.strictEqual(
 			workbenchStatusCommand('disabled'),

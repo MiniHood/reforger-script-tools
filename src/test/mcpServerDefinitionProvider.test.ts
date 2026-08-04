@@ -1,4 +1,5 @@
 import * as assert from 'node:assert';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -52,8 +53,11 @@ suite('MCP server definition provider', () => {
 			externalIndexMode: 'loaded',
 			officialWikiRoot: 'C:\\Extensions & Tools\\data\\official-wiki',
 			workspaceScripts: ['C:\\Projects\\My Addon (Local)\\Scripts'],
-			dependencyProjectFiles: ['C:\\Projects\\My Addon (Local)\\addon.gproj'],
-			dependencyProjectContents: ['GameProject { ID "abc" }'],
+			dependencyProjects: [{
+				path: 'C:\\Projects\\My Addon (Local)\\addon.gproj',
+				contents: 'GameProject { ID "abc" }',
+			}],
+			addonSourceInventoryContents: '{"addons":[]}',
 		});
 		const first = createMcpServerDefinitionProvider({
 			extensionVersion: '2.0.1',
@@ -68,8 +72,11 @@ suite('MCP server definition provider', () => {
 				externalIndexMode: 'loaded',
 				officialWikiRoot: 'C:\\Extensions & Tools\\data\\official-wiki',
 				workspaceScripts: ['C:\\Projects\\My Addon (Local)\\Scripts'],
-				dependencyProjectFiles: ['C:\\Projects\\My Addon (Local)\\addon.gproj'],
-				dependencyProjectContents: ['GameProject { ID "abc" }'],
+				dependencyProjects: [{
+					path: 'C:\\Projects\\My Addon (Local)\\addon.gproj',
+					contents: 'GameProject { ID "abc" }',
+				}],
+				addonSourceInventoryContents: '{"addons":[]}',
 			}),
 		});
 
@@ -81,18 +88,26 @@ suite('MCP server definition provider', () => {
 	});
 
 	test('changes the definition version when material launch evidence changes', async () => {
-		const policy = (externalIndexMode: 'loaded' | 'none', descriptorContents: string) => buildMcpLaunchPolicy({
+		const policy = (
+			externalIndexMode: 'loaded' | 'none',
+			descriptorContents: string,
+			inventoryContents = '{"addons":[]}',
+		) => buildMcpLaunchPolicy({
 			serverPath: 'C:\\Extension\\reforger_language_server.exe',
 			addonSourceInventory: 'C:\\Storage\\graph.json',
 			addonIndexStorage: 'C:\\Storage\\addon-indexes',
 			externalIndexMode,
-			dependencyProjectFiles: ['C:\\Project\\addon.gproj'],
-			dependencyProjectContents: [descriptorContents],
+			dependencyProjects: [{ path: 'C:\\Project\\addon.gproj', contents: descriptorContents }],
+			addonSourceInventoryContents: inventoryContents,
 		});
-		const versionFor = async (externalIndexMode: 'loaded' | 'none', descriptorContents: string) => {
+		const versionFor = async (
+			externalIndexMode: 'loaded' | 'none',
+			descriptorContents: string,
+			inventoryContents?: string,
+		) => {
 			const provider = createMcpServerDefinitionProvider({
 				extensionVersion: '2.0.1',
-				resolveLaunch: async () => policy(externalIndexMode, descriptorContents),
+				resolveLaunch: async () => policy(externalIndexMode, descriptorContents, inventoryContents),
 			});
 			return (await provider.provideMcpServerDefinitions(new vscode.CancellationTokenSource().token))?.[0].version;
 		};
@@ -100,6 +115,10 @@ suite('MCP server definition provider', () => {
 		const loaded = await versionFor('loaded', 'GameProject { ID "abc" }');
 		assert.notStrictEqual(await versionFor('none', 'GameProject { ID "abc" }'), loaded);
 		assert.notStrictEqual(await versionFor('loaded', 'GameProject { ID "changed" }'), loaded);
+		assert.notStrictEqual(
+			await versionFor('loaded', 'GameProject { ID "abc" }', '{"addons":[{"guid":"changed"}]}'),
+			loaded,
+		);
 	});
 
 	test('uses the extension launch policy for native and exported configurations', async () => {
@@ -165,6 +184,72 @@ suite('MCP server definition provider', () => {
 		}
 	});
 
+	test('initializes the native definition, lists tools, and reads Official Wiki status', async () => {
+		const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), 'rst-native-mcp-acceptance-'));
+		try {
+			const extensionPath = path.resolve(__dirname, '..', '..');
+			const provider = createExtensionMcpServerDefinitionProvider(
+				extensionContext(extensionPath, storagePath, '2.0.1'),
+			);
+			const definition = (await provider.provideMcpServerDefinitions(
+				new vscode.CancellationTokenSource().token,
+			))?.[0];
+			assert.ok(definition);
+			const requests = [
+				{
+					jsonrpc: '2.0',
+					id: 1,
+					method: 'initialize',
+					params: {
+						protocolVersion: '2025-11-25',
+						capabilities: {},
+						clientInfo: { name: 'native-provider-acceptance', version: '1' },
+					},
+				},
+				{ jsonrpc: '2.0', method: 'notifications/initialized' },
+				{ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
+				{
+					jsonrpc: '2.0',
+					id: 3,
+					method: 'tools/call',
+					params: { name: 'official_wiki_status', arguments: {} },
+				},
+			];
+			const processResult = spawnSync(
+				definition.command,
+				definition.args,
+				{
+					input: `${requests.map(request => JSON.stringify(request)).join('\n')}\n`,
+					encoding: 'utf8',
+					timeout: 15_000,
+				},
+			);
+			assert.ifError(processResult.error);
+			assert.strictEqual(processResult.status, 0, processResult.stderr);
+			const responses = processResult.stdout
+				.split(/\r?\n/)
+				.filter(Boolean)
+				.map(line => JSON.parse(line) as {
+					id?: number;
+					result?: {
+						protocolVersion?: string;
+						tools?: Array<{ name: string }>;
+						structuredContent?: { available?: boolean };
+					};
+				});
+			assert.strictEqual(responses.find(response => response.id === 1)?.result?.protocolVersion, '2025-11-25');
+			assert.ok(responses.find(response => response.id === 2)?.result?.tools?.some(
+				tool => tool.name === 'official_wiki_status',
+			));
+			assert.strictEqual(
+				responses.find(response => response.id === 3)?.result?.structuredContent?.available,
+				true,
+			);
+		} finally {
+			await fs.rm(storagePath, { recursive: true, force: true });
+		}
+	});
+
 	test('resolves a retained definition against the current launch scope', async () => {
 		let policy = buildMcpLaunchPolicy({
 			serverPath: 'C:\\Extension\\reforger_language_server.exe',
@@ -198,11 +283,13 @@ suite('MCP server definition provider', () => {
 	test('publishes only material launch-scope changes through the provider event', () => {
 		const workspaceFolders = new vscode.EventEmitter<void>();
 		const configuration = new vscode.EventEmitter<vscode.ConfigurationChangeEvent>();
-		const projectDescriptors = new vscode.EventEmitter<void>();
+		const workspaceEvidence = new vscode.EventEmitter<void>();
+		const addonSourceInventory = new vscode.EventEmitter<void>();
 		const changes = createMcpLaunchScopeChangeEvent({
 			onDidChangeWorkspaceFolders: workspaceFolders.event,
 			onDidChangeConfiguration: configuration.event,
-			onDidChangeProjectDescriptors: projectDescriptors.event,
+			onDidChangeWorkspaceEvidence: workspaceEvidence.event,
+			onDidChangeAddonSourceInventory: addonSourceInventory.event,
 		});
 		const provider = createMcpServerDefinitionProvider({
 			extensionVersion: '2.0.1',
@@ -226,14 +313,16 @@ suite('MCP server definition provider', () => {
 		assert.strictEqual(changeCount, 0);
 		configuration.fire(configurationEvent(true));
 		workspaceFolders.fire();
-		projectDescriptors.fire();
-		assert.strictEqual(changeCount, 3);
+		workspaceEvidence.fire();
+		addonSourceInventory.fire();
+		assert.strictEqual(changeCount, 4);
 
 		subscription?.dispose();
 		changes.dispose();
 		workspaceFolders.dispose();
 		configuration.dispose();
-		projectDescriptors.dispose();
+		workspaceEvidence.dispose();
+		addonSourceInventory.dispose();
 	});
 });
 

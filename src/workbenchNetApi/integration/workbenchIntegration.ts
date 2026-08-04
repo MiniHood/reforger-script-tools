@@ -62,7 +62,6 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 	private startup: Promise<boolean> | undefined;
 	private startupResult: boolean | undefined;
 	private startupInProgress = false;
-	private startupRequested = false;
 	private enabled: boolean;
 	private connected = false;
 	private disconnectedAfterRequiredRestart = false;
@@ -91,13 +90,11 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 	}
 
 	public start(): Promise<boolean> {
-		this.startupRequested = true;
 		void this.beginStartup(false);
 		return this.ready;
 	}
 
 	public requestEnablement(): Promise<boolean> {
-		this.startupRequested = true;
 		if (this.enabled) {
 			return Promise.resolve(true);
 		}
@@ -146,7 +143,7 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 			return;
 		}
 		this.enabled = enabled;
-		if (enabled && this.startupRequested) {
+		if (enabled) {
 			const currentStartup = this.startup;
 			if (this.startupInProgress && currentStartup) {
 				void currentStartup.then(() => {

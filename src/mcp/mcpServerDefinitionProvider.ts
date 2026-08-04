@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { mcpServer } from '../extensionConfig/mcp';
 import { workbenchConfig } from '../extensionConfig/workbench';
+import { onDidConfirmLoadedAddonSourceInventory } from '../gameData/localSourceInventory';
 import { resolveMcpLaunchPolicy, type McpLaunchPolicy } from './mcpConfiguration';
 
 export interface McpServerDefinitionProviderOptions {
@@ -12,7 +13,8 @@ export interface McpServerDefinitionProviderOptions {
 export interface McpLaunchScopeChangeSources {
 	onDidChangeWorkspaceFolders: vscode.Event<unknown>;
 	onDidChangeConfiguration: vscode.Event<vscode.ConfigurationChangeEvent>;
-	onDidChangeProjectDescriptors: vscode.Event<unknown>;
+	onDidChangeWorkspaceEvidence: vscode.Event<unknown>;
+	onDidChangeAddonSourceInventory: vscode.Event<unknown>;
 }
 
 export interface McpLaunchScopeChanges extends vscode.Disposable {
@@ -45,7 +47,8 @@ export function createMcpLaunchScopeChangeEvent(
 	const emitter = new vscode.EventEmitter<void>();
 	const subscriptions = [
 		sources.onDidChangeWorkspaceFolders(() => emitter.fire()),
-		sources.onDidChangeProjectDescriptors(() => emitter.fire()),
+		sources.onDidChangeWorkspaceEvidence(() => emitter.fire()),
+		sources.onDidChangeAddonSourceInventory(() => emitter.fire()),
 		sources.onDidChangeConfiguration(event => {
 			if (event.affectsConfiguration(
 				`${workbenchConfig.section}.${workbenchConfig.settings.externalIndexMode}`,
@@ -83,22 +86,23 @@ export function createExtensionMcpServerDefinitionProvider(
 export function registerMcpServerDefinitionProvider(
 	context: vscode.ExtensionContext,
 ): void {
-	const projectDescriptorChanges = new vscode.EventEmitter<void>();
-	let projectDescriptorWatchers = watchWorkspaceProjectDescriptors(projectDescriptorChanges);
-	const refreshProjectDescriptorWatchers = vscode.workspace.onDidChangeWorkspaceFolders(() => {
-		disposeAll(projectDescriptorWatchers);
-		projectDescriptorWatchers = watchWorkspaceProjectDescriptors(projectDescriptorChanges);
+	const workspaceEvidenceChanges = new vscode.EventEmitter<void>();
+	let workspaceEvidenceWatchers = watchWorkspaceLaunchEvidence(workspaceEvidenceChanges);
+	const refreshWorkspaceEvidenceWatchers = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+		disposeAll(workspaceEvidenceWatchers);
+		workspaceEvidenceWatchers = watchWorkspaceLaunchEvidence(workspaceEvidenceChanges);
 	});
 	const launchScopeChanges = createMcpLaunchScopeChangeEvent({
 		onDidChangeWorkspaceFolders: vscode.workspace.onDidChangeWorkspaceFolders,
 		onDidChangeConfiguration: vscode.workspace.onDidChangeConfiguration,
-		onDidChangeProjectDescriptors: projectDescriptorChanges.event,
+		onDidChangeWorkspaceEvidence: workspaceEvidenceChanges.event,
+		onDidChangeAddonSourceInventory: onDidConfirmLoadedAddonSourceInventory,
 	});
 	context.subscriptions.push(
-		projectDescriptorChanges,
-		refreshProjectDescriptorWatchers,
+		workspaceEvidenceChanges,
+		refreshWorkspaceEvidenceWatchers,
 		launchScopeChanges,
-		{ dispose: () => disposeAll(projectDescriptorWatchers) },
+		{ dispose: () => disposeAll(workspaceEvidenceWatchers) },
 		vscode.lm.registerMcpServerDefinitionProvider(
 			mcpServer.providerId,
 			createExtensionMcpServerDefinitionProvider(context, launchScopeChanges.event),
@@ -106,18 +110,24 @@ export function registerMcpServerDefinitionProvider(
 	);
 }
 
-function watchWorkspaceProjectDescriptors(
+function watchWorkspaceLaunchEvidence(
 	emitter: vscode.EventEmitter<void>,
 ): vscode.Disposable[] {
 	return (vscode.workspace.workspaceFolders ?? []).flatMap(folder => {
-		const watcher = vscode.workspace.createFileSystemWatcher(
+		const projectWatcher = vscode.workspace.createFileSystemWatcher(
 			new vscode.RelativePattern(folder, '*.gproj'),
 		);
+		const scriptRootWatcher = vscode.workspace.createFileSystemWatcher(
+			new vscode.RelativePattern(folder, '{Scripts,scripts}'),
+		);
 		return [
-			watcher,
-			watcher.onDidCreate(() => emitter.fire()),
-			watcher.onDidChange(() => emitter.fire()),
-			watcher.onDidDelete(() => emitter.fire()),
+			projectWatcher,
+			projectWatcher.onDidCreate(() => emitter.fire()),
+			projectWatcher.onDidChange(() => emitter.fire()),
+			projectWatcher.onDidDelete(() => emitter.fire()),
+			scriptRootWatcher,
+			scriptRootWatcher.onDidCreate(() => emitter.fire()),
+			scriptRootWatcher.onDidDelete(() => emitter.fire()),
 		];
 	});
 }

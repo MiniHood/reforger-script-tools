@@ -176,11 +176,12 @@ one TypeScript launch policy. It resolves the packaged executable, persisted
 loaded-add-on inventory, parser-owned index storage, External Index mode,
 Official Wiki Corpus, workspace script roots, and opened project descriptors.
 The definition version combines the bundled extension/runtime version with a
-SHA-256 identity of those launch inputs and project-descriptor contents. The
-provider republishes after workspace-folder, root project-descriptor, or
-External Index mode changes and recomputes the definition again when VS Code
-resolves a retained server. Missing runtime files produce an actionable failure;
-the provider never guesses a substitute executable.
+SHA-256 identity of those launch inputs, the persisted inventory contents, and
+project-descriptor contents. The provider republishes after workspace-folder,
+workspace `Scripts` root, root project-descriptor, persisted loaded-add-on
+inventory, or External Index mode changes and recomputes the definition again
+when VS Code resolves a retained server. Missing runtime files produce an
+actionable failure; the provider never guesses a substitute executable.
 The MCP process consumes the persisted loaded-add-on inventory and parser-owned
 per-instance index storage. Extension-generated MCP launch configuration also
 captures the current `externalIndexMode` and any opened workspace project
@@ -328,11 +329,13 @@ directory. The VS Code extension owns a one-time first-install prompt
 controlled by the unified `reforgerScriptTools.workbench.enabled` setting,
 which defaults to false. That setting is the sole durable approval state:
 accepting the prompt enables it, and enabling it directly is equivalent to
-approval. On an installation without an explicit setting value, activation
-waits for the prompt answer before registering Workbench compiler features,
-starting the language server, showing indexing progress, installing bridge
-scripts, or building any index. Declining records the setting as disabled and
-then permits the ordinary non-Workbench language-server startup. The managed
+approval. MCP-provider activation registers the stable compiler commands but
+keeps Workbench probing and bridge startup dormant. Opening an Enforce document
+or explicitly using a Workbench command or setting activates that runtime. On
+an installation without an explicit setting value, Enforce activation waits for
+the prompt answer before starting the language server, showing indexing progress,
+installing bridge scripts, or building any index. Declining records the setting
+as disabled and then permits the ordinary non-Workbench language-server startup. The managed
 manifest remains the file-ownership and version record. Public MCP cannot
 create that first manifest; its explicit installer may maintain an existing
 managed installation. A prior
