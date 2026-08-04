@@ -452,6 +452,20 @@ suite('extension activation', () => {
 		assert.strictEqual(extension.isActive, true);
 	});
 
+	test('contributes the three stable portable Agent Skill entry points', () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+
+		const skills = extension.packageJSON.contributes.chatSkills as Array<{ path: string }>;
+		assert.deepStrictEqual(skills, [
+			{ path: './skills/reforger/SKILL.md' },
+			{ path: './skills/reforger-deep-dive/SKILL.md' },
+			{ path: './skills/reforger-workbench-edit/SKILL.md' },
+		]);
+	});
+
 	test('uses Workbench enabled as the single integration setting', () => {
 		const extension = vscode.extensions.all.find(
 			candidate => candidate.packageJSON.name === 'reforger-script-tools',

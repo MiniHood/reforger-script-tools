@@ -171,6 +171,18 @@ the user explicitly requests Workbench enablement. Provider discovery therefore
 performs only deterministic launch-input resolution and does not prompt, write,
 build an index, contact Workbench, or install the managed handler package.
 
+The extension also contributes three repository-owned Agent Skills through VS
+Code's declarative `chatSkills` interface: `reforger`,
+`reforger-deep-dive`, and `reforger-workbench-edit`. Their Open Agent Skills
+files are packaged under `skills/` with an exact release allowlist. Skill
+discovery is manifest-owned and does not activate the extension, enable
+Workbench, contact its NET API, install a bridge, or mutate editor state. The
+skills describe evidence sequencing, safety gates, stopping conditions, and
+output contracts while the generated MCP catalogue and live `tools/list`
+remain authoritative for tool schemas. Relative references stay inside the
+packaged library so the same files remain portable to other skill-aware MCP
+clients without depending on VS Code prompt behavior.
+
 The native definition and the external-client configuration command consume
 one TypeScript launch policy. It resolves the packaged executable, persisted
 loaded-add-on inventory, parser-owned index storage, External Index mode,
@@ -493,6 +505,7 @@ raw NET API payloads, property values, confirmation tokens, or source text.
 | `src/gameData/` | Workbench-loaded graph publication and source-refresh UI | PAC parsing, add-on discovery, or semantic analysis |
 | `src/languageClient/` | Server lifecycle, transport, file notifications, and thin editor bridges | Syntax, lookup, completion ranking, or type reasoning |
 | `src/mcp/` | MCP client configuration from the packaged runtime and stable source/cache inputs | Protocol serving, indexing, or semantic queries |
+| `skills/` | Portable Agent Skill workflows and focused references contributed by the extension | MCP schemas, runtime state, client-specific invocation syntax, or Workbench enablement |
 | `src/workbenchNetApi/gateway/` | Thin TypeScript process bridge from editor compiler features to the bundled Rust Workbench Gateway | NET API framing, VS Code UI, raw endpoint dispatch, or Enfusion language decisions |
 | `src/workbenchNetApi/compiler/` | VS Code scheduling, compiler diagnostic rendering, and Workbench status UI | NET API framing, endpoint discovery, or language-engine diagnostics |
 | `src/workbenchNetApi/integration/` | Setting-owned approval, bootstrap/maintenance orchestration, and progress/notification presentation | Registry/profile/process implementation, NET API framing, or language/index decisions |

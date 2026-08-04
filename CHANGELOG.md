@@ -9,6 +9,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - Added automatic native VS Code discovery for the bundled MCP Runtime, with
   workspace-aware refreshes and no separate MCP configuration required.
 - Kept MCP-only activation independent of Workbench consent and editor startup.
+- Packaged portable `reforger`, `reforger-deep-dive`, and
+  `reforger-workbench-edit` Agent Skills for native VS Code discovery, with
+  validated references and generated MCP-contract checks.
 
 ## [2.0.0] - 2026-08-03
 

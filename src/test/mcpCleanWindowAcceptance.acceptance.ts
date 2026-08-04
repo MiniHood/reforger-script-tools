@@ -1,4 +1,6 @@
 import * as assert from 'node:assert';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { mcpServer } from '../extensionConfig/mcp';
 import {
@@ -20,6 +22,27 @@ suite('native MCP clean-window acceptance', () => {
 			candidate => candidate.packageJSON.name === 'reforger-script-tools',
 		);
 		assert.ok(extension, 'development extension is discoverable');
+		assert.strictEqual(extension.isActive, false);
+
+		const skills = extension.packageJSON.contributes.chatSkills as Array<{ path: string }>;
+		assert.deepStrictEqual(skills, [
+			{ path: './skills/reforger/SKILL.md' },
+			{ path: './skills/reforger-deep-dive/SKILL.md' },
+			{ path: './skills/reforger-workbench-edit/SKILL.md' },
+		]);
+		for (const skill of skills) {
+			await fs.access(path.join(extension.extensionPath, skill.path));
+		}
+		const commands = await vscode.commands.getCommands(true);
+		assert.ok(commands.includes('workbench.action.chat.configure.skills'));
+		const skillDiscovery = vscode.commands.executeCommand('workbench.action.chat.configure.skills');
+		await new Promise(resolve => setTimeout(resolve, 250));
+		assert.strictEqual(extension.isActive, false);
+		await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
+		await Promise.race([
+			Promise.resolve(skillDiscovery).catch(() => undefined),
+			new Promise(resolve => setTimeout(resolve, 250)),
+		]);
 		assert.strictEqual(extension.isActive, false);
 
 		const discovery = vscode.commands.executeCommand('workbench.mcp.listServer');

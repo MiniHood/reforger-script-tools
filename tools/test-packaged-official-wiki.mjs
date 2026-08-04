@@ -1,8 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { unzipSync } from 'fflate';
+
+import { expectedAgentSkillContributions, expectedAgentSkillFiles } from './agent-skills.mjs';
 
 const root = process.cwd();
 const sandbox = mkdtempSync(join(tmpdir(), 'reforger-packaged-wiki-'));
@@ -28,6 +30,7 @@ try {
     throw new Error('The VSIX Official Wiki Corpus differs from the authoritative source tree.');
   }
   if (!Object.hasOwn(installedPages, 'index.md')) throw new Error('The authoritative index.md is missing from the VSIX.');
+  assertInstalledAgentSkills(join(installed, 'extension'));
 
   const executable = join(installed, 'extension', 'dist', 'server', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'reforger_language_server.exe' : 'reforger_language_server');
   const wikiSession = runMcp(executable, [], clientWorkingDirectory, [
@@ -105,7 +108,7 @@ try {
       throw new Error(`Installed MCP output leaked a physical path: ${session.stdout}`);
     }
   }
-  console.log(`Verified ${Object.keys(sourcePages).length} byte-identical packaged Markdown files, 87 installed tools, and independent workspace and Official Wiki workflows.`);
+  console.log(`Verified ${Object.keys(sourcePages).length} byte-identical packaged Wiki files, ${expectedAgentSkillFiles.length} reachable Agent Skill files, 87 installed tools, and independent workspace and Official Wiki workflows.`);
 } finally {
   rmSync(sandbox, { recursive: true, force: true });
 }
@@ -116,6 +119,48 @@ function markdownFiles(directory) {
     if (entry.isDirectory()) return Object.entries(markdownFiles(path)).map(([child, contents]) => [join(entry.name, child), contents]);
     return entry.isFile() && entry.name.endsWith('.md') ? [[entry.name, readFileSync(path)]] : [];
   }).map(([path, contents]) => [path.replaceAll('\\', '/'), contents]).sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function assertInstalledAgentSkills(installedExtension) {
+  const packageJson = JSON.parse(readFileSync(join(installedExtension, 'package.json'), 'utf8'));
+  const contributions = packageJson.contributes?.chatSkills ?? [];
+  if (JSON.stringify(contributions) !== JSON.stringify(expectedAgentSkillContributions)) {
+    throw new Error('The installed extension does not contribute the exact Agent Skill entry points.');
+  }
+
+  const installedSkillsRoot = resolve(installedExtension, 'skills');
+  const reachable = new Set();
+  const pending = contributions.map(contribution => contribution.path.replace(/^\.\//, ''));
+  while (pending.length > 0) {
+    const source = pending.shift();
+    if (reachable.has(source)) continue;
+    const sourcePath = resolve(installedExtension, source);
+    const relativeToSkills = relative(installedSkillsRoot, sourcePath);
+    if (relativeToSkills === '..' || relativeToSkills.startsWith(`..${sep}`)) {
+      throw new Error(`Installed Agent Skill entry escapes the library: ${source}`);
+    }
+    const contents = readFileSync(sourcePath);
+    const sourceContents = readFileSync(resolve(root, source));
+    if (!contents.equals(sourceContents)) {
+      throw new Error(`Installed Agent Skill differs from its repository source: ${source}`);
+    }
+    reachable.add(source.replaceAll('\\', '/'));
+    const text = contents.toString('utf8');
+    for (const match of text.matchAll(/\[[^\]]*\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g)) {
+      const reference = match[1];
+      if (reference.startsWith('#') || /^[a-z][a-z0-9+.-]*:/i.test(reference)) continue;
+      const targetPath = resolve(dirname(sourcePath), decodeURIComponent(reference.split('#', 1)[0]));
+      const targetRelativeToSkills = relative(installedSkillsRoot, targetPath);
+      if (targetRelativeToSkills === '..' || targetRelativeToSkills.startsWith(`..${sep}`)) {
+        throw new Error(`Installed Agent Skill reference escapes the library: ${source} -> ${reference}`);
+      }
+      pending.push(relative(installedExtension, targetPath).replaceAll('\\', '/'));
+    }
+  }
+
+  if (JSON.stringify([...reachable].sort()) !== JSON.stringify([...expectedAgentSkillFiles].sort())) {
+    throw new Error(`Installed Agent Skill reference graph is incomplete: ${[...reachable].sort().join(', ')}`);
+  }
 }
 
 function run(command, args) {
