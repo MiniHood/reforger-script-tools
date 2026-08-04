@@ -126,6 +126,13 @@ export function shouldRunWorkbenchProbe(
 	return runtimeActivated && workbenchEnabled;
 }
 
+export function shouldActivateWorkbenchRuntime(
+	explicitIntent: boolean,
+	workbenchEnabled: boolean,
+): boolean {
+	return explicitIntent && workbenchEnabled;
+}
+
 interface WorkbenchCompilerFailure {
 	category: WorkbenchGatewayFailureCategory | 'save-failed';
 	recoveryHint: string;
@@ -317,12 +324,13 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		if (this.disposed) {
 			return;
 		}
-		if (explicitIntent) {
+		this.configurationGeneration += 1;
+		this.configuration = readConfiguration();
+		if (!this.runtimeActivated
+			&& shouldActivateWorkbenchRuntime(explicitIntent, this.configuration.enabled)) {
 			this.runtimeActivated = true;
 			void this.integration?.start();
 		}
-		this.configurationGeneration += 1;
-		this.configuration = readConfiguration();
 		this.gateway = this.createGatewayForCurrentConfiguration();
 		if (this.runtimeActivated) {
 			this.integration?.onWorkbenchConfigurationChanged(this.configuration.enabled);

@@ -399,10 +399,12 @@ the per-user `enfusion://` URL handler at
 Workbench executable, base-game add-ons directory, and `ArmaReforger.gproj`,
 with every path and the `%1` URI argument quoted. Setup then either asks the
 user to restart an open Workbench or completes without launching a closed
-Workbench. Until that first prompt is answered, activation does not
-register the Workbench compiler features, start the language server, show the
-indexing progress indicator, install bridge scripts, or build indexes. A
-decline stores the Workbench setting as `false`, after which the normal
+Workbench. MCP-provider activation registers stable compiler commands but does
+not probe Workbench or start bridge maintenance. Until the first prompt caused
+by Enforce activation or an explicit Workbench action is answered, activation
+does not start the language server, show the indexing progress indicator,
+install bridge scripts, or build indexes. A decline stores the Workbench
+setting as `false`, after which the normal
 non-Workbench language-server and indexing startup may proceed. Later enabled
 activations maintain or upgrade the bridge without prompting, leave
 already-correct registry values untouched, and repair a missing or stale

@@ -12,6 +12,7 @@ import {
 } from '../extensionConfig/workbench';
 import {
 	shouldRefreshWorkbenchGraph,
+	shouldActivateWorkbenchRuntime,
 	shouldRunWorkbenchProbe,
 	workbenchConnectionStarted,
 	workbenchStatusCommand,
@@ -33,6 +34,12 @@ suite('Workbench compiler status', () => {
 		assert.strictEqual(shouldRunWorkbenchProbe(false, false), false);
 		assert.strictEqual(shouldRunWorkbenchProbe(true, false), false);
 		assert.strictEqual(shouldRunWorkbenchProbe(true, true), true);
+	});
+
+	test('does not activate Workbench for a transition to disabled', () => {
+		assert.strictEqual(shouldActivateWorkbenchRuntime(true, false), false);
+		assert.strictEqual(shouldActivateWorkbenchRuntime(false, true), false);
+		assert.strictEqual(shouldActivateWorkbenchRuntime(true, true), true);
 	});
 
 	test('routes the disabled status item to Workbench enablement', () => {
