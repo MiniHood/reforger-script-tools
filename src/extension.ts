@@ -40,14 +40,11 @@ export async function activate(context: vscode.ExtensionContext) {
 			workbenchConnectedBeforeLanguageClient = true;
 		}
 	});
-	const startWorkbenchFeatures = (): void => {
-		workbenchCompiler.activate();
-	};
 	registerGameDataFeatures(context, async () => {
 		await refreshLanguageClientGameData?.();
 	});
 	context.subscriptions.push(registerLanguageFeatureActivation(vscode.workspace, () => {
-		startWorkbenchFeatures();
+		workbenchCompiler.activate();
 		refreshLanguageClientGameData = registerLanguageClientFeatures(
 			context,
 			workbenchReady,

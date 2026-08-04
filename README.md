@@ -51,9 +51,10 @@ Enfusion Script.
 
 ## Workbench Integration
 
-Workbench integration is disabled by default. On first activation, the
-extension asks whether it may enable the integration and install its managed
-bridge. Approval enables Workbench's local NET API, registers the per-user
+Workbench integration is disabled by default. On the first Enforce activation
+or explicit Workbench action, the extension asks whether it may enable the
+integration and install its managed bridge. Approval enables Workbench's local
+NET API, registers the per-user
 `enfusion://` handler, installs the bridge, and changes
 `reforgerScriptTools.workbench.enabled` to `true`. That setting is also the
 durable approval for future bridge updates; no separate approval state is
