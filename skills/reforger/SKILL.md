@@ -5,7 +5,7 @@ description: Ground Arma Reforger mod work in the Official Wiki, indexed Game Da
 
 # Reforger
 
-Run Reforger work through one evidence pipeline: discover current facts, design and code from those facts, pass the native compiler, reload Workbench, then test live behavior and inspect logs.
+Run Reforger work through one evidence pipeline: discover current facts, design and code from those facts, pass the native compiler, review the compiled change, re-establish the compiler gate after any edit, then reload Workbench for final live-behavior testing.
 
 ## Authority map
 
@@ -58,17 +58,36 @@ Complete this phase when the requested behavior is implemented end to end and ev
 
 Complete this phase only when the latest native validation succeeds and every diagnostic page is accounted for. A failed or unavailable compiler blocks reload and runtime success claims.
 
-### 5. Reload and test live
+### 5. Review the compiled change
 
-- After the compiler gate passes for an implementation request, follow the reload and runtime route in the MCP router.
+- Review only after the compiler gate passes, so the review evaluates a coherent, compiler-accepted implementation.
+- Check the final diff against the request, repository instructions, owning-surface boundaries, API ledger, and relevant edge cases. Run any review checks required by the repository.
+- Resolve every actionable finding before live testing.
+- If review causes any code, script, config, prefab, resource, or other behavior-affecting change, return to phase 4. Pass a fresh uncursored compiler validation, then review the changed surface again.
+
+Complete this phase when no actionable findings remain and the reviewed artifacts are exactly those covered by the latest successful compiler result.
+
+### 6. Confirm the final compiler state
+
+- Confirm that no behavior-affecting artifact changed after the latest successful native validation.
+- If nothing changed, retain that compiler result; do not compile again merely because the workflow entered this phase.
+- If anything changed, return to phase 4 and repeat the compiler and review loop until the reviewed state and compiler-accepted state are identical.
+- Do not reload Workbench while the compiler result is stale, failed, incomplete, or older than a relevant edit.
+
+Complete this phase when the exact implementation about to be reloaded has both passed review and passed the latest complete compiler validation.
+
+### 7. Reload and test live
+
+- Treat reload as final behavioral acceptance after phases 4 through 6, not as the inner implementation feedback loop. Follow the reload and runtime route in the MCP router.
 - Confirm project context, then call `workbench_reload` only within the authorized implementation workflow. Account for Save All and active-world persistence.
 - Require `workbench_reload.reloadDispatched`, a replacement `workbench_reload.runtimeGeneration`, and the persistence fields `workbench_reload.worldSavedBeforeReload` and `workbench_reload.worldSaveStatus`.
 - Inspect fresh Workbench state and reload-scoped logs, then exercise the requested behavior in each feasible editor or runtime role.
 - Treat play-session command acceptance as a transition request, not behavioral proof. Stop any play session started for the task and inspect final logs.
+- If live testing leads to any behavior-affecting change, invalidate the reload result and return to phase 4. Pass the compiler and review gates again before the next reload.
 
 Complete this phase when reload is confirmed, feasible behavior has direct observation, fresh logs are reviewed, and the editor is returned to the appropriate state.
 
-### 6. Report
+### 8. Report
 
 Lead with the result. Report changed artifacts, Wiki/Game Data/workspace evidence, parser checks, native compiler outcome, reload outcome, live observations, log findings, and remaining checks as separate claims. Cite exact Wiki paths and lines, Game Data symbols or source ranges, workspace files and lines, and observed Workbench state.
 
@@ -77,7 +96,7 @@ Lead with the result. Report changed artifacts, Wiki/Game Data/workspace evidenc
 - **Explain or API research:** complete discovery without editing, compiling, reloading, or mutating live state.
 - **Diagnose:** establish the failure mechanism with read-only evidence. Reload only for a requested fix or explicit experiment.
 - **Review:** lead with findings by severity; verify each touched engine API and owning surface. Validate only when review authorization includes it.
-- **Implement:** complete all six phases. If Workbench is disabled or unavailable, finish safe offline source work and report the blocked compiler, reload, and runtime gates.
+- **Implement:** complete all eight phases. If Workbench is disabled or unavailable, finish safe offline source work and report the blocked compiler, review, reload, and runtime gates.
 - **Multiplayer:** test dedicated server, listen server, owning client, non-owning client, streaming, and join-in-progress where the environment permits.
 - **Live edit:** use the separate `reforger-workbench-edit` skill and complete the mutation contract for every target.
 
