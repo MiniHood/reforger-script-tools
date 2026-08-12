@@ -8,6 +8,9 @@ use crate::game_data_inspection::{
     inspect, read_source as read_source_evidence, GameDataInspectionError,
     GameDataInspectionOutput, GameDataSourceReadRequest,
 };
+use crate::game_data_intent::{
+    research_game_data, GameDataIntentError, GameDataIntentRequest, GameDataIntentResult,
+};
 use crate::game_data_research::{
     list_members, GameDataExamplePage, GameDataExampleSearchRequest, GameDataMemberPage,
     GameDataMemberRequest, GameDataRelationshipPage, GameDataRelationshipRequest,
@@ -441,6 +444,16 @@ impl GameDataCatalogue {
             .map_err(GameDataCatalogueTextSearchError::TextSearch)
     }
 
+    pub fn research_intent(
+        &self,
+        control: &IndexBuildControl,
+        request: GameDataIntentRequest,
+    ) -> Result<GameDataIntentResult, GameDataCatalogueResearchError> {
+        let (revision, index, starts, addon_map) = self.research_snapshot(control)?;
+        research_game_data(&index, &starts, &addon_map, control, &revision, request)
+            .map_err(GameDataCatalogueResearchError::Intent)
+    }
+
     pub fn inspect(
         &self,
         control: &IndexBuildControl,
@@ -757,6 +770,7 @@ pub enum GameDataCatalogueResearchError {
     Initialization(String),
     Unavailable,
     SourceEvidenceUnavailable,
+    Intent(GameDataIntentError),
     Research(GameDataResearchError),
 }
 

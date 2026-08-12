@@ -28,6 +28,14 @@ A semantic query over extracted Reforger game-data declarations and their
 language identities, kinds, signatures, relationships, and source locations.
 _Avoid_: game-data text search, file grep, wiki search
 
+**Game Data Intent Research**:
+The compact MCP-first declaration route for an exact identifier or a
+natural-language need. It returns one primary declaration, no more than two
+alternatives, and no more than five direct members that match the query. It
+does not include source text, examples, or relationships unless the caller
+continues through an explicit narrower tool.
+_Avoid_: bulk symbol dump, automatic evidence crawl, arbitrary tool batch
+
 **Game Data Catalogue Revision**:
 The immutable fingerprint identifying the exact extracted game-data source and
 semantic catalogue used by one MCP Runtime. It binds searches, Symbol

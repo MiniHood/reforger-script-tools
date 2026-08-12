@@ -215,8 +215,14 @@ live graph adds Workbench-only add-ons without dropping project dependencies.
 A later accepted graph or mode change
 also disposes the existing child and republishes Search Scope, so a retained
 Search panel cannot continue showing the preceding catalogue.
-`game_data_status` publishes the currently available scope; Game Data symbol
-and text searches accept a set of loaded add-on GUIDs, and every returned
+`game_data_status` publishes the currently available scope. The MCP-facing
+`research_game_data` route resolves one exact identifier or natural-language
+declaration need inside Rust and returns one primary declaration, at most two
+compact alternatives, and at most five query-relevant direct members. It does
+not automatically attach examples, relationships, or source text, so a caller
+continues only when the compact result reports that refinement is required.
+Game Data intent, symbol, and text searches accept a set of loaded add-on GUIDs,
+and every returned
 source handoff retains its add-on GUID so colliding logical paths remain
 unambiguous. Loaded add-on indexing also derives an optional alpha-weighted
 average from the Workbench-owned source root's `thumbnail.png`; status exposes

@@ -16,7 +16,8 @@ Use this reference before the first Reforger MCP call. Choose a route by the cla
 | Needed evidence | Start | Continue |
 | --- | --- | --- |
 | Reforger concept or workflow | `official_wiki_status` when uncertain, then `search_official_wiki` | `read_official_wiki` |
-| Exact engine declaration | `game_data_status` when scope or health is uncertain, then `search_game_data_symbols` | `inspect_game_data_symbol`, members, relationships, examples, source |
+| Engine declaration from a natural-language need or suspected name | `research_game_data` | Stop on a resolved sufficient result; use one targeted follow-up only for a missing fact |
+| Exact symbol filtering or enumeration | `search_game_data_symbols` | `inspect_game_data_symbol` only when the search result lacks a required declaration fact |
 | Offline prefab/config/layout/world/resource identity | `search_game_data_resources` | Live resource inspection when registration or effective state matters |
 | Add-on declaration or usage | `search_workspace_symbols` | `inspect_workspace_symbol`, members, relationships, source |
 | Cross-source override, inheritance, or modded-class fact | Semantic search for the exact anchor | `query_source_symbol_relationships` |
@@ -38,16 +39,14 @@ Complete the route with a canonical source, corpus revision, and exact line rang
 
 ## Game Data declaration route
 
-1. Call `game_data_status` when availability, coverage, version, cache health, or scope is uncertain. Require `game_data_status.available` true and retain `game_data_status.catalogueRevision`.
-2. Call `search_game_data_symbols` with exact name, owner, kinds, add-on scope, or source category filters when useful.
-3. Select by qualified name, kind, signature, owner, provenance, and source category. Copy `search_game_data_symbols.inspectInput` or `search_game_data_symbols.symbolRef` unchanged to `inspect_game_data_symbol`.
-4. Verify kind, qualified name, signature, modifiers, attributes, base/container type, conditional context, accessibility, declaration range, and provenance as relevant.
-5. When `inspect_game_data_symbol.membersTruncated` is true or a needed member is absent, call `list_game_data_symbol_members` with the same symbol reference and continue `list_game_data_symbol_members.nextCursor` until found or exhausted.
-6. Query relationships only with supported values. Use `query_game_data_symbol_relationships` for indexed Game Data edges and `query_source_symbol_relationships` for cross-source edges, copying returned anchors unchanged.
-7. Use `search_game_data_examples` only for its published topics. Prefer handwritten usage and verify declarations separately.
-8. Copy `search_game_data_symbols.readSourceInput` unchanged to `read_game_data_source`; continue at `read_game_data_source.nextStartLine` when required evidence crosses a bounded read.
+1. Start with `research_game_data` for a natural-language need, a suspected identifier, or an exact identifier. Pass the user's need as one concise query and add `addonGuids` only when the task already establishes an add-on scope.
+2. Treat `status: resolved` plus `followUp: none` as a stop signal when `primary` contains the declaration facts needed for the current claim. Do not call status, search, inspect, members, relationships, examples, or source merely to collect more context.
+3. On `status: ambiguous` or `notFound`, use `matchedTerms` and at most two `alternatives` to refine the query once. Call `game_data_status` only when availability, coverage, version, cache health, or scope is genuinely uncertain.
+4. Use `search_game_data_symbols` instead when the task requires exact filtering or enumeration across multiple symbols. Use `inspect_game_data_symbol` only when the compact primary result lacks a declaration fact required by the API ledger.
+5. Use `list_game_data_symbol_members` only when a specifically required member is absent from the primary result's `relevantMembers`. Query relationships only when inheritance, overrides, callers, references, or another edge is itself a required claim.
+6. Read source only when declaration metadata cannot establish the required behavior or usage. Copy the returned `readSourceInput` unchanged and continue a bounded read only while the needed evidence crosses the boundary.
 
-Complete the route when exact declarations and every relationship relevant to use are proven. Search results alone are discovery, not verification.
+Complete the route as soon as the exact declaration facts and only the relationships or usage evidence required by the current task are proven. The compact resolved result is verification evidence; ambiguity is discovery evidence.
 
 ### API ledger
 

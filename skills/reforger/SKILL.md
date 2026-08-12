@@ -34,7 +34,7 @@ Complete this phase when the mode, surfaces, local constraints, and write author
 
 - Before the first Reforger MCP call, read the [MCP router](references/mcp-router.md) and follow its response protocol and matching route to completion.
 - Read [Official Wiki routes](references/wiki-routes.md) to choose narrow documentation searches.
-- Establish concepts from the Wiki, exact engine declarations from Game Data, and existing add-on behavior from workspace evidence. Treat supplied or suspected API names as search terms until Game Data verifies them.
+- Establish concepts from the Wiki, exact engine declarations from Game Data, and existing add-on behavior from workspace evidence. Start uncertain or suspected APIs with the compact `research_game_data` route and stop when its resolved primary result supplies the facts the task needs.
 - Build the API ledger required by the [evidence contract](references/evidence-contract.md). Include every engine-facing identifier that proposed code will emit.
 
 Complete this phase when every material concept and existing-code claim has evidence, and every proposed engine identifier is verified or explicitly blocked. Missing Wiki evidence blocks only claims owned by documented concepts or workflows; directly observed Workbench/compiler behavior remains the higher authority for language and editor facts. Missing Game Data limits output to generic architecture or placeholder pseudocode without unverified engine identifiers.

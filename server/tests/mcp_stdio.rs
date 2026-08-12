@@ -136,9 +136,9 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .and_then(Value::as_str)
         .expect("server instructions");
     for guidance in [
-        "exact declarations",
+        "research_game_data",
+        "compact primary result",
         "workspace symbols",
-        "implementation examples",
         "Official Wiki",
         "copy inspection and read handoffs unchanged",
         "full-text search",
@@ -194,6 +194,12 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
     );
     assert!(game_data_status.get("outputSchema").is_some());
     let game_data_symbols = tool("search_game_data_symbols");
+    let game_data_research = tool("research_game_data");
+    assert_eq!(
+        game_data_research.pointer("/inputSchema/required/0"),
+        Some(&json!("query"))
+    );
+    assert!(game_data_research.get("outputSchema").is_some());
     tool("search_game_data_text");
     tool("search_workspace_text");
     assert_eq!(
@@ -231,7 +237,6 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         assert!(text_tool.get("outputSchema").is_some());
     }
     for name in [
-        "search_game_data_examples",
         "inspect_game_data_symbol",
         "list_game_data_symbol_members",
         "query_game_data_symbol_relationships",
@@ -240,6 +245,9 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
     ] {
         tool(name);
     }
+    assert!(listed
+        .iter()
+        .all(|tool| tool.get("name") != Some(&json!("search_game_data_examples"))));
     tool("read_workspace_source");
     let official_wiki_status = tool("official_wiki_status");
     assert_eq!(
@@ -517,6 +525,49 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
 }
 
 #[test]
+fn mcp_research_game_data_resolves_natural_language_without_dumping_source() {
+    let fixture = TempFixture::new("mcp_intent_research");
+    let scripts_root = fixture.path().join("scripts");
+    fs::create_dir_all(scripts_root.join("Game")).expect("create scripts fixture");
+    fs::write(
+        scripts_root.join("Game").join("Lifecycle.c"),
+        "class SCR_BaseGameMode\n{\n\tvoid OnGameEnd() {}\n\tvoid RestartRound() {}\n}\n",
+    )
+    .expect("write intent fixture");
+    let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
+    let mut client = McpClient::spawn_owned(&game_data.arguments);
+    client.initialize(1);
+
+    client.send(json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {
+            "name": "research_game_data",
+            "arguments": { "query": "base game mode lifecycle callback when the game ends" }
+        }
+    }));
+    let response = client.response(2);
+    let result = response
+        .pointer("/result/structuredContent")
+        .expect("structured intent result");
+
+    assert_eq!(result.get("status"), Some(&json!("resolved")));
+    assert_eq!(
+        result.pointer("/primary/qualifiedName"),
+        Some(&json!("SCR_BaseGameMode.OnGameEnd"))
+    );
+    assert_eq!(result.get("followUp"), Some(&json!("none")));
+    assert!(result
+        .get("alternatives")
+        .and_then(Value::as_array)
+        .is_some_and(|alternatives| alternatives.len() <= 2));
+    let serialized = result.to_string();
+    assert!(!serialized.contains("rawDocumentation"));
+    assert!(!serialized.contains("sourceExcerpt"));
+    assert!(!serialized.contains("content"));
+}
+
+#[test]
 fn mcp_inspection_and_source_read_reject_stale_and_changed_handoffs() {
     let fixture = TempFixture::new("mcp_inspection_contract");
     let scripts_root = fixture.path().join("scripts");
@@ -756,14 +807,26 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
             .unwrap_or_else(|| panic!("missing tool {name}"))
     };
     assert_eq!(listed.len(), 87);
-    let examples = tool("search_game_data_examples");
+    let research = tool("research_game_data");
     tool("list_game_data_symbol_members");
     tool("query_game_data_symbol_relationships");
-    assert!(examples["description"].as_str().is_some_and(|description| {
-        description.contains("replication")
-            && description.contains("entity-lifecycle")
-            && description.contains("widget-creation")
-    }));
+    assert!(listed
+        .iter()
+        .all(|tool| tool.get("name") != Some(&json!("search_game_data_examples"))));
+    let research_primary_schema = &research["outputSchema"]["$defs"]["IntentSymbol"]["properties"];
+    for field in [
+        "qualifiedName",
+        "signature",
+        "returnType",
+        "conditionalContext",
+        "relevantMembers",
+        "readSourceInput",
+    ] {
+        assert!(
+            research_primary_schema.get(field).is_some(),
+            "compact research schema omitted {field}"
+        );
+    }
     let inspection_schema = &tool("inspect_game_data_symbol")["outputSchema"]["properties"];
     for field in [
         "baseType",

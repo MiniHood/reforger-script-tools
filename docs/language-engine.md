@@ -110,9 +110,20 @@ returned GUID for every handoff so path uniqueness is never assumed. Layered
 queries iterate the immutable child
 indexes directly rather than relying on an eagerly flattened symbol allocation.
 
+Game Data Intent Research is the primary MCP route when the caller does not
+already know the exact declaration. It makes one cancellable pass over the same
+captured semantic index, splits natural language and Enfusion identifier words,
+and ranks declaration name, owner, signature, type, and documentation evidence.
+An explicit identifier inside a longer query anchors that declaration and lets
+the remaining terms select only relevant direct members. The fixed projection
+contains one primary declaration, no more than two compact alternatives, and no
+more than five relevant direct members. It deliberately omits source bodies,
+examples, and relationships; the exact revision-bound handoff remains available
+for an explicit follow-up when those facts are materially required.
+
 Exact Source Relationship queries compose one captured Workspace generation
-with one captured Game Data generation. Broad symbol search remains the
-discovery path; a relationship request begins only from the returned opaque,
+with one captured Game Data generation. Intent research or exact symbol search
+provides the discovery anchor; a relationship request begins only from the returned opaque,
 revision-bound Symbol Reference and its source authority. The catalogues expose
 minimal immutable snapshots to `source_relationships`; they do not expose
 storage, synchronization, physical-path, or mutation responsibilities.

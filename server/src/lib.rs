@@ -10,6 +10,7 @@ pub mod expression_type;
 pub mod formatting;
 pub mod game_data_catalogue;
 pub mod game_data_inspection;
+pub mod game_data_intent;
 pub mod game_data_research;
 pub mod game_data_search;
 pub mod index;

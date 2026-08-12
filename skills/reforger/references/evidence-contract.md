@@ -26,7 +26,7 @@ Complete the design when the chosen approach explains why it fits the authoritie
 | Claim | Minimum sufficient evidence |
 | --- | --- |
 | Concept or intended workflow | Relevant packaged Official Wiki section |
-| Engine declaration or relationship | Game Data inspection or relationship evidence |
+| Engine declaration or relationship | Resolved compact Game Data research or targeted inspection; relationship evidence only when an edge is part of the claim |
 | Engine usage pattern | Handwritten Game Data example plus separate declaration verification |
 | Add-on declaration or behavior | Current workspace source/symbol evidence and relationships |
 | Offline resource identity | Game Data resource result with canonical identity and provenance |
