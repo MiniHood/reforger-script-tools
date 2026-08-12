@@ -32,7 +32,7 @@ Complete this phase when the mode, surfaces, local constraints, and write author
 
 ### 2. Discover
 
-- Before the first Reforger MCP call, read the [MCP router](references/mcp-router.md) and follow its response protocol and matching route to completion.
+- Before the first Reforger MCP call, read the [MCP capability guide](references/mcp-router.md) for the available tool families and response model.
 - Read [Official Wiki routes](references/wiki-routes.md) to choose narrow documentation searches.
 - Establish concepts from the Wiki, exact engine declarations from Game Data, and existing add-on behavior from workspace evidence. Start uncertain or suspected APIs with the compact `research_game_data` route and stop when its resolved primary result supplies the facts the task needs.
 - Build the API ledger required by the [evidence contract](references/evidence-contract.md). Include every engine-facing identifier that proposed code will emit.
@@ -53,7 +53,7 @@ Complete this phase when the requested behavior is implemented end to end and ev
 ### 4. Pass the compiler gate
 
 - Run repository checks required by local instructions.
-- Follow the compiler route in the MCP router: call `workbench_validate_scripts`, exhaust `workbench_validate_scripts.nextCursor`, fix failures, and begin a new uncursored validation after each code change.
+- Call `workbench_validate_scripts`, exhaust `workbench_validate_scripts.nextCursor`, fix failures, and begin a new uncursored validation after each code change.
 - Require `workbench_validate_scripts.success` to be true. Treat `workbench_status.scriptsCompiled`, source inspection, parser diagnostics, and old logs as useful context but not native compiler proof.
 
 Complete this phase only when the latest native validation succeeds and every diagnostic page is accounted for. A failed or unavailable compiler blocks reload and runtime success claims.
@@ -78,7 +78,7 @@ Complete this phase when the exact implementation about to be reloaded has both 
 
 ### 7. Reload and test live
 
-- Treat reload as final behavioral acceptance after phases 4 through 6, not as the inner implementation feedback loop. Follow the reload and runtime route in the MCP router.
+- Treat reload as final behavioral acceptance after phases 4 through 6, not as the inner implementation feedback loop.
 - Confirm project context, then call `workbench_reload` only within the authorized implementation workflow. Account for Save All and active-world persistence.
 - Require `workbench_reload.reloadDispatched`, a replacement `workbench_reload.runtimeGeneration`, and the persistence fields `workbench_reload.worldSavedBeforeReload` and `workbench_reload.worldSaveStatus`.
 - Inspect fresh Workbench state and reload-scoped logs, then exercise the requested behavior in each feasible editor or runtime role.

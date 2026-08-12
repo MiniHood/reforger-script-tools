@@ -6,7 +6,12 @@ Use this contract to judge whether discovery, implementation, and validation pro
 
 An engine API is verified only when indexed Game Data establishes its relevant owner, kind, signature, modifiers, attributes, inheritance, accessibility, and source provenance. Wiki snippets, generated web pages, examples, and model memory may guide discovery but cannot satisfy this gate. Before verification, retain a supplied identifier only as a labeled search term and describe other candidates generically by role.
 
-Apply the MCP router's API ledger to every engine-facing identifier in changed lines. Exact code is ready only when every identifier is `verified`, `workspace-owned`, or a Wiki-confirmed language construct. Keep unresolved behavior at architecture or placeholder-pseudocode level.
+Record every engine-facing identifier in changed lines in this ledger:
+
+| Identifier | Exact owner/declaration | Signature/attributes | Relationship or usage evidence | Status |
+| --- | --- | --- | --- | --- |
+
+Exact code is ready only when every identifier is `verified`, `workspace-owned`, or a Wiki-confirmed language construct. Keep unresolved behavior at architecture or placeholder-pseudocode level.
 
 ## Design contract
 
