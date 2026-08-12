@@ -762,7 +762,7 @@ fn match_rank(
     }
 }
 
-fn declaration_origin_rank(index: &SymbolIndex, symbol: &IndexedSymbol) -> u8 {
+pub(crate) fn declaration_origin_rank(index: &SymbolIndex, symbol: &IndexedSymbol) -> u8 {
     let mut declaration = Some(symbol);
     while let Some(current) = declaration {
         if current

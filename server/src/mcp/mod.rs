@@ -12,8 +12,8 @@ use crate::game_data_catalogue::{
 use crate::game_data_inspection::{GameDataInspectionOutput, GameDataSourceReadRequest};
 use crate::game_data_intent::{GameDataIntentError, GameDataIntentRequest, GameDataIntentResult};
 use crate::game_data_research::{
-    GameDataExampleSearchRequest, GameDataMemberPage, GameDataMemberRequest,
-    GameDataRelationshipPage, GameDataRelationshipRequest, GameDataResearchError,
+    GameDataMemberPage, GameDataMemberRequest, GameDataRelationshipPage,
+    GameDataRelationshipRequest, GameDataResearchError,
 };
 use crate::game_data_search::{GameDataSearchPage, GameDataSearchRequest};
 use crate::index_build::{IndexBuildControl, INDEX_BUILD_CANCELLED};
@@ -85,7 +85,6 @@ pub const INSPECT_WORKSPACE_SYMBOL_TOOL_NAME: &str = "inspect_workspace_symbol";
 pub const LIST_WORKSPACE_SYMBOL_MEMBERS_TOOL_NAME: &str = "list_workspace_symbol_members";
 pub const QUERY_WORKSPACE_SYMBOL_RELATIONSHIPS_TOOL_NAME: &str =
     "query_workspace_symbol_relationships";
-pub const SEARCH_GAME_DATA_EXAMPLES_TOOL_NAME: &str = "search_game_data_examples";
 pub const INSPECT_GAME_DATA_SYMBOL_TOOL_NAME: &str = "inspect_game_data_symbol";
 pub const LIST_GAME_DATA_SYMBOL_MEMBERS_TOOL_NAME: &str = "list_game_data_symbol_members";
 pub const QUERY_GAME_DATA_SYMBOL_RELATIONSHIPS_TOOL_NAME: &str =
@@ -1125,22 +1124,6 @@ struct McpGameDataInspectInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct McpGameDataExampleSearchInput {
-    #[schemars(length(min = 1, max = 256))]
-    topic: String,
-    #[schemars(length(min = 1, max = 256))]
-    subtopic: Option<String>,
-    #[schemars(length(min = 1))]
-    source_kinds: Option<Vec<String>>,
-    #[schemars(length(min = 1))]
-    source_categories: Option<Vec<String>>,
-    limit: Option<usize>,
-    #[schemars(length(max = 2048))]
-    cursor: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct McpGameDataMemberInput {
     #[schemars(length(min = 1, max = 2048))]
     symbol_ref: String,
@@ -1476,12 +1459,15 @@ impl ReforgerMcpServer {
         request: GameDataIntentRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self.acquire_request_admission(&context).await?;
+        let permit = self.acquire_request_admission(&context).await?;
+        record_debug_admission();
         let catalogue = self.game_data.clone();
         let cold = !catalogue.is_initialized();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
         let mut worker = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            delay_debug_research_worker();
             catalogue.research_intent(&worker_control, request)
         });
         let deadline = tokio::time::sleep(Duration::from_millis(if cold {
@@ -1597,40 +1583,6 @@ impl ReforgerMcpServer {
             Err(GameDataCatalogueTextSearchError::TextSearch(error)) => {
                 Ok(text_search_error(&error))
             }
-        }
-    }
-
-    async fn search_game_data_examples(
-        &self,
-        request: GameDataExampleSearchRequest,
-        context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        let permit = self.acquire_request_admission(&context).await?;
-        record_debug_admission();
-        let catalogue = self.game_data.clone();
-        let cold = !catalogue.is_initialized();
-        let control = IndexBuildControl::default();
-        let worker_control = control.clone();
-        let mut worker = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            delay_debug_research_worker();
-            catalogue.search_examples(&worker_control, request)
-        });
-        let deadline = tokio::time::sleep(Duration::from_millis(if cold {
-            initialization_deadline_ms()
-        } else {
-            ready_game_data_operation_deadline_ms()
-        }));
-        tokio::pin!(deadline);
-        let result = tokio::select! {
-            biased;
-            _ = context.ct.cancelled() => { cancel_research_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
-            _ = &mut deadline => { cancel_research_worker(&control, &mut worker).await; return Ok(if cold { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); },
-            result = &mut worker => result.map_err(|_| McpError::internal_error("Game Data example-search worker failed", None))?,
-        };
-        match result {
-            Ok(page) => typed_success(&page),
-            Err(error) => Ok(research_error(error)),
         }
     }
 
@@ -4154,36 +4106,6 @@ impl ReforgerMcpServer {
             )
             .await;
         }
-        if request.name == SEARCH_GAME_DATA_EXAMPLES_TOOL_NAME {
-            if request.task.is_some() {
-                return Err(McpError::invalid_params(
-                    "search_game_data_examples does not support task execution",
-                    None,
-                ));
-            }
-            let input = serde_json::from_value::<McpGameDataExampleSearchInput>(Value::Object(
-                request.arguments.unwrap_or_default(),
-            ))
-            .map_err(|error| {
-                McpError::invalid_params(
-                    format!("Invalid search_game_data_examples arguments: {error}"),
-                    None,
-                )
-            })?;
-            return self
-                .search_game_data_examples(
-                    GameDataExampleSearchRequest {
-                        topic: input.topic,
-                        subtopic: input.subtopic,
-                        source_kinds: input.source_kinds,
-                        source_categories: input.source_categories,
-                        limit: input.limit,
-                        cursor: input.cursor,
-                    },
-                    context,
-                )
-                .await;
-        }
         if request.name == RESEARCH_GAME_DATA_TOOL_NAME {
             if request.task.is_some() {
                 return Err(McpError::invalid_params(
@@ -4882,10 +4804,6 @@ fn api_reference_summary(name: &str) -> (&'static str, &'static str) {
         "read_workspace_source" => (
             "Game Data",
             "Read bounded source evidence returned by workspace tools.",
-        ),
-        "search_game_data_examples" => (
-            "Game Data",
-            "Find curated generated and handwritten usage examples by topic.",
         ),
         "list_game_data_symbol_members" => (
             "Game Data",

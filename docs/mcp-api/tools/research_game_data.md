@@ -98,6 +98,13 @@ Resolve one exact identifier or natural-language Game Data declaration need in a
       ],
       "type": "object"
     },
+    "IntentFollowUp": {
+      "enum": [
+        "none",
+        "refineQuery"
+      ],
+      "type": "string"
+    },
     "IntentMember": {
       "properties": {
         "kind": {
@@ -127,6 +134,14 @@ Resolve one exact identifier or natural-language Game Data declaration need in a
         "matchedTerms"
       ],
       "type": "object"
+    },
+    "IntentStatus": {
+      "enum": [
+        "resolved",
+        "ambiguous",
+        "notFound"
+      ],
+      "type": "string"
     },
     "IntentSymbol": {
       "properties": {
@@ -305,7 +320,7 @@ Resolve one exact identifier or natural-language Game Data declaration need in a
       "type": "string"
     },
     "followUp": {
-      "type": "string"
+      "$ref": "#/$defs/IntentFollowUp"
     },
     "primary": {
       "anyOf": [
@@ -321,7 +336,7 @@ Resolve one exact identifier or natural-language Game Data declaration need in a
       "type": "string"
     },
     "status": {
-      "type": "string"
+      "$ref": "#/$defs/IntentStatus"
     }
   },
   "required": [

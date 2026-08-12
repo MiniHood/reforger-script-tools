@@ -25,14 +25,29 @@ pub struct GameDataIntentRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GameDataIntentResult {
-    pub status: String,
+    pub status: IntentStatus,
     pub catalogue_revision: String,
     pub query: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary: Option<IntentSymbol>,
     #[schemars(length(max = 2))]
     pub alternatives: Vec<IntentAlternative>,
-    pub follow_up: String,
+    pub follow_up: IntentFollowUp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum IntentStatus {
+    Resolved,
+    Ambiguous,
+    NotFound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum IntentFollowUp {
+    None,
+    RefineQuery,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -102,7 +117,8 @@ pub enum GameDataIntentError {
 struct IntentCandidate {
     id: GlobalSymbolId,
     score: u32,
-    exact: bool,
+    whole_query_exact: bool,
+    origin_rank: u8,
     matched_terms: Vec<String>,
 }
 
@@ -146,13 +162,13 @@ pub fn research_game_data(
     candidates.sort_by(compare_candidates);
     let exact_matches = candidates
         .iter()
-        .filter(|candidate| candidate.exact)
+        .filter(|candidate| candidate.whole_query_exact)
         .count();
     candidates.truncate(MAX_ALTERNATIVES + 1);
     let Some(primary_candidate) = candidates.first() else {
         return Ok(not_found(catalogue_revision, query));
     };
-    let exact_is_unique = primary_candidate.exact && exact_matches == 1;
+    let exact_is_unique = primary_candidate.whole_query_exact && exact_matches == 1;
     let primary = project_primary(
         index,
         source_line_starts,
@@ -178,23 +194,31 @@ pub fn research_game_data(
                 .get(1)
                 .is_none_or(|next| primary_candidate.score >= next.score.saturating_add(100)));
     Ok(GameDataIntentResult {
-        status: if resolved { "resolved" } else { "ambiguous" }.to_string(),
+        status: if resolved {
+            IntentStatus::Resolved
+        } else {
+            IntentStatus::Ambiguous
+        },
         catalogue_revision: catalogue_revision.to_string(),
         query,
         primary: Some(primary),
         alternatives,
-        follow_up: if resolved { "none" } else { "refineQuery" }.to_string(),
+        follow_up: if resolved {
+            IntentFollowUp::None
+        } else {
+            IntentFollowUp::RefineQuery
+        },
     })
 }
 
 fn not_found(catalogue_revision: &str, query: String) -> GameDataIntentResult {
     GameDataIntentResult {
-        status: "notFound".to_string(),
+        status: IntentStatus::NotFound,
         catalogue_revision: catalogue_revision.to_string(),
         query,
         primary: None,
         alternatives: Vec::new(),
-        follow_up: "refineQuery".to_string(),
+        follow_up: IntentFollowUp::RefineQuery,
     }
 }
 
@@ -247,7 +271,7 @@ fn project_primary(
         .cloned()
         .collect::<Vec<_>>();
     let required_member_matches = member_query_terms.len().min(2);
-    let relevant_members = index
+    let mut relevant_members = index
         .children(candidate.id)
         .iter()
         .filter_map(|id| index.symbol(*id))
@@ -256,7 +280,7 @@ fn project_primary(
             if member_candidate.matched_terms.len() < required_member_matches {
                 return None;
             }
-            Some(IntentMember {
+            let projected = IntentMember {
                 symbol_ref: symbol_ref_for(
                     index,
                     addon_map,
@@ -277,16 +301,22 @@ fn project_primary(
                         member.name.as_deref()?,
                     ),
                 ),
-                matched_terms: member_candidate.matched_terms,
-            })
+                matched_terms: member_candidate.matched_terms.clone(),
+            };
+            Some((member_candidate, projected))
         })
+        .collect::<Vec<_>>();
+    relevant_members.sort_by(|(left, _), (right, _)| compare_candidates(left, right));
+    let relevant_members = relevant_members
+        .into_iter()
         .take(MAX_RELEVANT_MEMBERS)
+        .map(|(_, member)| member)
         .collect();
     Ok(IntentSymbol {
         symbol_ref,
         qualified_name: qualified_name.clone(),
         kind: kind_name(symbol.kind).to_string(),
-        signature: compact_signature(symbol, &qualified_name),
+        signature: inspection.signature,
         matched_terms: candidate.matched_terms.clone(),
         documentation_summary: documentation_summary(symbol),
         base_type: inspection.base_type,
@@ -429,19 +459,17 @@ fn score_candidate(
     let name = symbol.name.as_deref()?;
     let owner = owner_name(index, symbol);
     let qualified = qualify(owner.as_deref(), name);
-    let exact = !raw_query.is_empty()
-        && (name.eq_ignore_ascii_case(raw_query)
-            || qualified.eq_ignore_ascii_case(raw_query)
-            || raw_query
-                .split_whitespace()
-                .map(|term| {
-                    term.trim_matches(|character: char| {
-                        !character.is_alphanumeric() && character != '_'
-                    })
+    let whole_query_exact = !raw_query.is_empty()
+        && (name.eq_ignore_ascii_case(raw_query) || qualified.eq_ignore_ascii_case(raw_query));
+    let identifier_anchor = whole_query_exact
+        || raw_query
+            .split_whitespace()
+            .map(|term| {
+                term.trim_matches(|character: char| {
+                    !character.is_alphanumeric() && character != '_'
                 })
-                .any(|term| {
-                    name.eq_ignore_ascii_case(term) || qualified.eq_ignore_ascii_case(term)
-                }));
+            })
+            .any(|term| name.eq_ignore_ascii_case(term) || qualified.eq_ignore_ascii_case(term));
     let name_terms = identifier_terms(name);
     let owner_terms = owner.as_deref().map(identifier_terms).unwrap_or_default();
     let supporting_text = [
@@ -457,7 +485,7 @@ fn score_candidate(
     .join(" ")
     .to_lowercase();
     let mut matched_terms = Vec::new();
-    let mut score = if exact { 10_000 } else { 0 };
+    let mut score = if identifier_anchor { 10_000 } else { 0 };
     for term in query_terms {
         let term_score = if name_terms.contains(term) {
             240
@@ -485,7 +513,7 @@ fn score_candidate(
     {
         score += 120;
     }
-    if !exact && matched_terms.is_empty() {
+    if !identifier_anchor && matched_terms.is_empty() {
         return None;
     }
     score += u32::try_from(matched_terms.len())
@@ -494,7 +522,8 @@ fn score_candidate(
     Some(IntentCandidate {
         id: symbol.id,
         score,
-        exact,
+        whole_query_exact,
+        origin_rank: crate::game_data_search::declaration_origin_rank(index, symbol),
         matched_terms,
     })
 }
@@ -503,6 +532,7 @@ fn compare_candidates(left: &IntentCandidate, right: &IntentCandidate) -> Orderi
     right
         .score
         .cmp(&left.score)
+        .then_with(|| left.origin_rank.cmp(&right.origin_rank))
         .then_with(|| left.id.file_id.cmp(&right.id.file_id))
         .then_with(|| left.id.symbol_id.cmp(&right.id.symbol_id))
 }
@@ -625,7 +655,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result.status, "resolved");
+        assert_eq!(result.status, IntentStatus::Resolved);
         assert_eq!(
             result
                 .primary
@@ -634,7 +664,7 @@ mod tests {
             Some("SCR_BaseGameMode")
         );
         assert!(result.alternatives.is_empty());
-        assert_eq!(result.follow_up, "none");
+        assert_eq!(result.follow_up, IntentFollowUp::None);
     }
 
     #[test]
@@ -658,15 +688,15 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result.status, "ambiguous");
+        assert_eq!(result.status, IntentStatus::Ambiguous);
         assert_eq!(result.alternatives.len(), MAX_ALTERNATIVES);
-        assert_eq!(result.follow_up, "refineQuery");
+        assert_eq!(result.follow_up, IntentFollowUp::RefineQuery);
     }
 
     #[test]
     fn natural_language_resolves_a_member_from_its_name_and_owner_terms() {
         let (index, starts, addons) =
-            fixture("class SCR_BaseGameMode { void OnGameEnd() {} void RestartRound() {} }\n");
+            fixture("class SCR_BaseGameMode { void OnGameEnd(int reason, string message) {} void RestartRound() {} }\n");
 
         let result = research_game_data(
             &index,
@@ -692,6 +722,11 @@ mod tests {
             .primary
             .as_ref()
             .is_some_and(|symbol| symbol.matched_terms.contains(&"end".to_string())));
+        assert!(result
+            .primary
+            .as_ref()
+            .is_some_and(|symbol| symbol.signature.contains("int reason")
+                && symbol.signature.contains("string message")));
     }
 
     #[test]
@@ -752,9 +787,66 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result.status, "ambiguous");
+        assert_eq!(result.status, IntentStatus::Ambiguous);
         assert_eq!(result.alternatives.len(), MAX_ALTERNATIVES);
-        assert_eq!(result.follow_up, "refineQuery");
+        assert_eq!(result.follow_up, IntentFollowUp::RefineQuery);
+    }
+
+    #[test]
+    fn relevant_members_are_ranked_before_the_five_member_bound() {
+        let (index, starts, addons) = fixture(
+            "class SCR_FactionManager {\n\
+                void FactionGroupHelperOne() {}\n\
+                void FactionGroupHelperTwo() {}\n\
+                void FactionGroupHelperThree() {}\n\
+                void FactionGroupHelperFour() {}\n\
+                void FactionGroupHelperFive() {}\n\
+                void UnregisterFactionGroup() {}\n\
+            }\n",
+        );
+
+        let result = research_game_data(
+            &index,
+            &starts,
+            &addons,
+            &IndexBuildControl::default(),
+            "revision-1",
+            GameDataIntentRequest {
+                query: "SCR_FactionManager unregister faction group".to_string(),
+                addon_guids: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.primary.expect("primary").relevant_members[0].name,
+            "UnregisterFactionGroup"
+        );
+    }
+
+    #[test]
+    fn original_declaration_precedes_a_modded_duplicate() {
+        let (index, starts, addons) = fixture("class SCR_Mode {}\nmodded class SCR_Mode {}\n");
+
+        let result = research_game_data(
+            &index,
+            &starts,
+            &addons,
+            &IndexBuildControl::default(),
+            "revision-1",
+            GameDataIntentRequest {
+                query: "SCR_Mode".to_string(),
+                addon_guids: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.status, IntentStatus::Ambiguous);
+        assert!(!result
+            .primary
+            .expect("original primary")
+            .modifiers
+            .contains(&"modded".to_string()));
     }
 
     #[test]
@@ -774,9 +866,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result.status, "notFound");
+        assert_eq!(result.status, IntentStatus::NotFound);
         assert!(result.primary.is_none());
         assert!(result.alternatives.is_empty());
-        assert_eq!(result.follow_up, "refineQuery");
+        assert_eq!(result.follow_up, IntentFollowUp::RefineQuery);
     }
 }

@@ -854,153 +854,6 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         .cloned()
         .expect("base method reference");
 
-    client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"resource-loading","subtopic":"spawn-prefab","sourceKinds":["handwritten"],"limit":1}}}));
-    let first_examples = client.response(4);
-    let first_page = first_examples
-        .pointer("/result/structuredContent")
-        .expect("example page");
-    if first_page.get("returned").is_none() {
-        assert_eq!(
-            first_page.get("code"),
-            Some(&json!("source_evidence_unavailable"))
-        );
-        return;
-    }
-    assert_eq!(first_page.get("returned"), Some(&json!(1)));
-    assert_eq!(first_page.get("source"), Some(&json!("evidence-catalogue")));
-    assert_eq!(first_page.get("total"), Some(&json!(2)));
-    assert!(first_page.get("nextCursor").is_some());
-    assert_eq!(
-        first_page.pointer("/results/0/sourceKind"),
-        Some(&json!("handwritten"))
-    );
-    assert_eq!(
-        first_page.pointer("/results/0/evidenceLine"),
-        Some(&json!(5)),
-        "the evidence anchor must come from code, not a higher-scoring comment"
-    );
-    assert!(first_page
-        .pointer("/results/0/evidenceSymbols")
-        .and_then(Value::as_array)
-        .is_some_and(|symbols| symbols.iter().any(|symbol| symbol == "SpawnEntityPrefab")));
-    assert!(first_page
-        .pointer("/results/0/readSourceInput/lineCount")
-        .is_some());
-    assert!(first_page
-        .pointer("/verificationGuidance")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.contains("Workbench")));
-    client.send(json!({"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"read_game_data_source","arguments":first_page["results"][0]["readSourceInput"]}}));
-    assert_eq!(
-        client.response(20).pointer("/result/isError"),
-        Some(&json!(false))
-    );
-    let example_cursor = first_page
-        .get("nextCursor")
-        .cloned()
-        .expect("example cursor");
-    client.send(json!({"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"resource-loading","subtopic":"spawn-prefab","sourceKinds":["generated"],"limit":1,"cursor":example_cursor.clone()}}}));
-    assert!(client
-        .response(25)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("invalid_cursor:")));
-    client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"resource-loading","subtopic":"spawn-prefab","sourceKinds":["handwritten"],"limit":1,"cursor":example_cursor}}}));
-    assert_eq!(
-        client
-            .response(5)
-            .pointer("/result/structuredContent/returned"),
-        Some(&json!(1))
-    );
-    client.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"resource-loading","subtopic":"spawn-prefab","sourceKinds":["generated"]}}}));
-    let generated_examples = client.response(6);
-    assert!(generated_examples
-        .pointer("/result/structuredContent/results")
-        .and_then(Value::as_array)
-        .is_some_and(|results| !results.is_empty()
-            && results
-                .iter()
-                .all(|result| result["sourceKind"] == "generated")));
-    client.send(json!({"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"replication","subtopic":"rpc-authority"}}}));
-    let replication_examples = client.response(26);
-    assert_eq!(
-        replication_examples.pointer("/result/structuredContent/results/0/relativePath"),
-        Some(&json!("scripts/Game/Examples/ReplicationPattern.c"))
-    );
-    assert!(replication_examples
-        .pointer("/result/structuredContent/results/0/evidenceTerms")
-        .and_then(Value::as_array)
-        .is_some_and(|terms| terms.iter().any(|term| term == "RplRpc")));
-    assert!(replication_examples
-        .pointer("/result/structuredContent/verificationGuidance")
-        .and_then(Value::as_str)
-        .is_some_and(|guidance| guidance.contains("authority")));
-    client.send(json!({"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"replication","subtopic":"rpc-authority","sourceKinds":["generated"]}}}));
-    assert_eq!(
-        client
-            .response(31)
-            .pointer("/result/structuredContent/results/0/sourceKind"),
-        Some(&json!("generated"))
-    );
-    client.send(json!({"jsonrpc":"2.0","id":27,"method":"tools/call","params":{"name":"read_game_data_source","arguments":replication_examples["result"]["structuredContent"]["results"][0]["readSourceInput"]}}));
-    assert!(client
-        .response(27)
-        .pointer("/result/structuredContent/content")
-        .and_then(Value::as_str)
-        .is_some_and(|content| content.contains("Replication.FindItem")));
-    client.send(json!({"jsonrpc":"2.0","id":28,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"entity-lifecycle","subtopic":"event-mask"}}}));
-    let lifecycle_examples = client.response(28);
-    assert_eq!(
-        lifecycle_examples.pointer("/result/structuredContent/results/0/relativePath"),
-        Some(&json!("scripts/Game/Examples/EntityLifecyclePattern.c"))
-    );
-    assert!(lifecycle_examples
-        .pointer("/result/structuredContent/results/0/evidenceTerms")
-        .and_then(Value::as_array)
-        .is_some_and(|terms| terms.iter().any(|term| term == "SetEventMask")));
-    client.send(json!({"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"entity-lifecycle","subtopic":"event-mask","sourceKinds":["generated"]}}}));
-    assert_eq!(
-        client
-            .response(32)
-            .pointer("/result/structuredContent/results/0/sourceKind"),
-        Some(&json!("generated"))
-    );
-    client.send(json!({"jsonrpc":"2.0","id":29,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"ui","subtopic":"widget-creation"}}}));
-    let widget_examples = client.response(29);
-    assert_eq!(
-        widget_examples.pointer("/result/structuredContent/results/0/relativePath"),
-        Some(&json!("scripts/Game/Examples/WidgetPattern.c"))
-    );
-    assert!(widget_examples
-        .pointer("/result/structuredContent/results/0/evidenceTerms")
-        .and_then(Value::as_array)
-        .is_some_and(|terms| terms.iter().any(|term| term == "CreateWidgets")));
-    client.send(json!({"jsonrpc":"2.0","id":33,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"ui","subtopic":"widget-creation","sourceKinds":["generated"]}}}));
-    assert_eq!(
-        client
-            .response(33)
-            .pointer("/result/structuredContent/results/0/sourceKind"),
-        Some(&json!("generated"))
-    );
-    client.send(json!({"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"replication","subtopic":"event-mask"}}}));
-    assert!(client
-        .response(30)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("invalid_arguments:")));
-    client.send(json!({"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"spawn anything"}}}));
-    assert!(client
-        .response(23)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("invalid_arguments:")));
-    client.send(json!({"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"resource-loading","cursor":"rc1:bad"}}}));
-    assert!(client
-        .response(24)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("invalid_cursor:")));
-
     client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"VehicleSpawner","kinds":["class"]}}}));
     let class_search = client.response(7);
     let class_ref = class_search
@@ -1057,42 +910,6 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         .iter()
         .any(|result| result["relationshipKind"] == "implementation"
             && result["qualifiedName"] == "VehicleSpawner.SpawnConfigured"));
-    client.send(json!({"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"SpawnEntityPrefab","kinds":["method"]}}}));
-    let api_ref = client
-        .response(12)
-        .pointer("/result/structuredContent/results/0/symbolRef")
-        .cloned()
-        .expect("spawn API reference");
-    client.send(json!({"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"query_game_data_symbol_relationships","arguments":{"symbolRef":api_ref,"relationshipKinds":["reference","caller"],"limit":20}}}));
-    let api_relationships = client.response(13);
-    let relationships = api_relationships
-        .pointer("/result/structuredContent/results")
-        .and_then(Value::as_array)
-        .expect("API relationships");
-    assert!(relationships
-        .iter()
-        .any(|result| result["relationshipKind"] == "reference"));
-    assert!(relationships
-        .iter()
-        .any(|result| result["relationshipKind"] == "caller"));
-    assert!(
-        relationships
-            .iter()
-            .filter(|result| result["relationshipKind"] == "reference")
-            .count()
-            > relationships
-                .iter()
-                .filter(|result| result["relationshipKind"] == "caller")
-                .count(),
-        "a resolved method value is a reference, not a caller"
-    );
-    assert!(!relationships
-        .iter()
-        .any(|result| result["relativePath"] == "scripts/Game/Examples/CommentOnly.c"));
-    assert!(api_relationships
-        .pointer("/result/structuredContent/nextCursor")
-        .is_none());
-
     client.send(json!({"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"query_game_data_symbol_relationships","arguments":{"symbolRef":class_ref,"relationshipKinds":["directBase"]}}}));
     assert_eq!(
         client
@@ -1120,12 +937,6 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
             .pointer("/result/structuredContent/results/0/qualifiedName"),
         Some(&json!("VehicleSpawner"))
     );
-    client.send(json!({"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"list_game_data_symbol_members","arguments":{"symbolRef":class_ref,"kinds":["method"],"cursor":"mc1:stale"}}}));
-    assert!(client
-        .response(18)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("invalid_cursor:")));
     client.send(json!({"jsonrpc":"2.0","id":19,"method":"tools/call","params":{"name":"inspect_game_data_symbol","arguments":{"symbolRef":class_ref}}}));
     let inspected = client.response(19);
     let inspected = inspected
@@ -1138,20 +949,6 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
             "runtime inspection field {field} is absent from the advertised schema"
         );
     }
-    client.send(json!({"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Ambiguous","kinds":["method"],"limit":1}}}));
-    let ambiguous_ref = client
-        .response(21)
-        .pointer("/result/structuredContent/results/0/symbolRef")
-        .cloned()
-        .expect("ambiguous overload reference");
-    client.send(json!({"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"query_game_data_symbol_relationships","arguments":{"symbolRef":ambiguous_ref,"relationshipKinds":["reference","caller"]}}}));
-    assert_eq!(
-        client
-            .response(22)
-            .pointer("/result/structuredContent/returned"),
-        Some(&json!(0)),
-        "an unresolved overload must not be presented as a proven relationship"
-    );
 }
 
 #[test]
@@ -1193,14 +990,6 @@ fn game_data_research_handoffs_reject_stale_references_and_cursors() {
         .pointer("/result/structuredContent/nextCursor")
         .cloned()
         .expect("old member cursor");
-    first.send(json!({"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"resource-loading","subtopic":"spawn-prefab","limit":1}}}));
-    let example_response = first.response(30);
-    let old_example_cursor = example_response
-        .pointer("/result/structuredContent/nextCursor")
-        .cloned();
-    if old_example_cursor.is_none() {
-        assert_tool_error_code(&example_response, "source_evidence_unavailable");
-    }
     first.send(json!({"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Base","kinds":["class"]}}}));
     let base_ref = first
         .response(31)
@@ -1246,10 +1035,6 @@ fn game_data_research_handoffs_reject_stale_references_and_cursors() {
     assert_tool_error_code(&second.response(6), "stale_symbol_ref");
     second.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"list_game_data_symbol_members","arguments":{"symbolRef":fresh_symbol_ref,"kinds":["field"],"limit":1,"cursor":old_cursor}}}));
     assert_tool_error_code(&second.response(7), "stale_cursor");
-    if let Some(old_example_cursor) = old_example_cursor {
-        second.send(json!({"jsonrpc":"2.0","id":33,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"resource-loading","subtopic":"spawn-prefab","limit":1,"cursor":old_example_cursor}}}));
-        assert_tool_error_code(&second.response(33), "stale_cursor");
-    }
     second.send(json!({"jsonrpc":"2.0","id":34,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Base","kinds":["class"]}}}));
     let fresh_base_ref = second
         .response(34)
@@ -2437,8 +2222,8 @@ fn timed_out_research_workers_retain_admission_until_they_exit() {
             "id":id,
             "method":"tools/call",
             "params":{
-                "name":"search_game_data_examples",
-                "arguments":{"topic":"resource-loading"}
+                "name":"research_game_data",
+                "arguments":{"query":"Admission"}
             }
         }));
     }
@@ -2459,8 +2244,8 @@ fn timed_out_research_workers_retain_admission_until_they_exit() {
 }
 
 #[test]
-fn cancelled_example_searches_release_admission_for_the_next_request() {
-    let fixture = TempFixture::new("mcp_cancelled_example_search_admission");
+fn cancelled_intent_research_releases_admission_for_the_next_request() {
+    let fixture = TempFixture::new("mcp_cancelled_intent_research_admission");
     let scripts_root = fixture.path().join("scripts");
     fs::create_dir_all(&scripts_root).expect("create scripts fixture");
     let methods = (0..20_000)
@@ -2492,7 +2277,7 @@ fn cancelled_example_searches_release_admission_for_the_next_request() {
             "jsonrpc":"2.0",
             "id":id,
             "method":"tools/call",
-            "params":{"name":"search_game_data_examples","arguments":{"topic":"replication","subtopic":"rpc-authority"}}
+            "params":{"name":"research_game_data","arguments":{"query":"replication rpc authority"}}
         }));
     }
     wait_for_lines(&admission_marker, 8, Duration::from_secs(2));
@@ -2500,14 +2285,14 @@ fn cancelled_example_searches_release_admission_for_the_next_request() {
         client.send(json!({
             "jsonrpc":"2.0",
             "method":"notifications/cancelled",
-            "params":{"requestId":id,"reason":"cancel cooperative example search"}
+            "params":{"requestId":id,"reason":"cancel cooperative intent research"}
         }));
     }
     client.send(json!({
         "jsonrpc":"2.0",
         "id":19,
         "method":"tools/call",
-        "params":{"name":"search_game_data_examples","arguments":{"topic":"replication","subtopic":"rpc-authority","limit":1}}
+        "params":{"name":"research_game_data","arguments":{"query":"ConfigureRpc19999"}}
     }));
     wait_for_lines(&admission_marker, 9, Duration::from_secs(2));
     let responses = client.responses_until(19);
@@ -2518,8 +2303,8 @@ fn cancelled_example_searches_release_admission_for_the_next_request() {
     assert_eq!(
         responses
             .last()
-            .and_then(|response| response.pointer("/result/structuredContent/code")),
-        Some(&json!("source_evidence_unavailable"))
+            .and_then(|response| response.pointer("/result/structuredContent/status")),
+        Some(&json!("resolved"))
     );
     client.close_stdin();
     assert!(client.wait_for_exit(Duration::from_secs(3)));

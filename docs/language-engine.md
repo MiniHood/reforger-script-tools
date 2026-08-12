@@ -115,8 +115,11 @@ already know the exact declaration. It makes one cancellable pass over the same
 captured semantic index, splits natural language and Enfusion identifier words,
 and ranks declaration name, owner, signature, type, and documentation evidence.
 An explicit identifier inside a longer query anchors that declaration and lets
-the remaining terms select only relevant direct members. The fixed projection
-contains one primary declaration, no more than two compact alternatives, and no
+the remaining terms select only relevant direct members. Original declarations
+precede modded or override duplicates, and relevant members are ranked before
+the output bound is applied. The fixed projection includes the inspected
+callable signature, one primary declaration, no more than two compact
+alternatives, and no
 more than five relevant direct members. It deliberately omits source bodies,
 examples, and relationships; the exact revision-bound handoff remains available
 for an explicit follow-up when those facts are materially required.
