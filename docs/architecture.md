@@ -171,6 +171,17 @@ the user explicitly requests Workbench enablement. Provider discovery therefore
 performs only deterministic launch-input resolution and does not prompt, write,
 build an index, contact Workbench, or install the managed handler package.
 
+That contributed definition starts the MCP runtime with the compact `authoring`
+tool profile. It exposes one bounded `search_reforger` discovery operation across
+Game Data declarations, workspace declarations, and the packaged Official Wiki,
+plus exact read/inspection handoffs and common Workbench lifecycle capabilities.
+Each selected authority contributes at most one compact result. Resolved Game
+Data results may also carry one best query-relevant member;
+ambiguous results carry compact alternatives but no exact action handoff.
+Separate `workbench-inspect`, `workbench-edit`, and `admin` profiles add specialized live
+capability families; `all` retains the complete compatibility catalogue. Profiles
+change only MCP exposure, not implementation ownership or semantic authority.
+
 The extension also contributes three repository-owned Agent Skills through VS
 Code's declarative `chatSkills` interface: `reforger`,
 `reforger-deep-dive`, and `reforger-workbench-edit`. Their Open Agent Skills
@@ -215,12 +226,12 @@ live graph adds Workbench-only add-ons without dropping project dependencies.
 A later accepted graph or mode change
 also disposes the existing child and republishes Search Scope, so a retained
 Search panel cannot continue showing the preceding catalogue.
-`game_data_status` publishes the currently available scope. The MCP-facing
-`research_game_data` route resolves one exact identifier or natural-language
-declaration need inside Rust and returns one primary declaration, at most two
-compact alternatives, and at most five query-relevant direct members. It does
-not automatically attach examples, relationships, or source text, so a caller
-continues only when the compact result reports that refinement is required.
+`game_data_status` publishes the currently available scope. The compact MCP
+surface uses `search_reforger` for initial discovery and returns
+authority-labelled results with ready-to-copy generic symbol inspection or exact
+source-read handoffs. The complete `all` profile retains authority-specific
+intent, semantic, resource, literal-text, and relationship operations for clients
+that require their additional controls.
 Game Data intent, symbol, and text searches accept a set of loaded add-on GUIDs,
 and every returned
 source handoff retains its add-on GUID so colliding logical paths remain
@@ -289,9 +300,6 @@ Configuration export and the extension-hosted Search page derive their child
 process arguments from the same launch policy.
 The generated [MCP API Reference](mcp-api.md) routes to the exact generated
 per-tool contracts that project the public tool interface.
-The [MCP Runtime guide](mcp-runtime.md) explains its process lifecycle,
-parser-owned cache consumption, semantic-index reuse, and the boundary from the
-LSP runtime.
 
 ## MCP and Workbench Boundary
 

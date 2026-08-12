@@ -5,7 +5,8 @@ use reforger_language_server::lsp::{
     run_stdio as run_lsp_stdio, BracketColoringMode, ExternalIndexMode, LspServerOptions,
 };
 use reforger_language_server::mcp::{
-    render_api_reference, render_api_reference_bundle, run_stdio as run_mcp_stdio, McpServerOptions,
+    render_api_reference, render_api_reference_bundle, run_stdio as run_mcp_stdio,
+    McpServerOptions, McpToolProfile,
 };
 use reforger_language_server::workbench::{
     WorkbenchControllerOptions, WorkbenchFailureCode, WorkbenchGatewayOptions,
@@ -337,6 +338,7 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
     let mut official_wiki_root = None;
     let mut workbench = WorkbenchControllerOptions::default();
     let mut workspace_scripts = Vec::new();
+    let mut tool_profile = McpToolProfile::Authoring;
 
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -362,6 +364,17 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
             }
             "--workspace-scripts" => {
                 workspace_scripts.push(path_value(&mut args, "--workspace-scripts")?);
+            }
+            "--tool-profile" => {
+                let value = string_value(&mut args, "--tool-profile")?;
+                tool_profile = match value.as_str() {
+                    "authoring" => McpToolProfile::Authoring,
+                    "workbench-inspect" => McpToolProfile::WorkbenchInspect,
+                    "workbench-edit" => McpToolProfile::WorkbenchEdit,
+                    "admin" => McpToolProfile::Admin,
+                    "all" => McpToolProfile::All,
+                    _ => return Err(format!("invalid MCP tool profile '{value}'")),
+                };
             }
             "--dependency-project" => {
                 game_data
@@ -405,6 +418,7 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
         official_wiki_root,
         workbench,
         workspace_scripts,
+        tool_profile,
     })
 }
 
@@ -424,7 +438,7 @@ fn string_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<S
 
 fn print_help() {
     println!(
-        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server mcp-api-bundle\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|read-logs|integration-status|bootstrap-integration|maintain-integration|process-status|launch-default|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --dependency-project <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --external-index-mode <all|loaded|none>\n  --workspace-scripts <path> (repeatable)\n  --dependency-project <path> (repeatable)\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <test/development override>"
+        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server mcp-api-bundle\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|read-logs|integration-status|bootstrap-integration|maintain-integration|process-status|launch-default|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --dependency-project <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --tool-profile <authoring|workbench-inspect|workbench-edit|admin|all>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --external-index-mode <all|loaded|none>\n  --workspace-scripts <path> (repeatable)\n  --dependency-project <path> (repeatable)\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <development/test override>"
     );
 }
 
@@ -433,6 +447,7 @@ mod tests {
     use super::{parse_args_from, ServerMode, WorkbenchApiCommand};
     use reforger_language_server::game_data_catalogue::GameDataExternalIndexMode;
     use reforger_language_server::lsp::BracketColoringMode;
+    use reforger_language_server::mcp::McpToolProfile;
     use std::path::PathBuf;
 
     #[test]
@@ -506,6 +521,42 @@ mod tests {
             options.game_data.workspace_roots,
             vec![PathBuf::from("Scripts")]
         );
+        assert_eq!(options.tool_profile, McpToolProfile::Authoring);
+    }
+
+    #[test]
+    fn explicit_mcp_mode_accepts_each_tool_profile() {
+        for (value, expected) in [
+            ("authoring", McpToolProfile::Authoring),
+            ("workbench-inspect", McpToolProfile::WorkbenchInspect),
+            ("workbench-edit", McpToolProfile::WorkbenchEdit),
+            ("admin", McpToolProfile::Admin),
+            ("all", McpToolProfile::All),
+        ] {
+            let mode = parse_args_from(
+                [
+                    "mcp".to_string(),
+                    "--tool-profile".to_string(),
+                    value.to_string(),
+                ]
+                .into_iter(),
+            )
+            .expect("valid MCP profile");
+            let ServerMode::Mcp(options) = mode else {
+                panic!("expected MCP mode");
+            };
+            assert_eq!(options.tool_profile, expected);
+        }
+
+        assert!(parse_args_from(
+            [
+                "mcp".to_string(),
+                "--tool-profile".to_string(),
+                "unknown".to_string(),
+            ]
+            .into_iter(),
+        )
+        .is_err());
     }
 
     #[test]

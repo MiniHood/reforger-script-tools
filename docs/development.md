@@ -207,6 +207,7 @@ dist/server/win32-x64/reforger_language_server.exe
 
 # One MCP stdio session owned by the launching client
 dist/server/win32-x64/reforger_language_server.exe mcp `
+  --tool-profile <authoring|workbench-inspect|workbench-edit|admin|all> `
   --addon-source-inventory <global-storage-workbench-graph-path> `
   --addon-index-storage <global-storage-addon-index-directory> `
   --external-index-mode <all|loaded|none>
@@ -231,8 +232,13 @@ the extension does not edit third-party client configuration itself. In
 `loaded` mode MCP filters compatible caches by the persisted Workbench graph,
 while `all` publishes every compatible cached add-on and `none` disables
 external Game Data.
-The generated [MCP API Reference](mcp-api.md) is the inspectable agent-facing
-guide and router to exact per-tool contracts; standard `tools/list` remains
+The extension-generated definition uses `authoring`, which keeps initial
+discovery to `search_reforger` and exposes only its exact evidence handoffs and
+common Workbench lifecycle tools. Other profiles add specialized Workbench
+families; `all` exposes the compatibility catalogue used by contract and
+conformance tooling.
+The generated [MCP API Reference](mcp-api.md) is the inspectable capability
+index and router to exact per-tool contracts; standard `tools/list` remains
 authoritative at runtime.
 
 ## Agent Skills library

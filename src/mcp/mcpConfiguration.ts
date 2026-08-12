@@ -52,6 +52,8 @@ const codexChoice = 'Codex config.toml';
 export function buildMcpLaunchConfiguration(inputs: McpLaunchInputs): McpLaunch {
 	const args = [
 		'mcp',
+		'--tool-profile',
+		'authoring',
 		'--addon-source-inventory',
 		inputs.addonSourceInventory,
 		'--addon-index-storage',

@@ -18,10 +18,27 @@ does not depend on or attach to the editor-owned LSP process.
 _Avoid_: LSP proxy, extension-hosted MCP, shared LSP session
 
 **MCP API Reference**:
-The exact human-readable projection of the MCP Runtime's public tool catalogue,
-including schemas, effects, limits, errors, examples, and intended tool
-handoffs.
+The exact human-readable projection of the MCP Runtime's complete compatibility
+catalogue, including schemas, effects, limits, errors, examples, and tool
+handoffs. The live catalogue is narrowed by the selected MCP Tool Profile.
 _Avoid_: manually maintained tool index, API-index tool, approximate tool list
+
+**MCP Tool Profile**:
+A named projection of the one MCP implementation catalogue. `authoring` is the
+default compact AI surface; Workbench inspection, editing, administration, and
+the complete compatibility catalogue are explicit alternatives. A profile
+changes exposure only, never semantic ownership or runtime authority.
+_Avoid_: duplicate server implementation, per-tool enablement setting, dynamic workflow policy
+
+**Unified Reforger Search**:
+The bounded `search_reforger` discovery operation over Game Data declarations,
+workspace declarations, and the packaged Official Wiki. It returns no more than
+one compact, authority-labelled hit per selected source. A resolved Game Data
+hit may include its best query-relevant member and exact inspection/read
+handoffs; an ambiguous hit exposes compact alternatives without actionable
+symbol handoffs. Literal source scans, resource catalogues, and bulk queries
+remain explicit specialist operations rather than automatic fan-out.
+_Avoid_: automatic evidence crawl, merged authority, arbitrary batch executor
 
 **Game Data Symbol Search**:
 A semantic query over extracted Reforger game-data declarations and their

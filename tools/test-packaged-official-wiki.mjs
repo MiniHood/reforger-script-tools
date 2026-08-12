@@ -38,64 +38,61 @@ try {
     toolCallRequest(3, 'official_wiki_status', {}),
   ]);
   const listed = response(wikiSession, 2).result.tools;
-  const evidenceTools = listed.slice(0, 10);
-  const installTool = listed.find(tool => tool.name === 'workbench_install_bridge');
-  const stopTool = listed.find(tool => tool.name === 'workbench_stop');
-  const restartTool = listed.find(tool => tool.name === 'workbench_restart');
-  if (listed.length !== 87
-    || evidenceTools.some(tool => tool.annotations?.readOnlyHint !== true || tool.annotations?.openWorldHint !== false)
-    || installTool?.annotations?.destructiveHint !== true
-    || stopTool?.annotations?.destructiveHint !== true
-    || restartTool?.annotations?.destructiveHint !== true) {
-    throw new Error(`Installed runtime did not advertise the expected evidence and guarded Workbench tools: ${wikiSession.stdout}`);
+  const discoveryTools = listed.filter(tool => /search|research/.test(tool.name));
+  if (listed.length !== 20
+    || discoveryTools.length !== 1
+    || discoveryTools[0]?.name !== 'search_reforger'
+    || listed.some(tool => (tool.description?.length ?? 0) > 240)
+    || listed.some(tool => tool.name === 'workbench_create_entity')) {
+    throw new Error(`Installed runtime did not advertise the compact authoring profile: ${wikiSession.stdout}`);
   }
   const status = response(wikiSession, 3);
   if (status?.result?.structuredContent?.available !== true) throw new Error(`Installed corpus was unavailable: ${wikiSession.stdout}`);
   if (status.result.structuredContent.fileCount !== Object.keys(sourcePages).filter(path => path !== 'wiki-index.md').length) throw new Error('Installed corpus page count is incomplete.');
   const wikiSearchSession = runMcp(executable, [], clientWorkingDirectory, [
-    toolCallRequest(2, 'search_official_wiki', { query: 'Reforger', limit: 1 }),
+    toolCallRequest(2, 'search_reforger', { query: 'Reforger', sources: ['officialWiki'] }),
   ]);
   assertUnderFiveSeconds('cold Official Wiki search', wikiSearchSession);
-  const readInput = response(wikiSearchSession, 2).result.structuredContent.results?.[0]?.readInput;
-  if (!readInput) throw new Error(`Installed wiki search did not return a read handoff: ${wikiSearchSession.stdout}`);
+  const readHandoff = response(wikiSearchSession, 2).result.structuredContent.results?.[0]?.read;
+  if (readHandoff?.tool !== 'read_official_wiki') throw new Error(`Installed wiki search did not return a read handoff: ${wikiSearchSession.stdout}`);
   const wikiReadSession = runMcp(executable, [], clientWorkingDirectory, [
-    toolCallRequest(2, 'read_official_wiki', readInput),
+    toolCallRequest(2, readHandoff.tool, readHandoff.arguments),
   ]);
   const wikiRead = response(wikiReadSession, 2).result.structuredContent;
-  if (!wikiRead?.sourceUrl || !wikiRead.content || wikiRead.relativePath !== readInput.relativePath) {
+  if (!wikiRead?.sourceUrl || !wikiRead.content || wikiRead.relativePath !== readHandoff.arguments.relativePath) {
     throw new Error(`Installed wiki read did not complete the search handoff: ${wikiReadSession.stdout}`);
   }
   const gameDataReadySession = runMcp(executable, [
     '--workspace-scripts', gameDataScripts,
   ], clientWorkingDirectory, [
-    toolCallRequest(2, 'search_workspace_symbols', { query: 'PackagedFixture' }),
+    toolCallRequest(2, 'search_reforger', { query: 'PackagedFixture', sources: ['workspace'] }),
   ]);
-  if (response(gameDataReadySession, 2).result.structuredContent?.results?.[0]?.name !== 'PackagedFixture') {
+  if (response(gameDataReadySession, 2).result.structuredContent?.results?.[0]?.title !== 'PackagedFixture') {
     throw new Error(`Installed workspace catalogue did not become ready: ${gameDataReadySession.stdout}`);
   }
   const gameDataSession = runMcp(executable, [
     '--workspace-scripts', gameDataScripts,
   ], clientWorkingDirectory, [
-    toolCallRequest(2, 'search_workspace_symbols', { query: 'PackagedFixture' }),
+    toolCallRequest(2, 'search_reforger', { query: 'PackagedFixture', sources: ['workspace'] }),
   ]);
   const gameDataSearch = response(gameDataSession, 2).result.structuredContent;
   assertUnderFiveSeconds('ready workspace search', gameDataSession);
   const gameDataHit = gameDataSearch?.results?.[0];
-  if (gameDataHit?.name !== 'PackagedFixture') {
+  if (gameDataHit?.title !== 'PackagedFixture') {
     throw new Error(`Installed workspace search did not complete: ${gameDataSession.stdout}`);
   }
   const gameDataInspectSession = runMcp(executable, [
     '--workspace-scripts', gameDataScripts,
   ], clientWorkingDirectory, [
-    toolCallRequest(2, 'inspect_workspace_symbol', gameDataHit.inspectInput),
+    toolCallRequest(2, gameDataHit.inspect.tool, gameDataHit.inspect.arguments),
   ]);
-  if (response(gameDataInspectSession, 2).result.structuredContent?.name !== 'PackagedFixture') {
+  if (response(gameDataInspectSession, 2).result.structuredContent?.qualifiedName !== 'PackagedFixture') {
     throw new Error(`Installed workspace inspection did not complete the search handoff: ${gameDataInspectSession.stdout}`);
   }
   const gameDataReadSession = runMcp(executable, [
     '--workspace-scripts', gameDataScripts,
   ], clientWorkingDirectory, [
-    toolCallRequest(2, 'read_workspace_source', gameDataHit.readSourceInput),
+    toolCallRequest(2, gameDataHit.read.tool, gameDataHit.read.arguments),
   ]);
   if (!response(gameDataReadSession, 2).result.structuredContent?.content.includes('class PackagedFixture')) {
     throw new Error(`Installed workspace source read did not complete the search handoff: ${gameDataReadSession.stdout}`);
@@ -108,7 +105,7 @@ try {
       throw new Error(`Installed MCP output leaked a physical path: ${session.stdout}`);
     }
   }
-  console.log(`Verified ${Object.keys(sourcePages).length} byte-identical packaged Wiki files, ${expectedAgentSkillFiles.length} reachable Agent Skill files, 87 installed tools, and independent workspace and Official Wiki workflows.`);
+  console.log(`Verified ${Object.keys(sourcePages).length} byte-identical packaged Wiki files, ${expectedAgentSkillFiles.length} reachable Agent Skill files, 20 concise authoring tools, and independent workspace and Official Wiki workflows.`);
 } finally {
   rmSync(sandbox, { recursive: true, force: true });
 }

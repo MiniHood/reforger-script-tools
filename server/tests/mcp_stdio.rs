@@ -135,19 +135,10 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .pointer("/result/instructions")
         .and_then(Value::as_str)
         .expect("server instructions");
-    for guidance in [
-        "research_game_data",
-        "compact primary result",
-        "workspace symbols",
-        "Official Wiki",
-        "copy inspection and read handoffs unchanged",
-        "full-text search",
-    ] {
-        assert!(
-            instructions.contains(guidance),
-            "missing routing guidance: {guidance}"
-        );
-    }
+    assert_eq!(
+        instructions,
+        "Search indexed Reforger knowledge and inspect or operate the configured live Workbench."
+    );
 
     client.send(json!({
         "jsonrpc": "2.0",
@@ -166,7 +157,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
             .find(|tool| tool.get("name") == Some(&json!(name)))
             .unwrap_or_else(|| panic!("missing tool {name}"))
     };
-    assert_eq!(listed.len(), 87);
+    assert_eq!(listed.len(), 91);
     assert!(listed
         .iter()
         .all(|tool| tool.get("name") != Some(&json!("workbench_list_resources"))));
@@ -525,6 +516,232 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
 }
 
 #[test]
+fn authoring_profile_exposes_one_concise_search_surface() {
+    let mut client = McpClient::spawn(&["mcp", "--tool-profile", "authoring"]);
+    let initialize = client.initialize(1);
+    assert_eq!(
+        initialize.pointer("/result/instructions"),
+        Some(&json!(
+            "Search indexed Reforger knowledge and inspect or operate the configured live Workbench."
+        ))
+    );
+
+    client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}));
+    let response = client.response(2);
+    let tools = response
+        .pointer("/result/tools")
+        .and_then(Value::as_array)
+        .expect("tool catalogue");
+    let names = tools
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    let searches = names
+        .iter()
+        .copied()
+        .filter(|name| name.contains("search") || name.starts_with("research_"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(tools.len(), 20);
+    assert_eq!(searches, vec!["search_reforger"]);
+    assert!(names.contains(&"workbench_validate_scripts"));
+    assert!(names.contains(&"workbench_reload"));
+    assert!(!names.contains(&"workbench_create_entity"));
+    assert!(tools.iter().all(|tool| {
+        tool.get("description")
+            .and_then(Value::as_str)
+            .is_some_and(|description| description.chars().count() <= 240)
+    }));
+
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
+fn unified_search_returns_one_labeled_result_per_selected_authority() {
+    let fixture = TempFixture::new("unified_reforger_search");
+    let scripts_root = fixture.path().join("game-data").join("scripts");
+    fs::create_dir_all(scripts_root.join("Game")).expect("create Game Data fixture");
+    fs::write(
+        scripts_root.join("Game").join("Lifecycle.c"),
+        "class LifecycleService\n{\n\tvoid RegisterLifecycleGroup(int groupId) {}\n}\nclass SCR_FactionGroupManager {}\nclass SCR_AIGroupManager {}\nclass SCR_PlayerGroupManager {}\nclass SCR_GroupManagerBase {}\n",
+    )
+    .expect("write Game Data source");
+    let game_data = build_game_data_cache(
+        &scripts_root,
+        &fixture.path().join("cache").join("game-data-index.bin"),
+    );
+
+    let workspace_root = fixture.path().join("workspace").join("Scripts");
+    fs::create_dir_all(workspace_root.join("Game")).expect("create workspace fixture");
+    fs::write(
+        workspace_root.join("Game").join("Lifecycle.c"),
+        "class LifecycleServiceCoordinator {}\n",
+    )
+    .expect("write workspace source");
+
+    let wiki_root = fixture.path().join("official-wiki");
+    fs::create_dir_all(wiki_root.join("Guides")).expect("create Wiki fixture");
+    fs::write(wiki_root.join("wiki-index.md"), "# Wiki Markdown Index\n")
+        .expect("write Wiki index");
+    fs::write(
+        wiki_root.join("Guides").join("Lifecycle.md"),
+        "# [Lifecycle](https://community.bistudio.com/wiki/Arma_Reforger:Lifecycle)\n\n## Lifecycle callbacks\nLifecycleService callback guidance.\n",
+    )
+    .expect("write Wiki page");
+
+    let mut arguments = game_data.arguments;
+    arguments.extend([
+        "--tool-profile".to_string(),
+        "authoring".to_string(),
+        "--workspace-scripts".to_string(),
+        workspace_root.to_string_lossy().into_owned(),
+        "--official-wiki-root".to_string(),
+        wiki_root.to_string_lossy().into_owned(),
+    ]);
+    let mut client = McpClient::spawn_owned(&arguments);
+    client.initialize(1);
+    client.send(json!({
+        "jsonrpc":"2.0","id":2,"method":"tools/call",
+        "params":{"name":"search_reforger","arguments":{"query":"LifecycleService"}}
+    }));
+    let response = client.response(2);
+    assert_eq!(response.pointer("/result/isError"), Some(&json!(false)));
+    let result = response
+        .pointer("/result/structuredContent")
+        .expect("unified search result");
+    assert_eq!(result.get("query"), Some(&json!("LifecycleService")));
+    let hits = result
+        .get("results")
+        .and_then(Value::as_array)
+        .expect("search hits");
+    assert_eq!(hits.len(), 3);
+    assert_eq!(
+        hits.iter()
+            .filter_map(|hit| hit.get("source").and_then(Value::as_str))
+            .collect::<Vec<_>>(),
+        vec!["gameData", "workspace", "officialWiki"]
+    );
+    assert!(hits.iter().all(|hit| {
+        hit.get("title")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+            && hit
+                .get("description")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+            && (hit.get("inspect").is_some() || hit.get("read").is_some())
+    }));
+    assert_eq!(
+        result
+            .get("sources")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(3)
+    );
+
+    let inspect = hits[0].get("inspect").expect("Game Data inspect handoff");
+    assert_eq!(inspect.get("tool"), Some(&json!("inspect_symbol")));
+    client.send(json!({
+        "jsonrpc":"2.0","id":3,"method":"tools/call",
+        "params":{
+            "name":inspect.get("tool").expect("inspect tool"),
+            "arguments":inspect.get("arguments").expect("inspect arguments")
+        }
+    }));
+    assert_eq!(
+        client
+            .response(3)
+            .pointer("/result/structuredContent/qualifiedName"),
+        Some(&json!("LifecycleService"))
+    );
+
+    client.send(json!({
+        "jsonrpc":"2.0","id":4,"method":"tools/call",
+        "params":{
+            "name":"search_reforger",
+            "arguments":{"query":"LifecycleService","sources":["officialWiki"]}
+        }
+    }));
+    let wiki_only = client.response(4);
+    assert_eq!(
+        wiki_only
+            .pointer("/result/structuredContent/results")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        wiki_only.pointer("/result/structuredContent/results/0/source"),
+        Some(&json!("officialWiki"))
+    );
+
+    client.send(json!({
+        "jsonrpc":"2.0","id":5,"method":"tools/call",
+        "params":{
+            "name":"search_reforger",
+            "arguments":{
+                "query":"LifecycleService register lifecycle group",
+                "sources":["gameData"]
+            }
+        }
+    }));
+    let member_search = client.response(5);
+    assert_eq!(
+        member_search.pointer("/result/structuredContent/results/0/status"),
+        Some(&json!("resolved"))
+    );
+    assert_eq!(
+        member_search.pointer("/result/structuredContent/results/0/relevantMember/title"),
+        Some(&json!("RegisterLifecycleGroup"))
+    );
+    assert_eq!(
+        member_search.pointer("/result/structuredContent/results/0/relevantMember/inspect/tool"),
+        Some(&json!("inspect_symbol"))
+    );
+
+    client.send(json!({
+        "jsonrpc":"2.0","id":6,"method":"tools/call",
+        "params":{
+            "name":"search_reforger",
+            "arguments":{"query":"group manager","sources":["gameData"]}
+        }
+    }));
+    let ambiguous = client.response(6);
+    assert_eq!(
+        ambiguous.pointer("/result/structuredContent/results/0/status"),
+        Some(&json!("ambiguous"))
+    );
+    assert!(ambiguous
+        .pointer("/result/structuredContent/results/0/alternatives")
+        .and_then(Value::as_array)
+        .is_some_and(|alternatives| !alternatives.is_empty()));
+    for field in ["inspect", "read", "symbolRef", "relevantMember"] {
+        assert!(
+            ambiguous
+                .pointer(&format!("/result/structuredContent/results/0/{field}"))
+                .is_none(),
+            "ambiguous hits must not expose {field}"
+        );
+    }
+
+    client.send(json!({
+        "jsonrpc":"2.0","id":7,"method":"tools/call",
+        "params":{
+            "name":"search_reforger",
+            "arguments":{"query":"Lifecycle","sources":[]}
+        }
+    }));
+    assert_eq!(
+        client.response(7).pointer("/result/structuredContent/code"),
+        Some(&json!("invalid_arguments"))
+    );
+
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
 fn mcp_research_game_data_resolves_natural_language_without_dumping_source() {
     let fixture = TempFixture::new("mcp_intent_research");
     let scripts_root = fixture.path().join("scripts");
@@ -806,7 +1023,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
             .find(|tool| tool.get("name") == Some(&json!(name)))
             .unwrap_or_else(|| panic!("missing tool {name}"))
     };
-    assert_eq!(listed.len(), 87);
+    assert_eq!(listed.len(), 91);
     let research = tool("research_game_data");
     tool("list_game_data_symbol_members");
     tool("query_game_data_symbol_relationships");
@@ -2244,6 +2461,59 @@ fn timed_out_research_workers_retain_admission_until_they_exit() {
 }
 
 #[test]
+fn timed_out_unified_search_workers_retain_admission_until_they_exit() {
+    let fixture = TempFixture::new("mcp_unified_search_admission");
+    let scripts_root = fixture.path().join("scripts");
+    fs::create_dir_all(&scripts_root).expect("create scripts fixture");
+    fs::write(scripts_root.join("Admission.c"), "class Admission {}")
+        .expect("write game-data fixture");
+    let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    let game_data = build_game_data_cache(&scripts_root, &cache_path);
+    let admission_marker = fixture.path().join("admitted-requests");
+    let mut arguments = game_data.arguments;
+    arguments.extend(["--tool-profile".to_string(), "authoring".to_string()]);
+    let mut client = McpClient::spawn_owned_with_env(
+        &arguments,
+        &[
+            ("REFORGER_MCP_TEST_RESEARCH_NONCOOPERATIVE_DELAY_MS", "500"),
+            ("REFORGER_MCP_TEST_GAME_DATA_OPERATION_DEADLINE_MS", "50"),
+            (
+                "REFORGER_MCP_TEST_ADMISSION_MARKER",
+                admission_marker.to_str().expect("utf-8 marker path"),
+            ),
+        ],
+    );
+    client.initialize(1);
+    client.call_status(2);
+    fs::write(&admission_marker, "").expect("clear status admission marker");
+    for id in 10..19 {
+        client.send(json!({
+            "jsonrpc":"2.0",
+            "id":id,
+            "method":"tools/call",
+            "params":{
+                "name":"search_reforger",
+                "arguments":{"query":"Admission","sources":["gameData"]}
+            }
+        }));
+    }
+
+    wait_for_lines(&admission_marker, 8, Duration::from_secs(2));
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        file_line_count(&admission_marker),
+        8,
+        "the ninth unified search must wait while timed-out workers still hold admission"
+    );
+    let responses = client.take_responses(9);
+    assert!(responses.iter().all(|response| {
+        response.pointer("/result/structuredContent/code") == Some(&json!("deadline_exceeded"))
+    }));
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
 fn cancelled_intent_research_releases_admission_for_the_next_request() {
     let fixture = TempFixture::new("mcp_cancelled_intent_research_admission");
     let scripts_root = fixture.path().join("scripts");
@@ -2782,6 +3052,9 @@ impl McpClient {
     fn spawn_program_with_env(program: &Path, args: &[&str], environment: &[(&str, &str)]) -> Self {
         let mut command = Command::new(program);
         command.args(args);
+        if args.first() == Some(&"mcp") && !args.contains(&"--tool-profile") {
+            command.args(["--tool-profile", "all"]);
+        }
         for (name, value) in environment {
             command.env(name, value);
         }

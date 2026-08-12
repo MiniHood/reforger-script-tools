@@ -18,6 +18,8 @@ suite('MCP configuration', () => {
 			command: 'C:\\Extensions\\reforger_language_server.exe',
 			args: [
 				'mcp',
+				'--tool-profile',
+				'authoring',
 				'--addon-source-inventory',
 				'C:\\Storage\\addon-sources\\workbench-graph-v1.json',
 				'--addon-index-storage',
@@ -38,6 +40,8 @@ suite('MCP configuration', () => {
 
 		assert.deepStrictEqual(launch.args, [
 			'mcp',
+			'--tool-profile',
+			'authoring',
 			'--addon-source-inventory',
 			'/storage/addon-sources/workbench-graph-v1.json',
 			'--addon-index-storage',
@@ -84,6 +88,8 @@ suite('MCP configuration', () => {
 
 		assert.deepStrictEqual(launch.args, [
 			'mcp',
+			'--tool-profile',
+			'authoring',
 			'--addon-source-inventory',
 			'/storage/graph.json',
 			'--addon-index-storage',

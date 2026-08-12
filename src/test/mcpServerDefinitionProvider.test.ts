@@ -150,8 +150,10 @@ suite('MCP server definition provider', () => {
 				command: serverPath,
 				args: definition.args,
 			});
-			assert.deepStrictEqual(definition.args.slice(0, 7), [
+			assert.deepStrictEqual(definition.args.slice(0, 9), [
 				'mcp',
+				'--tool-profile',
+				'authoring',
 				'--addon-source-inventory',
 				path.join(context.globalStorageUri.fsPath, 'addon-sources', 'workbench-graph-v1.json'),
 				'--addon-index-storage',
@@ -159,7 +161,7 @@ suite('MCP server definition provider', () => {
 				'--external-index-mode',
 				'loaded',
 			]);
-			assert.deepStrictEqual(definition.args.slice(7, 9), [
+			assert.deepStrictEqual(definition.args.slice(9, 11), [
 				'--official-wiki-root',
 				path.join(extensionPath, 'data', 'official-wiki'),
 			]);
