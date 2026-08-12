@@ -117,7 +117,9 @@ pub enum GameDataIntentError {
 struct IntentCandidate {
     id: GlobalSymbolId,
     score: u32,
+    evidence_score: u32,
     whole_query_exact: bool,
+    identifier_anchor: bool,
     origin_rank: u8,
     matched_terms: Vec<String>,
 }
@@ -164,6 +166,10 @@ pub fn research_game_data(
         .iter()
         .filter(|candidate| candidate.whole_query_exact)
         .count();
+    let anchor_matches = candidates
+        .iter()
+        .filter(|candidate| candidate.identifier_anchor)
+        .count();
     candidates.truncate(MAX_ALTERNATIVES + 1);
     let Some(primary_candidate) = candidates.first() else {
         return Ok(not_found(catalogue_revision, query));
@@ -188,11 +194,28 @@ pub fn research_game_data(
             .map(|candidate| project_alternative(index, addon_map, catalogue_revision, candidate))
             .collect::<Result<Vec<_>, _>>()?
     };
+    let covered_terms = primary
+        .matched_terms
+        .iter()
+        .chain(
+            primary
+                .relevant_members
+                .iter()
+                .flat_map(|member| member.matched_terms.iter()),
+        )
+        .collect::<BTreeSet<_>>();
+    let coverage_is_sufficient = !query_terms.is_empty()
+        && covered_terms.len().saturating_mul(4) >= query_terms.len().saturating_mul(3);
+    let confidence_lead = candidates.get(1).is_none_or(|next| {
+        primary_candidate.evidence_score >= next.evidence_score.saturating_add(100)
+    });
     let resolved = exact_is_unique
-        || (primary_candidate.matched_terms.len() >= 2
-            && candidates
-                .get(1)
-                .is_none_or(|next| primary_candidate.score >= next.score.saturating_add(100)));
+        || (coverage_is_sufficient
+            && if primary_candidate.identifier_anchor {
+                anchor_matches == 1
+            } else {
+                confidence_lead
+            });
     Ok(GameDataIntentResult {
         status: if resolved {
             IntentStatus::Resolved
@@ -280,27 +303,22 @@ fn project_primary(
             if member_candidate.matched_terms.len() < required_member_matches {
                 return None;
             }
+            let member_name = member.name.as_deref()?;
+            let member_qualified_name = qualify(owner_name(index, member).as_deref(), member_name);
             let projected = IntentMember {
                 symbol_ref: symbol_ref_for(
                     index,
                     addon_map,
                     catalogue_revision,
                     member,
-                    &qualify(
-                        owner_name(index, member).as_deref(),
-                        member.name.as_deref()?,
-                    ),
+                    &member_qualified_name,
                 )
                 .ok()?,
-                name: member.name.clone()?,
+                name: member_name.to_string(),
                 kind: kind_name(member.kind).to_string(),
-                signature: compact_signature(
-                    member,
-                    &qualify(
-                        owner_name(index, member).as_deref(),
-                        member.name.as_deref()?,
-                    ),
-                ),
+                signature: index
+                    .callable_signature(member.id)
+                    .unwrap_or_else(|| compact_signature(member, &member_qualified_name)),
                 matched_terms: member_candidate.matched_terms.clone(),
             };
             Some((member_candidate, projected))
@@ -485,7 +503,7 @@ fn score_candidate(
     .join(" ")
     .to_lowercase();
     let mut matched_terms = Vec::new();
-    let mut score = if identifier_anchor { 10_000 } else { 0 };
+    let mut evidence_score = 0;
     for term in query_terms {
         let term_score = if name_terms.contains(term) {
             240
@@ -499,7 +517,7 @@ fn score_candidate(
             0
         };
         if term_score > 0 {
-            score += term_score;
+            evidence_score += term_score;
             matched_terms.push(term.clone());
         }
     }
@@ -511,18 +529,20 @@ fn score_candidate(
             crate::model::SymbolKind::Method | crate::model::SymbolKind::Function
         )
     {
-        score += 120;
+        evidence_score += 120;
     }
     if !identifier_anchor && matched_terms.is_empty() {
         return None;
     }
-    score += u32::try_from(matched_terms.len())
+    evidence_score += u32::try_from(matched_terms.len())
         .unwrap_or(u32::MAX)
         .saturating_mul(80);
     Some(IntentCandidate {
         id: symbol.id,
-        score,
+        score: evidence_score + if identifier_anchor { 10_000 } else { 0 },
+        evidence_score,
         whole_query_exact,
+        identifier_anchor,
         origin_rank: crate::game_data_search::declaration_origin_rank(index, symbol),
         matched_terms,
     })
@@ -589,8 +609,8 @@ fn normalize_term(value: &str) -> String {
 }
 
 const STOP_WORDS: &[&str] = &[
-    "a", "an", "and", "for", "from", "get", "how", "in", "me", "of", "on", "the", "this", "to",
-    "when", "where", "with",
+    "a", "an", "and", "callback", "for", "from", "function", "get", "hook", "how", "in", "me",
+    "method", "of", "on", "the", "this", "to", "when", "where", "with",
 ];
 
 #[cfg(test)]
@@ -694,6 +714,27 @@ mod tests {
     }
 
     #[test]
+    fn embedded_identifier_does_not_override_contradictory_query_terms() {
+        let (index, starts, addons) = fixture("class SCR_BaseGameMode { void OnGameEnd() {} }\n");
+
+        let result = research_game_data(
+            &index,
+            &starts,
+            &addons,
+            &IndexBuildControl::default(),
+            "revision-1",
+            GameDataIntentRequest {
+                query: "OnGameEnd unregister faction membership".to_string(),
+                addon_guids: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.status, IntentStatus::Ambiguous);
+        assert_eq!(result.follow_up, IntentFollowUp::RefineQuery);
+    }
+
+    #[test]
     fn natural_language_resolves_a_member_from_its_name_and_owner_terms() {
         let (index, starts, addons) =
             fixture("class SCR_BaseGameMode { void OnGameEnd(int reason, string message) {} void RestartRound() {} }\n");
@@ -733,7 +774,7 @@ mod tests {
     fn explicit_owner_anchor_returns_only_query_relevant_members() {
         let (index, starts, addons) = fixture(
             "class SCR_FactionManager {\n\
-                void UnregisterFactionGroup() {}\n\
+                void UnregisterFactionGroup(int factionId, bool notifyMembers) {}\n\
                 void RegisterFactionGroup() {}\n\
                 void RestartSession() {}\n\
             }\n",
@@ -801,7 +842,7 @@ mod tests {
                 void FactionGroupHelperThree() {}\n\
                 void FactionGroupHelperFour() {}\n\
                 void FactionGroupHelperFive() {}\n\
-                void UnregisterFactionGroup() {}\n\
+                void UnregisterFactionGroup(int factionId, bool notifyMembers) {}\n\
             }\n",
         );
 
@@ -818,10 +859,14 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            result.primary.expect("primary").relevant_members[0].name,
-            "UnregisterFactionGroup"
-        );
+        let primary = result.primary.expect("primary");
+        assert_eq!(primary.relevant_members[0].name, "UnregisterFactionGroup");
+        assert!(primary.relevant_members[0]
+            .signature
+            .contains("int factionId"));
+        assert!(primary.relevant_members[0]
+            .signature
+            .contains("bool notifyMembers"));
     }
 
     #[test]
