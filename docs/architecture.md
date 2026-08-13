@@ -179,7 +179,10 @@ Each selected authority contributes at most one compact result. Resolved Game
 Data results may also carry one best query-relevant member;
 ambiguous results carry compact alternatives but no exact action handoff.
 Separate `workbench-inspect`, `workbench-edit`, and `admin` profiles add specialized live
-capability families; `all` retains the complete compatibility catalogue. Profiles
+capability families; `all` retains the complete compatibility catalogue. The
+profile is selected when the MCP process starts and cannot be switched within
+that session. The extension-contributed definition always selects `authoring`;
+external clients can start a separate process with another profile. Profiles
 change only MCP exposure, not implementation ownership or semantic authority.
 
 The extension also contributes three repository-owned Agent Skills through VS
@@ -231,7 +234,9 @@ surface uses `search_reforger` for initial discovery and returns
 authority-labelled results with ready-to-copy generic symbol inspection or exact
 source-read handoffs. The complete `all` profile retains authority-specific
 intent, semantic, resource, literal-text, and relationship operations for clients
-that require their additional controls.
+that require their additional controls. `search_reforger` searches semantic
+declarations and Wiki passages; it does not perform literal source-text scans or
+resource-catalogue discovery.
 Game Data intent, symbol, and text searches accept a set of loaded add-on GUIDs,
 and every returned
 source handoff retains its add-on GUID so colliding logical paths remain

@@ -86,9 +86,11 @@ available when Workbench integration is disabled or Workbench is closed.
 Native MCP discovery does not enable Workbench integration, contact the
 Workbench NET API, or install the managed bridge. Its compact authoring profile
 provides one cross-authority search plus exact evidence handoffs and common
-Workbench lifecycle tools. Specialized inspection, editing, administration,
-and compatibility profiles remain available to external clients. Enable
-Workbench integration separately when live editor capabilities are wanted.
+Workbench lifecycle tools. The native VS Code definition selects that profile
+when it starts the MCP process; profiles do not change within a running session.
+External clients can select specialized inspection, editing, administration, or
+complete compatibility profiles at process start. Enable Workbench integration
+separately when live editor capabilities are wanted.
 
 The same one-time extension install contributes three Agent Skills to VS Code
 Chat:

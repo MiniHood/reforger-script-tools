@@ -5977,7 +5977,8 @@ When `isError` is true, inspect the structured stable error and follow its `reco
 ## Tool profiles\n\n\
 The default `authoring` profile exposes the compact search, exact evidence handoffs, and common Workbench lifecycle tools. \
 Use `--tool-profile workbench-inspect`, `workbench-edit`, or `admin` to add the corresponding capability family. \
-Use `--tool-profile all` for compatibility and complete contract inspection; legacy authority-specific search and symbol tools remain there during migration and may be removed after clients use `search_reforger` and the generic symbol handoffs.\n\n\
+Use `--tool-profile all` for compatibility and complete contract inspection; legacy authority-specific search and symbol tools remain there during migration and may be removed after clients use `search_reforger` and the generic symbol handoffs. \
+The profile is fixed when the MCP process starts. The VS Code extension starts `authoring`; external clients select another profile with the launch argument.\n\n\
 ## Expected tool failures\n\n\
 When a valid tool request cannot complete, every tool family returns a structured error with `ok: false`, stable `code`, caller-facing `message`, actionable `recovery`, and `retryable`. Workbench failures additionally include `phase` and a sanitized `logReference`. Invalid arguments and unknown tool names remain MCP protocol errors.\n\n"
     );
@@ -6185,8 +6186,8 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         wiki_read_input_schema,
         wiki_read_output_schema,
     ));
+    append_search_reforger_reference(&mut reference, &descriptor(SEARCH_REFORGER_TOOL_NAME));
     for name in [
-        SEARCH_REFORGER_TOOL_NAME,
         INSPECT_SYMBOL_TOOL_NAME,
         LIST_SYMBOL_MEMBERS_TOOL_NAME,
         QUERY_SYMBOL_RELATIONSHIPS_TOOL_NAME,
@@ -6293,6 +6294,25 @@ fn append_evidence_tool_reference(reference: &mut String, tool: &Tool) {
             .expect("tool output schema serializes");
     reference.push_str(&format!(
         "\n## `{}`\n\n{}\n\n### Annotations\n\n```json\n{}\n```\n\n### Input schema\n\n```json\n{}\n```\n\n### Output schema\n\n```json\n{}\n```\n\n### Failure model\n\nInvalid schemas and unavailable tools are MCP protocol errors. Valid calls return either their typed evidence result or the stable structured error owned by the selected Game Data, workspace, or Official Wiki authority. These read-only tools do not return Workbench operation phases or integration-log references.\n",
+        tool.name,
+        tool.description.as_deref().unwrap_or_default(),
+        annotations,
+        input,
+        output,
+    ));
+}
+
+fn append_search_reforger_reference(reference: &mut String, tool: &Tool) {
+    let annotations =
+        serde_json::to_string_pretty(tool.annotations.as_ref().expect("tool annotations"))
+            .expect("tool annotations serialize");
+    let input = serde_json::to_string_pretty(tool.input_schema.as_ref())
+        .expect("tool input schema serializes");
+    let output =
+        serde_json::to_string_pretty(tool.output_schema.as_deref().expect("tool output schema"))
+            .expect("tool output schema serializes");
+    reference.push_str(&format!(
+        "\n## `{}`\n\n{}\n\n### Search scope\n\nOne query may select any combination of `gameData`, `workspace`, and `officialWiki`; omitting `sources` selects all three. Each selected authority contributes at most one compact result. Game Data and workspace matching is declaration-aware, while Official Wiki matching returns a passage. This tool does not scan literal source text or discover resources; those specialist operations remain available in the `all` profile.\n\n### Annotations\n\n```json\n{}\n```\n\n### Input schema\n\n```json\n{}\n```\n\n### Output schema\n\n```json\n{}\n```\n\n### Failure model\n\nInvalid schemas and unavailable tools are MCP protocol errors. Valid calls return either their typed evidence result or the stable structured error owned by the selected Game Data, workspace, or Official Wiki authority. This read-only tool does not return Workbench operation phases or integration-log references.\n",
         tool.name,
         tool.description.as_deref().unwrap_or_default(),
         annotations,
@@ -7857,7 +7877,7 @@ mod tests {
         workbench_validate_scripts_tool, workbench_viewport_context_tool,
         workbench_world_selection_summary_tool, ReforgerMcpServer, DEADLINE_EXCEEDED_CODE,
         GAME_DATA_STATUS_TOOL_NAME, QUERY_SOURCE_SYMBOL_RELATIONSHIPS_TOOL_NAME,
-        RESPONSE_TOO_LARGE_CODE, WORKBENCH_ADD_COMPONENT_TOOL_NAME,
+        RESPONSE_TOO_LARGE_CODE, SEARCH_REFORGER_TOOL_NAME, WORKBENCH_ADD_COMPONENT_TOOL_NAME,
         WORKBENCH_CAPTURE_WINDOW_TOOL_NAME, WORKBENCH_CONVERT_SHAPE_POINTS_TOOL_NAME,
         WORKBENCH_CREATE_PREFAB_TOOL_NAME, WORKBENCH_DUPLICATE_ENTITY_TOOL_NAME,
         WORKBENCH_EDIT_SPLINE_TOOL_NAME, WORKBENCH_INSPECT_COMPONENT_TOOL_NAME,
@@ -8148,6 +8168,9 @@ mod tests {
         assert!(reference.contains("## How to use this MCP server"));
         assert!(reference.contains("## Tool profiles"));
         assert!(reference.contains("`authoring` profile"));
+        assert!(reference.contains("profile is fixed when the MCP process starts"));
+        assert!(contracts[SEARCH_REFORGER_TOOL_NAME]
+            .contains("This tool does not scan literal source text or discover resources"));
         assert!(!reference.contains("## AI operating guide"));
         assert!(!reference.contains("## Workflow"));
         assert!(reference.contains("## API router"));

@@ -5,6 +5,10 @@
 
 Search Game Data declarations, workspace declarations, and Official Wiki passages. Returns one labeled hit per source, with exact handoffs only when resolved.
 
+### Search scope
+
+One query may select any combination of `gameData`, `workspace`, and `officialWiki`; omitting `sources` selects all three. Each selected authority contributes at most one compact result. Game Data and workspace matching is declaration-aware, while Official Wiki matching returns a passage. This tool does not scan literal source text or discover resources; those specialist operations remain available in the `all` profile.
+
 ### Annotations
 
 ```json
@@ -262,4 +266,4 @@ Search Game Data declarations, workspace declarations, and Official Wiki passage
 
 ### Failure model
 
-Invalid schemas and unavailable tools are MCP protocol errors. Valid calls return either their typed evidence result or the stable structured error owned by the selected Game Data, workspace, or Official Wiki authority. These read-only tools do not return Workbench operation phases or integration-log references.
+Invalid schemas and unavailable tools are MCP protocol errors. Valid calls return either their typed evidence result or the stable structured error owned by the selected Game Data, workspace, or Official Wiki authority. This read-only tool does not return Workbench operation phases or integration-log references.

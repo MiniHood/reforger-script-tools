@@ -236,7 +236,11 @@ The extension-generated definition uses `authoring`, which keeps initial
 discovery to `search_reforger` and exposes only its exact evidence handoffs and
 common Workbench lifecycle tools. Other profiles add specialized Workbench
 families; `all` exposes the compatibility catalogue used by contract and
-conformance tooling.
+conformance tooling. A profile is fixed for the lifetime of the MCP process, so
+select a different `--tool-profile` when launching a separate external client
+session. `search_reforger` covers semantic declarations and Official Wiki
+passages; literal source-text and resource-catalogue searches remain specialist
+operations in `all`.
 The generated [MCP API Reference](mcp-api.md) is the inspectable capability
 index and router to exact per-tool contracts; standard `tools/list` remains
 authoritative at runtime.
