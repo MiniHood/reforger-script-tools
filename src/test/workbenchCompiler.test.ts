@@ -1115,7 +1115,7 @@ async function startCompilerPeer(
 			return {
 				errorCode: 'Ok',
 				payload: {
-					bridgeVersion: '1.52.12',
+			bridgeVersion: '1.52.13',
 					protocolVersion: 1,
 					graphJson: '[]',
 				},

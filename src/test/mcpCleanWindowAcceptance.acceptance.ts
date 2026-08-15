@@ -1,6 +1,4 @@
 import * as assert from 'node:assert';
-import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { mcpServer } from '../extensionConfig/mcp';
 import {
@@ -24,21 +22,7 @@ suite('native MCP clean-window acceptance', () => {
 		assert.ok(extension, 'development extension is discoverable');
 		assert.strictEqual(extension.isActive, false);
 
-		const skills = extension.packageJSON.contributes.chatSkills as Array<{ path: string }>;
-		assert.deepStrictEqual(skills, [
-			{ path: './skills/reforger/SKILL.md' },
-			{ path: './skills/reforger-deep-dive/SKILL.md' },
-			{ path: './skills/reforger-workbench-edit/SKILL.md' },
-		]);
-		for (const skill of skills) {
-			await fs.access(path.join(extension.extensionPath, skill.path));
-		}
-		const commands = await vscode.commands.getCommands(true);
-		assert.ok(commands.includes('workbench.action.chat.configure.skills'));
-		assert.deepStrictEqual(
-			await discoverContributedSkills(extension, skills.map(skill => skill.path)),
-			skills.map(skill => skill.path),
-		);
+		assert.deepStrictEqual(extension.packageJSON.contributes.chatSkills ?? [], []);
 		assert.strictEqual(extension.isActive, false);
 
 		const discovery = vscode.commands.executeCommand('workbench.mcp.listServer');
@@ -94,35 +78,6 @@ suite('native MCP clean-window acceptance', () => {
 		assert.strictEqual(observation.statusVisible, false);
 	});
 });
-
-async function discoverContributedSkills(
-	extension: vscode.Extension<unknown>,
-	expectedPaths: string[],
-): Promise<string[]> {
-	const expectedByFile = new Map(expectedPaths.map(skillPath => [
-		path.normalize(path.join(extension.extensionPath, skillPath)).toLowerCase(),
-		skillPath,
-	]));
-	const discovered = new Set<string>();
-	for (let index = 0; index < 64 && discovered.size < expectedPaths.length; index += 1) {
-		const selection = vscode.commands.executeCommand('workbench.action.chat.configure.skills');
-		await new Promise(resolve => setTimeout(resolve, 50));
-		for (let offset = 0; offset < index; offset += 1) {
-			await vscode.commands.executeCommand('workbench.action.quickOpenNavigateNext');
-		}
-		await vscode.commands.executeCommand('workbench.action.acceptSelectedQuickOpenItem');
-		await Promise.resolve(selection);
-		const activePath = vscode.window.activeTextEditor?.document.uri.fsPath;
-		if (activePath) {
-			const contributedPath = expectedByFile.get(path.normalize(activePath).toLowerCase());
-			if (contributedPath) {
-				discovered.add(contributedPath);
-			}
-		}
-	}
-	await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
-	return expectedPaths.filter(skillPath => discovered.has(skillPath));
-}
 
 async function waitUntil(predicate: () => boolean): Promise<void> {
 	for (let attempt = 0; attempt < 100 && !predicate(); attempt += 1) {

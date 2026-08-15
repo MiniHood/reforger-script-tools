@@ -24,7 +24,7 @@
     {"name":"open-world-editor","tool":"workbench_open_editor","arguments":{"editorId":"world"},"expect":{"pointers":{"/result/structuredContent/opened":true}}},
     {"name":"open-world","tool":"workbench_open_resource","arguments":{"resourcePath":"$fixture.worldResource"},"expect":{"pointers":{"/result/structuredContent/opened":true}}},
     {"name":"validate-scripts","tool":"workbench_validate_scripts","arguments":{"limit":20}},
-    {"name":"install-bridge","tool":"workbench_install_bridge","arguments":{},"expect":{"pointers":{"/result/structuredContent/installedVersion":"1.52.12"}}},
+    {"name":"install-bridge","tool":"workbench_install_bridge","arguments":{},"expect":{"pointers":{"/result/structuredContent/installedVersion":"1.52.13"}}},
     {"name":"read-integration-log","tool":"workbench_read_logs","arguments":{"source":"integration","lineCount":20},"expect":{"pointers":{"/result/structuredContent/source":"integration"}}},
     {"name":"reuse-launched-workbench","tool":"workbench_launch","arguments":{"projectPath":"$fixture.projectPath"},"expect":{"pointers":{"/result/structuredContent/alreadyRunning":true,"/result/structuredContent/netApiConnected":true}}},
     {"name":"reject-unknown-stop-process","tool":"workbench_stop","arguments":{"processId":0},"expect":{"isError":true,"error":{"code":"workbench_unavailable","phase":"stop"}}},

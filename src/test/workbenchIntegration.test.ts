@@ -471,7 +471,7 @@ function bootstrapResult(
 			enfusionProtocolRegistered: true,
 			enfusionProtocolWritePerformed: true,
 			bridgeInstalled: true,
-			bridgeVersion: '1.52.12',
+			bridgeVersion: '1.52.13',
 			bridgeChanged: overrides.bridgeChanged ?? false,
 			profileAvailable: overrides.profileAvailable ?? true,
 		},

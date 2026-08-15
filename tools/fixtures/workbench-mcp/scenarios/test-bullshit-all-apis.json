@@ -5,7 +5,7 @@
   "steps": [
     {"name":"status","tool":"workbench_status","arguments":{},"expect":{"pointers":{"/result/structuredContent/isRunning":true}}},
     {"name":"state","tool":"workbench_state","arguments":{},"expect":{"pointers":{"/result/structuredContent/mode":"world-editor","/result/structuredContent/activeWorldPath":"$fixture.worldResource"}}},
-    {"name":"install-bridge","tool":"workbench_install_bridge","arguments":{},"expect":{"pointers":{"/result/structuredContent/installedVersion":"1.52.12"}}},
+    {"name":"install-bridge","tool":"workbench_install_bridge","arguments":{},"expect":{"pointers":{"/result/structuredContent/installedVersion":"1.52.13"}}},
     {"name":"project-context","tool":"workbench_project_context","arguments":{},"expect":{"contains":{"/result/structuredContent/loadedAddons":["ArmaReforger","TestBullshit"]}}},
     {"name":"validate-scripts","tool":"workbench_validate_scripts","arguments":{"limit":20},"expect":{"pointers":{"/result/structuredContent/success":true}}},
     {"name":"discover-world-resource","tool":"workbench_search_resources","arguments":{"kinds":["world"],"query":"empty_test","limit":20},"capture":{"worldResourceName":"/result/structuredContent/results/0/resourceName"},"expect":{"exists":["/result/structuredContent/results/0/resourceName"]}},

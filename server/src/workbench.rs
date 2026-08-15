@@ -125,7 +125,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.52.12";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.52.13";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 const WORKBENCH_REQUIRED_ADDONS: &str = "58D0FB3206B6F859,5614BBCCBB55ED1C";
 
@@ -9053,7 +9053,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request, json!({"APIFunc": "RST_WorkbenchLoadedAddonGraph"}));
             json!({
-                "bridgeVersion": "1.52.12",
+                "bridgeVersion": "1.52.13",
                 "protocolVersion": 1,
                 "graphJson": "[{\"guid\":\"58D0FB3206B6F859\",\"id\":\"ArmaReforger\",\"title\":\"Arma Reforger\",\"sourceRoot\":\"C:/Game/addons/data\"},{\"guid\":\"684CE8AA3B1D6573\",\"id\":\"GCSuppression\",\"title\":\"GC Suppression\",\"sourceRoot\":\"C:/Workbench/addons/GC-Suppression\"}]"
             })
@@ -9378,7 +9378,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchCapabilities"}),
                 json!({
-                    "bridgeVersion": "1.52.12",
+                    "bridgeVersion": "1.52.13",
                     "protocolVersion": 1,
                     "runtimeGeneration": 8,
                     "capabilities": "state"
@@ -9446,7 +9446,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchCapabilities"}),
                 json!({
-                    "bridgeVersion": "1.52.12",
+                    "bridgeVersion": "1.52.13",
                     "protocolVersion": 1,
                     "runtimeGeneration": 7,
                     "capabilities": "state"
@@ -9455,7 +9455,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchState", "executeSaveAllAction": true}),
                 json!({
-                    "bridgeVersion": "1.52.12",
+                    "bridgeVersion": "1.52.13",
                     "protocolVersion": 1,
                     "saveAllActionAccepted": true,
                     "saveAllActionPath": "File/Save All",
@@ -9466,7 +9466,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchState", "executeReloadAction": true}),
                 json!({
-                    "bridgeVersion": "1.52.12",
+                    "bridgeVersion": "1.52.13",
                     "protocolVersion": 1,
                     "reloadActionAccepted": true,
                     "reloadActionPath": "Plugins/Settings/Reload WB Scripts"
@@ -9484,7 +9484,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchCapabilities"}),
                 json!({
-                    "bridgeVersion": "1.52.12",
+                    "bridgeVersion": "1.52.13",
                     "protocolVersion": 1,
                     "runtimeGeneration": 9,
                     "capabilities": "state"
@@ -9663,8 +9663,8 @@ mod tests {
                     "resourceName": "{00B6CAF6E4A5BAB4}Prefabs/Props/Test.et"
                 })
             );
-            json!({
-                "bridgeVersion": "1.52.12",
+                json!({
+                    "bridgeVersion": "1.52.13",
                 "protocolVersion": 1,
                 "found": 1,
                 "status": "found",
@@ -11478,7 +11478,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request, json!({"APIFunc": "RST_WorkbenchState"}));
             json!({
-                "bridgeVersion": "1.52.12",
+                "bridgeVersion": "1.52.13",
                 "protocolVersion": 1,
                 "mode": "world-editor",
                 "worldEditorActive": true,
@@ -12434,6 +12434,32 @@ mod tests {
     }
 
     #[test]
+    fn old_bridge_version_is_marked_for_automatic_maintenance() {
+        let root = test_root("old-bridge-version-maintenance");
+        let bridge = root.join("bridge");
+        let controller =
+            super::WorkbenchController::new(super::WorkbenchControllerOptions::default());
+        controller.write_managed_files(&bridge).unwrap();
+
+        let manifest_path = bridge.join("reforger-script-tools.manifest.json");
+        let mut manifest: super::BridgeManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest.bridge_version = "1.52.12".to_string();
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        assert!(controller.bridge_needs_maintenance(&bridge));
+        assert!(controller.repair_managed_files(&bridge).unwrap());
+        let repaired: super::BridgeManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        assert_eq!(repaired.bridge_version, super::WORKBENCH_BRIDGE_VERSION);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn maintenance_does_not_probe_an_unregistered_handler() {
         let root = test_root("activation-retry");
         let bridge = root.join("bridge");
@@ -13094,7 +13120,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.52.12",
+                "bridgeVersion":"1.52.13",
                 "protocolVersion":1,
                 "status":"available",
                 "entity":"0x01 {}|SplineShapeEntity|0|1|10|20|30||||",
@@ -13144,7 +13170,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.52.12",
+                "bridgeVersion":"1.52.13",
                 "protocolVersion":1,
                 "status":"spline-updated",
                 "entity":"0x01 {}|SplineShapeEntity|0|1|10|20|30||||",
@@ -13229,7 +13255,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.52.12",
+                "bridgeVersion":"1.52.13",
                 "protocolVersion":1,
                 "status":"sampled",
                 "entity":"0x01 {}|SplineShapeEntity|0|1|10|20|30||||",

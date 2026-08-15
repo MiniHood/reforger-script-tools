@@ -5,8 +5,6 @@ import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { unzipSync } from "fflate";
 
-import { expectedAgentSkillFiles } from "./agent-skills.mjs";
-
 const platformArch = `${process.platform}-${process.arch}`;
 const vsce = resolve("node_modules", "@vscode", "vsce", "vsce");
 const verificationDirectory = resolve(".cache", "package-verification");
@@ -34,7 +32,6 @@ const allowedFiles = new Set([
   "images/icon.jpg",
   "dist/extension.js",
   `dist/server/${platformArch}/reforger_language_server${process.platform === "win32" ? ".exe" : ""}`,
-  ...expectedAgentSkillFiles,
 ]);
 const officialWikiFiles = new Set(listMarkdownFiles(resolve("data", "official-wiki")).map(
   (file) => `data/official-wiki/${file}`,
@@ -51,13 +48,11 @@ const unexpected = files.filter(
   (file) => !allowedFiles.has(file) && !officialWikiFiles.has(file),
 );
 const missingWiki = [...officialWikiFiles].filter((file) => !files.includes(file));
-const missingSkills = expectedAgentSkillFiles.filter((file) => !files.includes(file));
 
-if (unexpected.length > 0 || missingWiki.length > 0 || missingSkills.length > 0) {
+if (unexpected.length > 0 || missingWiki.length > 0) {
   console.error([
     unexpected.length > 0 ? `VSIX contains unexpected files:\n${unexpected.join("\n")}` : "",
     missingWiki.length > 0 ? `VSIX is missing expected Official Wiki files:\n${missingWiki.join("\n")}` : "",
-    missingSkills.length > 0 ? `VSIX is missing expected Agent Skill files:\n${missingSkills.join("\n")}` : "",
   ].filter(Boolean).join("\n"));
   process.exit(1);
 }
