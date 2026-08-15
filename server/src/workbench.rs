@@ -9222,6 +9222,15 @@ mod tests {
     }
 
     #[test]
+    fn radius_bridge_uses_all_flags_for_features_scope() {
+        assert!(super::BRIDGE_ENTITY_RADIUS_QUERY_SOURCE.contains(
+            "if (typedRequest.queryScope == \"features\")\n\t\t\tflags = EQueryEntitiesFlags.ALL;"
+        ));
+        assert!(!super::BRIDGE_ENTITY_RADIUS_QUERY_SOURCE
+            .contains("flags = EQueryEntitiesFlags.FEATURES;"));
+    }
+
+    #[test]
     fn workbench_log_markers_classify_only_observed_reload_milestones() {
         let lines = vec![
             "SCRIPT: Reloading game scripts".to_string(),

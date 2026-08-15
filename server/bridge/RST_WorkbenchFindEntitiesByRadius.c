@@ -136,7 +136,7 @@ class RST_WorkbenchFindEntitiesByRadius : NetApiHandler
 		else if (typedRequest.queryScope == "dynamic")
 			flags = EQueryEntitiesFlags.DYNAMIC;
 		else if (typedRequest.queryScope == "features")
-			flags = EQueryEntitiesFlags.FEATURES;
+			flags = EQueryEntitiesFlags.ALL;
 		else if (typedRequest.queryScope != "all")
 		{
 			response.status = "invalid-query-scope";
