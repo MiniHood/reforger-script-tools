@@ -139,7 +139,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.52.12";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.52.13";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 const WORKBENCH_REQUIRED_ADDONS: &str = "58D0FB3206B6F859,5614BBCCBB55ED1C";
 
@@ -2688,10 +2688,7 @@ impl WorkbenchController {
     ) -> Result<WorkbenchEntityRadiusQuery, WorkbenchFailure> {
         if !(0.01..=50_000.0).contains(&options.radius_meters)
             || !(1..=100).contains(&options.limit)
-            || !matches!(
-                options.query_scope.as_str(),
-                "all" | "static" | "dynamic" | "features"
-            )
+            || !matches!(options.query_scope.as_str(), "all" | "static" | "dynamic")
         {
             return Err(failure(WorkbenchFailureCode::Protocol));
         }
@@ -8971,7 +8968,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request, json!({"APIFunc": "RST_WorkbenchLoadedAddonGraph"}));
             json!({
-                "bridgeVersion": "1.52.12",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion": 1,
                 "graphJson": "[{\"guid\":\"58D0FB3206B6F859\",\"id\":\"ArmaReforger\",\"title\":\"Arma Reforger\",\"sourceRoot\":\"C:/Game/addons/data\"},{\"guid\":\"684CE8AA3B1D6573\",\"id\":\"GCSuppression\",\"title\":\"GC Suppression\",\"sourceRoot\":\"C:/Workbench/addons/GC-Suppression\"}]"
             })
@@ -9300,7 +9297,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchCapabilities"}),
                 json!({
-                    "bridgeVersion": "1.52.12",
+                    "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                     "protocolVersion": 1,
                     "runtimeGeneration": 8,
                     "capabilities": "state"
@@ -9368,7 +9365,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchCapabilities"}),
                 json!({
-                    "bridgeVersion": "1.52.12",
+                    "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                     "protocolVersion": 1,
                     "runtimeGeneration": 7,
                     "capabilities": "state"
@@ -9377,7 +9374,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchState", "executeSaveAllAction": true}),
                 json!({
-                    "bridgeVersion": "1.52.12",
+                    "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                     "protocolVersion": 1,
                     "saveAllActionAccepted": true,
                     "saveAllActionPath": "File/Save All",
@@ -9388,7 +9385,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchState", "executeReloadAction": true}),
                 json!({
-                    "bridgeVersion": "1.52.12",
+                    "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                     "protocolVersion": 1,
                     "reloadActionAccepted": true,
                     "reloadActionPath": "Plugins/Settings/Reload WB Scripts"
@@ -9406,7 +9403,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchCapabilities"}),
                 json!({
-                    "bridgeVersion": "1.52.12",
+                    "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                     "protocolVersion": 1,
                     "runtimeGeneration": 9,
                     "capabilities": "state"
@@ -9586,7 +9583,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion": "1.52.12",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion": 1,
                 "found": 1,
                 "status": "found",
@@ -11400,7 +11397,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request, json!({"APIFunc": "RST_WorkbenchState"}));
             json!({
-                "bridgeVersion": "1.52.12",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion": 1,
                 "mode": "world-editor",
                 "worldEditorActive": true,
@@ -13002,7 +12999,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.52.12",
+                "bridgeVersion":super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion":1,
                 "status":"available",
                 "entity":"0x01 {}|SplineShapeEntity|0|1|10|20|30||||",
@@ -13052,7 +13049,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.52.12",
+                "bridgeVersion":super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion":1,
                 "status":"spline-updated",
                 "entity":"0x01 {}|SplineShapeEntity|0|1|10|20|30||||",
@@ -13137,7 +13134,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.52.12",
+                "bridgeVersion":super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion":1,
                 "status":"sampled",
                 "entity":"0x01 {}|SplineShapeEntity|0|1|10|20|30||||",

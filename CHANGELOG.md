@@ -13,6 +13,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
   extension cannot resolve on its own.
 - Added host desktop registration for `enfusion://` links, so opening a resource
   from the Search UI reaches Workbench inside its prefix.
+- Fixed a Workbench compiler error in the bundled bridge: the radius entity
+  query named an `EQueryEntitiesFlags` member the engine does not define. Its
+  unsupported `features` query scope is removed; `all`, `static`, and `dynamic`
+  are unchanged.
 
 ## [2.0.0] - 2026-08-03
 
